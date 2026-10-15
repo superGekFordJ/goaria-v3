@@ -414,10 +414,17 @@ func (m *Monitor) tick() {
 				}
 			}
 
-			m.pusher.Queue(events.TaskDelta{
-				Type:    eventType,
-				GID:     task.GID,
-				Payload: fullTask,
+			// Enqueue under the gate: hydration ran ungated, so re-validate the
+			// copy — a retired generation must not enqueue after a newer same-
+			// GID commit and displace it in the pusher's arrival-order dedup.
+			m.tracker.RunUnderLifecycle(task.GID, func() {
+				if m.tracker.TerminalCopyCurrent(task.GID, task) {
+					m.pusher.Queue(events.TaskDelta{
+						Type:    eventType,
+						GID:     task.GID,
+						Payload: fullTask,
+					})
+				}
 			})
 		}
 	}

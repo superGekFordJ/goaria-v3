@@ -561,6 +561,8 @@ func (m *Monitor) moveToStoppedAndHandleGate(gid, status, errorCode, errorMessag
 			}
 		}
 		accepted = m.markCompleteAndHandleLocked(gid, status, prep)
+		// Repeat terminals (idempotent accept, accepted == nil) still
+		// publish: at-least-once delivery is deliberate.
 		if publish != nil {
 			publish(total)
 		}
@@ -719,6 +721,8 @@ func (m *Monitor) finishTerminalCopy(task *TrackedTask) {
 	m.recoverTerminalInfo(task)
 	if m.tracker != nil {
 		m.tracker.RunUnderLifecycle(task.GID, func() {
+			// terminalToken == 0 passes only for hand-built test copies;
+			// every production accept stamps a token.
 			if task.terminalToken == 0 || m.tracker.TerminalCopyCurrent(task.GID, task) {
 				m.recordTerminalSpeedStats(task)
 				m.writeTerminalHistoryLocked(task)
