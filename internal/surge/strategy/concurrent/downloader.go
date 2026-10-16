@@ -915,16 +915,27 @@ func (d *ConcurrentDownloader) isEndGame(queue *TaskQueue) bool {
 	if queue.IdleWorkers() == 0 {
 		return false
 	}
+	defaultMinChunk := d.Runtime.GetMinChunkSize()
 	d.activeMu.Lock()
-	count := len(d.activeTasks)
+	activeWorkers := len(d.activeTasks)
+	var totalRemaining int64
+	for _, active := range d.activeTasks {
+		totalRemaining += active.RemainingBytes()
+	}
 	d.activeMu.Unlock()
-	return count > 0
+	// FORK-PATCH: physical tail gate — remaining must fit under one min-chunk
+	// per active worker (strict) and the global cap (inclusive).
+	return activeWorkers > 0 &&
+		totalRemaining > 0 &&
+		totalRemaining < int64(activeWorkers)*defaultMinChunk &&
+		totalRemaining <= types.EndGameMaxRemaining
 }
 
-// HedgeAll creates duplicate tasks for ALL un-hedged active tasks that still
-// have remaining work. Intended for the end-game phase where all original tasks
-// have been dispatched and idle workers should race every remaining chunk.
-// Returns the number of tasks hedged.
+// HedgeAll creates duplicate tasks for un-hedged active tasks whose remaining
+// work is small enough to race (below types.MaxHedgeChunk). Intended for the
+// end-game phase where all original tasks have been dispatched and idle workers
+// should race every remaining tail chunk; larger ranges stay available for
+// StealWork splitting. Returns the number of tasks hedged.
 // FORK-PATCH: End-game proactive hedge.
 func (d *ConcurrentDownloader) HedgeAll(queue *TaskQueue) int {
 	if d.hedgeDisabled.Load() {
@@ -942,9 +953,12 @@ func (d *ConcurrentDownloader) HedgeAll(queue *TaskQueue) int {
 		if active.Hedged.Load() != 0 {
 			continue
 		}
-		current := active.CurrentOffset.Load()
+		current := active.currentOffset()
 		stopAt := active.StopAt.Load()
-		if current >= stopAt {
+		remaining := stopAt - current
+		// FORK-PATCH: only small tails may be duplicated; a larger range must
+		// stay splittable by StealWork, not locked hedged.
+		if remaining <= 0 || remaining >= types.MaxHedgeChunk {
 			continue
 		}
 		if !active.Hedged.CompareAndSwap(0, 1) {
@@ -958,7 +972,7 @@ func (d *ConcurrentDownloader) HedgeAll(queue *TaskQueue) int {
 		}
 		hedgedTask := types.Task{
 			Offset:          current,
-			Length:          stopAt - current,
+			Length:          remaining,
 			SharedMaxOffset: active.SharedMaxOffset,
 		}
 		active.SharedMaxOffsetMu.Unlock()
@@ -981,14 +995,8 @@ func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			// FORK-PATCH: End-game detection and proactive hedge.
-			if d.isEndGame(queue) {
-				ticker.Reset(types.EndGameTickInterval)
-				d.HedgeAll(queue)
-			} else {
-				ticker.Reset(types.BalancerTickInterval)
-			}
-
+			// FORK-PATCH: steal before hedge — StealWork gets first claim on
+			// each tick so big tails are split before a hedge can mark them.
 			for queue.IdleWorkers() > 0 {
 				didWork := false
 				if queue.Len() == 0 {
@@ -1004,6 +1012,16 @@ func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue
 				if !didWork {
 					break
 				}
+			}
+
+			// FORK-PATCH: End-game detection and proactive hedge. Evaluated on
+			// the post-loop snapshot: a queue refilled by stealing stays on the
+			// normal interval and skips HedgeAll for this tick.
+			if d.isEndGame(queue) {
+				ticker.Reset(types.EndGameTickInterval)
+				d.HedgeAll(queue)
+			} else {
+				ticker.Reset(types.BalancerTickInterval)
 			}
 		}
 	}

@@ -71,7 +71,17 @@ const (
 	// FORK-PATCH: Minimum chunk floor for tail-end adaptive degradation.
 	// When total remaining < activeWorkers × MinChunk, the dynamic floor allows
 	// work stealing to split smaller chunks, utilizing idle workers in the tail phase.
-	MinChunkDynamicFloor = 256 * utils.KiB
+	MinChunkDynamicFloor = 512 * utils.KiB
+
+	// FORK-PATCH: Hedge size ceiling. Only remaining ranges strictly below this
+	// boundary may be duplicated for racing; larger ranges stay splittable by
+	// StealWork. Equals the smallest splittable remainder at the floor, so the
+	// hedge/steal size handoff is exact (no alignment dead-zone).
+	MaxHedgeChunk = 2 * MinChunkDynamicFloor
+
+	// FORK-PATCH: Global end-game cap — proactive hedge engages only while the
+	// summed remaining bytes of all active tasks stay at or below this bound.
+	EndGameMaxRemaining = 4 * utils.MiB
 )
 
 // ByteLimiter abstracts byte-based throttling for downloads.

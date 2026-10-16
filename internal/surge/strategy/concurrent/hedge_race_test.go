@@ -17,7 +17,7 @@ func TestHedgeSharedMaxOffsetRace(t *testing.T) {
 
 	active := &ActiveTask{}
 	active.CurrentOffset.Store(0)
-	active.StopAt.Store(1 << 20)
+	active.StopAt.Store(types.MaxHedgeChunk / 2)
 
 	d.activeTasks[0] = active
 
@@ -54,17 +54,36 @@ func TestHedgeSharedMaxOffsetRace(t *testing.T) {
 
 	wg.Wait()
 
+	// The hedge path must actually have run: exactly one racer enqueued, the
+	// victim marked, and a shared dedup pointer installed.
+	if got := active.Hedged.Load(); got != 1 {
+		t.Fatalf("Hedged = %d, want 1 — hedge path never ran", got)
+	}
+	if got := queue.Len(); got != 1 {
+		t.Fatalf("queue.Len() = %d, want exactly 1 racer task", got)
+	}
+
 	// Close the queue and drain remaining tasks without blocking.
 	queue.Close()
+	var drained []types.Task
 	for {
 		tsk, ok := queue.Pop()
 		if !ok {
 			break
 		}
-		_ = tsk // ignore
+		drained = append(drained, tsk)
+	}
+	if len(drained) != 1 {
+		t.Fatalf("drained %d tasks, want 1", len(drained))
 	}
 
-	// Ensure the task type still matches expectations
-	var sample types.Task
-	_ = sample
+	active.SharedMaxOffsetMu.RLock()
+	shared := active.SharedMaxOffset
+	active.SharedMaxOffsetMu.RUnlock()
+	if shared == nil {
+		t.Fatal("SharedMaxOffset must be non-nil after a successful hedge")
+	}
+	if drained[0].SharedMaxOffset != shared {
+		t.Fatal("racer task must carry the same SharedMaxOffset pointer as the victim")
+	}
 }

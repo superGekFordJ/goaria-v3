@@ -756,7 +756,10 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	if activeWorkers > 0 && totalRemaining < int64(activeWorkers)*defaultMinChunk {
 		totalWorkers := int64(activeWorkers) + queue.IdleWorkers()
 		if totalWorkers > 0 {
-			dynamicMinChunk = totalRemaining / totalWorkers
+			// FORK-PATCH: the budget feeds the aligned *half* of a split, so
+			// the per-worker share must be halved — otherwise the threshold is
+			// ~2× too large and early tail splits are arithmetically refused.
+			dynamicMinChunk = (totalRemaining / totalWorkers) / 2
 		}
 		if dynamicMinChunk < types.MinChunkDynamicFloor {
 			dynamicMinChunk = types.MinChunkDynamicFloor
@@ -855,7 +858,9 @@ func (d *ConcurrentDownloader) HedgeWork(queue *TaskQueue) bool {
 		return false
 	}
 
-	// Find the active task with the most remaining work that hasn't been hedged yet
+	// Find the active task with the most remaining work that hasn't been
+	// hedged yet. Only small tails qualify: a large range must stay splittable
+	// by StealWork and must not shadow an eligible smaller tail.
 	var bestActive *ActiveTask
 	var maxRemaining int64
 
@@ -865,20 +870,27 @@ func (d *ConcurrentDownloader) HedgeWork(queue *TaskQueue) bool {
 			continue
 		}
 		remaining := active.RemainingBytes()
-		if remaining > 0 && remaining > maxRemaining {
+		// FORK-PATCH: same size ceiling as HedgeAll — hedging may only
+		// duplicate sub-MaxHedgeChunk tails.
+		if remaining <= 0 || remaining >= types.MaxHedgeChunk {
+			continue
+		}
+		if remaining > maxRemaining {
 			maxRemaining = remaining
 			bestActive = active
 		}
 	}
 
-	if bestActive == nil || maxRemaining == 0 {
+	if bestActive == nil {
 		return false
 	}
 
-	// Re-check remaining bytes before CAS to avoid setting Hedged without pushing a task
-	current := bestActive.CurrentOffset.Load()
+	// Re-check effective remaining (shared progress included) before CAS to
+	// avoid setting Hedged without pushing a task.
+	current := bestActive.currentOffset()
 	stopAt := bestActive.StopAt.Load()
-	if current >= stopAt {
+	remaining := stopAt - current
+	if remaining <= 0 || remaining >= types.MaxHedgeChunk {
 		return false
 	}
 
@@ -897,7 +909,7 @@ func (d *ConcurrentDownloader) HedgeWork(queue *TaskQueue) bool {
 	// Create a duplicate task for the remaining byte range
 	hedgedTask := types.Task{
 		Offset:          current,
-		Length:          stopAt - current,
+		Length:          remaining,
 		SharedMaxOffset: bestActive.SharedMaxOffset,
 	}
 	bestActive.SharedMaxOffsetMu.Unlock()

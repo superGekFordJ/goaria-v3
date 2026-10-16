@@ -1,6 +1,7 @@
 package concurrent
 
 import (
+	"fmt"
 	"testing"
 
 	"goaria-v3/internal/surge/types"
@@ -178,20 +179,21 @@ func TestStealWork_SingleActiveNoIdle(t *testing.T) {
 	queue.Close()
 }
 
-func TestStealWork_DynamicFloorExactly256KB(t *testing.T) {
+func TestStealWork_DynamicFloorExactly(t *testing.T) {
+	floor := int64(types.MinChunkDynamicFloor)
 	d := makeStealTestDownloader([]struct {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 512 * utils.KiB},
-		{offset: 512 * utils.KiB, length: 512 * utils.KiB},
+		{offset: 0, length: 2 * floor},
+		{offset: 2 * floor, length: 2 * floor},
 	})
 
 	queue := NewTaskQueue()
 	queue.idleWorkers.Add(2)
 
 	if !d.StealWork(queue) {
-		t.Error("StealWork should succeed when dynamicMinChunk is exactly 256KB floor")
+		t.Error("StealWork should succeed when dynamicMinChunk lands exactly on the floor")
 	}
 
 	if queue.Len() != 1 {
@@ -202,19 +204,20 @@ func TestStealWork_DynamicFloorExactly256KB(t *testing.T) {
 	if !ok {
 		t.Fatal("should be able to pop stolen task")
 	}
-	if stolen.Length != 256*utils.KiB {
-		t.Errorf("stolen task length = %d, want %d", stolen.Length, 256*utils.KiB)
+	if stolen.Length != floor {
+		t.Errorf("stolen task length = %d, want %d", stolen.Length, floor)
 	}
 
 	queue.Close()
 }
 
 func TestStealWork_HalfEqualsDynamicMinChunk(t *testing.T) {
+	floor := int64(types.MinChunkDynamicFloor)
 	d := makeStealTestDownloader([]struct {
 		offset int64
 		length int64
 	}{
-		{offset: 0, length: 1 * utils.MiB},
+		{offset: 0, length: 2 * floor},
 	})
 
 	queue := NewTaskQueue()
@@ -232,9 +235,292 @@ func TestStealWork_HalfEqualsDynamicMinChunk(t *testing.T) {
 	if !ok {
 		t.Fatal("should be able to pop stolen task")
 	}
-	if stolen.Length != 512*utils.KiB {
-		t.Errorf("stolen task length = %d, want %d", stolen.Length, 512*utils.KiB)
+	if stolen.Length != floor {
+		t.Errorf("stolen task length = %d, want %d", stolen.Length, floor)
 	}
 
 	queue.Close()
+}
+
+// TestAlignedSplitSizeWithMin_HedgeBoundary pins the exact byte boundary where
+// the aligned half first reaches the floor: remaining >= 2*floor splits while
+// anything below does not. MaxHedgeChunk mirrors that same boundary so steal
+// and hedge partition the size axis with no dead-zone.
+func TestAlignedSplitSizeWithMin_HedgeBoundary(t *testing.T) {
+	floor := int64(types.MinChunkDynamicFloor)
+	align := int64(types.AlignSize)
+	boundary := int64(types.MaxHedgeChunk)
+
+	if floor%align != 0 {
+		t.Fatalf("floor %d must be a multiple of AlignSize %d for an exact boundary", floor, align)
+	}
+	if boundary != 2*floor {
+		t.Fatalf("MaxHedgeChunk = %d, want %d (2*floor)", boundary, 2*floor)
+	}
+
+	cases := []struct {
+		remaining int64
+		want      int64
+	}{
+		{boundary - align, 0},
+		{boundary - 1, 0},
+		{boundary, floor},
+		{boundary + 1, floor},
+	}
+	for _, tc := range cases {
+		if got := alignedSplitSizeWithMin(tc.remaining, floor); got != tc.want {
+			t.Errorf("alignedSplitSizeWithMin(%d, floor) = %d, want %d", tc.remaining, got, tc.want)
+		}
+	}
+
+	// A dynamic floor above the package floor lifts the boundary to
+	// 2*AlignSize*ceil(minChunk/AlignSize); here minChunk=floor+1 rounds up to
+	// floor+align, so the split gate sits at 2*(floor+align).
+	raised := 2 * (floor + align)
+	if got := alignedSplitSizeWithMin(raised-1, floor+1); got != 0 {
+		t.Errorf("alignedSplitSizeWithMin(%d, floor+1) = %d, want 0", raised-1, got)
+	}
+	if got := alignedSplitSizeWithMin(raised, floor+1); got != floor+align {
+		t.Errorf("alignedSplitSizeWithMin(%d, floor+1) = %d, want %d", raised, got, floor+align)
+	}
+}
+
+// TestTailPhase_BoundaryHandoff_NoDeadZone verifies the steal/hedge handoff at
+// MaxHedgeChunk: with the dynamic floor sitting on the package floor,
+// remaining < boundary cannot split but can be hedged, while remaining >=
+// boundary is refused by both hedge entries and splits cleanly.
+func TestTailPhase_BoundaryHandoff_NoDeadZone(t *testing.T) {
+	floor := int64(types.MinChunkDynamicFloor)
+	align := int64(types.AlignSize)
+	boundary := int64(types.MaxHedgeChunk)
+
+	for _, rem := range []int64{boundary - align, boundary - 1, boundary, boundary + 1} {
+		t.Run(fmt.Sprintf("remaining_%d", rem), func(t *testing.T) {
+			d := makeStealTestDownloader([]struct {
+				offset int64
+				length int64
+			}{
+				{offset: 0, length: rem},
+			})
+			queue := NewTaskQueue()
+			queue.idleWorkers.Add(1)
+			defer queue.Close()
+
+			at := d.activeTasks[0]
+			stopBefore := at.StopAt.Load()
+
+			if rem < boundary {
+				if d.StealWork(queue) {
+					t.Fatalf("StealWork should fail below the %d boundary", boundary)
+				}
+				if got := at.StopAt.Load(); got != stopBefore {
+					t.Fatalf("failed steal must not move StopAt: %d, want %d", got, stopBefore)
+				}
+				if !d.HedgeWork(queue) {
+					t.Fatalf("HedgeWork should hedge a sub-%d tail", boundary)
+				}
+				if queue.Len() != 1 {
+					t.Fatalf("queue.Len() = %d, want 1 hedge racer", queue.Len())
+				}
+				tsk, _ := queue.Pop()
+				if tsk.Offset != 0 || tsk.Length != rem {
+					t.Fatalf("hedge task = {%d,%d}, want {0,%d}", tsk.Offset, tsk.Length, rem)
+				}
+				at.SharedMaxOffsetMu.RLock()
+				ptr := at.SharedMaxOffset
+				at.SharedMaxOffsetMu.RUnlock()
+				if ptr == nil || tsk.SharedMaxOffset != ptr {
+					t.Fatal("hedge task must share the victim's SharedMaxOffset pointer")
+				}
+				if at.Hedged.Load() != 1 {
+					t.Fatal("victim Hedged should be 1 after hedge")
+				}
+				return
+			}
+
+			if d.HedgeWork(queue) {
+				t.Fatalf("HedgeWork must reject remaining %d >= %d", rem, boundary)
+			}
+			if n := d.HedgeAll(queue); n != 0 {
+				t.Fatalf("HedgeAll must reject remaining %d >= %d, got %d", rem, boundary, n)
+			}
+			if queue.Len() != 0 {
+				t.Fatalf("rejected hedge must not enqueue, len=%d", queue.Len())
+			}
+			if at.Hedged.Load() != 0 {
+				t.Fatal("rejected hedge must not set Hedged")
+			}
+			if got := at.StopAt.Load(); got != stopBefore {
+				t.Fatalf("rejected hedge must not move StopAt: %d, want %d", got, stopBefore)
+			}
+
+			if !d.StealWork(queue) {
+				t.Fatalf("StealWork should split remaining %d", rem)
+			}
+			if queue.Len() != 1 {
+				t.Fatalf("queue.Len() = %d, want 1 stolen task", queue.Len())
+			}
+			tsk, _ := queue.Pop()
+			if tsk.Offset != floor || tsk.Length != rem-floor {
+				t.Fatalf("stolen task = {%d,%d}, want {%d,%d}", tsk.Offset, tsk.Length, floor, rem-floor)
+			}
+			if got := at.StopAt.Load(); got != floor {
+				t.Fatalf("victim StopAt = %d, want %d (aligned half)", got, floor)
+			}
+		})
+	}
+}
+
+// TestStealWork_TailSingleIdleManyActive verifies the halved dynamic budget:
+// with 7 actives each holding 9MiB/5 and a single idle worker, the per-worker
+// share no longer self-locks — the first idle tick can already split.
+func TestStealWork_TailSingleIdleManyActive(t *testing.T) {
+	const activeCount = 7
+	chunk := int64(9 * utils.MiB / 5) // 1887436 bytes, non-aligned on purpose
+	tasks := make([]struct {
+		offset int64
+		length int64
+	}, activeCount)
+	for i := range tasks {
+		tasks[i].offset = int64(i) * chunk
+		tasks[i].length = chunk
+	}
+	d := makeStealTestDownloader(tasks)
+
+	queue := NewTaskQueue()
+	queue.idleWorkers.Add(1)
+	defer queue.Close()
+
+	if !d.StealWork(queue) {
+		t.Fatal("StealWork should succeed on the first idle tick in the tail phase")
+	}
+	if queue.Len() != 1 {
+		t.Fatalf("queue.Len() = %d, want exactly 1 stolen task", queue.Len())
+	}
+
+	stolen, ok := queue.Pop()
+	if !ok {
+		t.Fatal("should be able to pop stolen task")
+	}
+
+	// Exactly one victim must have a reduced StopAt; the stolen range must
+	// seamlessly cover [newStopAt, originalEnd) of that victim.
+	var victim *ActiveTask
+	var victimEnd int64
+	victimCount := 0
+	for _, at := range d.activeTasks {
+		end := at.Task.Offset + at.Task.Length
+		if at.StopAt.Load() != end {
+			victimCount++
+			victim = at
+			victimEnd = end
+		}
+	}
+	if victimCount != 1 {
+		t.Fatalf("exactly one active should be split, got %d", victimCount)
+	}
+	if stolen.Offset != victim.StopAt.Load() {
+		t.Fatalf("stolen.Offset = %d, want victim newStopAt %d", stolen.Offset, victim.StopAt.Load())
+	}
+	if stolen.Offset+stolen.Length != victimEnd {
+		t.Fatalf("stolen end = %d, want victim original end %d", stolen.Offset+stolen.Length, victimEnd)
+	}
+	// Aligned half of 9MiB/5 under the halved budget (dynamic floor 825753).
+	if front := victim.StopAt.Load() - victim.Task.Offset; front != 920*utils.KiB {
+		t.Fatalf("victim keeps %d bytes, want %d", front, 920*utils.KiB)
+	}
+	if stolen.SharedMaxOffset == nil {
+		t.Fatal("stolen task must carry an independent SharedMaxOffset")
+	}
+	if got := stolen.SharedMaxOffset.Load(); got != stolen.Offset {
+		t.Fatalf("stolen SharedMaxOffset = %d, want %d (stolenStart)", got, stolen.Offset)
+	}
+	victim.SharedMaxOffsetMu.RLock()
+	vptr := victim.SharedMaxOffset
+	victim.SharedMaxOffsetMu.RUnlock()
+	if vptr != nil {
+		t.Fatal("never-hedged victim must keep SharedMaxOffset nil")
+	}
+}
+
+// TestStealWork_DynamicBudgetEdges pins the integer edge cases of the dynamic
+// budget: no-active, idle=0 direct calls, tiny remainders floored to zero, and
+// fully-completed tasks must never panic nor enqueue zero-length work.
+func TestStealWork_DynamicBudgetEdges(t *testing.T) {
+	floor := int64(types.MinChunkDynamicFloor)
+	boundary := int64(types.MaxHedgeChunk)
+
+	t.Run("no active workers", func(t *testing.T) {
+		d := makeStealTestDownloader(nil)
+		queue := NewTaskQueue()
+		queue.idleWorkers.Add(4)
+		defer queue.Close()
+		if d.StealWork(queue) {
+			t.Error("StealWork should return false with no active workers")
+		}
+		if queue.Len() != 0 {
+			t.Errorf("queue should stay empty, got %d", queue.Len())
+		}
+	})
+
+	t.Run("single active idle zero still splits", func(t *testing.T) {
+		d := makeStealTestDownloader([]struct {
+			offset int64
+			length int64
+		}{
+			{offset: 0, length: boundary},
+		})
+		queue := NewTaskQueue()
+		defer queue.Close()
+		// IdleWorkers()==0 must not gate a direct call: the divisor stays
+		// positive via activeWorkers alone.
+		if !d.StealWork(queue) {
+			t.Error("StealWork should split a boundary-sized task even with idle=0")
+		}
+		stolen, ok := queue.Pop()
+		if !ok {
+			t.Fatal("expected one stolen task")
+		}
+		if stolen.Offset != floor || stolen.Length != boundary-floor {
+			t.Errorf("stolen = {%d,%d}, want {%d,%d}", stolen.Offset, stolen.Length, floor, boundary-floor)
+		}
+	})
+
+	t.Run("tiny remaining floors to zero", func(t *testing.T) {
+		d := makeStealTestDownloader([]struct {
+			offset int64
+			length int64
+		}{
+			{offset: 0, length: 1},
+		})
+		queue := NewTaskQueue()
+		queue.idleWorkers.Add(8)
+		defer queue.Close()
+		if d.StealWork(queue) {
+			t.Error("StealWork should fail when remaining collapses under the floor")
+		}
+		if queue.Len() != 0 {
+			t.Errorf("no zero-length task may be enqueued, got %d", queue.Len())
+		}
+	})
+
+	t.Run("completed task produces nothing", func(t *testing.T) {
+		d := makeStealTestDownloader([]struct {
+			offset int64
+			length int64
+		}{
+			{offset: 64, length: 0},
+		})
+		d.activeTasks[0].CurrentOffset.Store(64)
+		d.activeTasks[0].StopAt.Store(64)
+		queue := NewTaskQueue()
+		queue.idleWorkers.Add(2)
+		defer queue.Close()
+		if d.StealWork(queue) {
+			t.Error("StealWork should return false for a fully-completed task")
+		}
+		if queue.Len() != 0 {
+			t.Errorf("queue should stay empty, got %d", queue.Len())
+		}
+	})
 }
