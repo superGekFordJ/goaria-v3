@@ -1,10 +1,10 @@
 {
 	"fixed": {
-		"file_version": "3.5.0"
+		"file_version": "3.5.1"
 	},
 	"info": {
 		"0000": {
-			"ProductVersion": "3.5.0",
+			"ProductVersion": "3.5.1",
 			"CompanyName": "GoAria",
 			"FileDescription": "GoAria",
 			"LegalCopyright": "(c) 2026, GoAria",
