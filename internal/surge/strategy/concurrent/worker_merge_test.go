@@ -1,9 +1,13 @@
 package concurrent
 
 import (
+	"context"
 	"errors"
+	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
@@ -36,6 +40,54 @@ func TestResumeOnRetryOffset_SharedMaxOffsetCarryAndStopAtClamp(t *testing.T) {
 	}
 	if task.SharedMaxOffset != shared {
 		t.Fatal("SharedMaxOffset was not carried onto the retried task")
+	}
+}
+
+// TestWorkerPickup_SharedMaxOffsetMarksHedged pins the pickup invariant that
+// keeps steal/hedge isolation intact: a task carrying SharedMaxOffset must
+// register its ActiveTask with Hedged=1 so StealWork skips the racing pair.
+// The mirror is unreachable — registration happens before any transfer.
+func TestWorkerPickup_SharedMaxOffsetMarksHedged(t *testing.T) {
+	d := NewConcurrentDownloader("pickup-hedged", nil, nil, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * utils.KiB,
+	})
+
+	shared := &atomic.Int64{}
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 0, Length: 64 * utils.KiB, SharedMaxOffset: shared})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		_ = d.worker(ctx, 0, []string{"http://localhost:1"}, nil, queue, 64*utils.KiB, &http.Client{})
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	var at *ActiveTask
+	for time.Now().Before(deadline) {
+		d.activeMu.Lock()
+		at = d.activeTasks[0]
+		d.activeMu.Unlock()
+		if at != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	queue.Close() // unblock Pop; a residual requeue after Close is retained
+	wg.Wait()
+
+	if at == nil {
+		t.Fatal("worker never registered the task as active")
+	}
+	if at.Hedged.Load() != 1 {
+		t.Fatal("picked-up task with SharedMaxOffset must register Hedged=1")
+	}
+	at.SharedMaxOffsetMu.RLock()
+	ptr := at.SharedMaxOffset
+	at.SharedMaxOffsetMu.RUnlock()
+	if ptr != shared {
+		t.Fatal("picked-up task must propagate the SharedMaxOffset pointer")
 	}
 }
 

@@ -823,6 +823,9 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	}
 
 	if stolenStart >= originalEnd {
+		// FORK-PATCH: undo the shrink — a bailed steal must not leave the
+		// victim's StopAt narrowed (or widened) past its true end.
+		active.StopAt.Store(originalEnd)
 		return false
 	}
 
