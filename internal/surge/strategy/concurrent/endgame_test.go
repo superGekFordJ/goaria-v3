@@ -516,10 +516,11 @@ func TestMidGame_FastWorkerFinishes_StealsNotHedges(t *testing.T) {
 	}
 }
 
-// TestEndGame_BalancerStealsBeforeHedging drives the real runBalancer: the
-// first enqueue on an end-game tick must be the stolen half of the big task,
-// not a hedge racer. The fake idle worker never consumes, so the queue stays
-// non-empty and the observation is stable.
+// TestEndGame_BalancerStealsBeforeHedging drives the real runBalancer: on an
+// end-game tick the first enqueue must be the stolen half of the big task,
+// after which the same tick's batch sweep races the remaining small tail.
+// The fake idle worker never consumes, so the queue stays non-empty and the
+// observation is stable.
 func TestEndGame_BalancerStealsBeforeHedging(t *testing.T) {
 	big := int64(5 * utils.MiB / 2)   // splittable tail
 	small := int64(1 * utils.MiB / 2) // hedge-size tail
@@ -542,29 +543,42 @@ func TestEndGame_BalancerStealsBeforeHedging(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Go(func() { d.runBalancer(ctx, queue) })
 
+	// Wait for the full first end-game tick: steal push + batch-sweep push.
 	deadline := time.Now().Add(3 * time.Second)
-	for queue.Len() == 0 && time.Now().Before(deadline) {
+	for queue.Len() < 2 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	cancel()
 	wg.Wait()
 
 	drained := queue.DrainRemaining()
-	if len(drained) != 1 {
-		t.Fatalf("drained %d tasks, want exactly 1 (the stolen half)", len(drained))
+	if len(drained) != 2 {
+		t.Fatalf("drained %d tasks, want 2 (stolen half + batch-swept racer)", len(drained))
 	}
 	stolen := drained[0]
 	if stolen.Offset != big/2 || stolen.Length != big/2 {
 		t.Fatalf("first enqueue = {%d,%d}, want stolen {%d,%d} from the big task",
 			stolen.Offset, stolen.Length, big/2, big/2)
 	}
+	racer := drained[1]
+	if racer.Offset != big || racer.Length != small {
+		t.Fatalf("second enqueue = {%d,%d}, want hedge racer {%d,%d} for the small tail",
+			racer.Offset, racer.Length, big, small)
+	}
 	if got := d.activeTasks[0].StopAt.Load(); got != big/2 {
 		t.Fatalf("big task StopAt = %d, want %d", got, big/2)
 	}
-	for i, at := range d.activeTasks {
-		if at.Hedged.Load() != 0 {
-			t.Fatalf("active %d must not be hedged while a big tail can still split", i)
-		}
+	if got := d.activeTasks[0].Hedged.Load(); got != 0 {
+		t.Fatalf("big task must not be hedged: post-steal remainder %d stays splittable", big/2)
+	}
+	if got := d.activeTasks[1].Hedged.Load(); got != 1 {
+		t.Fatal("batch sweep must hedge the eligible small tail on the same tick")
+	}
+	d.activeTasks[1].SharedMaxOffsetMu.RLock()
+	ptr := d.activeTasks[1].SharedMaxOffset
+	d.activeTasks[1].SharedMaxOffsetMu.RUnlock()
+	if ptr == nil || racer.SharedMaxOffset != ptr {
+		t.Fatal("racer must carry the victim's SharedMaxOffset pointer")
 	}
 }
 

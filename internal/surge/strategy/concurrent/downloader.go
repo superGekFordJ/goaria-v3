@@ -907,6 +907,8 @@ func (d *ConcurrentDownloader) startHelpers(ctx context.Context, wg *sync.WaitGr
 
 // isEndGame returns true when all tasks have been dispatched (queue is empty)
 // but some workers are still active and idle workers are available for hedging.
+// The byte window must also fit the physical tail: summed remaining strictly
+// below activeWorkers*defaultMinChunk and at or below types.EndGameMaxRemaining.
 // FORK-PATCH: End-game detection for proactive hedge.
 func (d *ConcurrentDownloader) isEndGame(queue *TaskQueue) bool {
 	if queue.Len() > 0 {
@@ -995,6 +997,11 @@ func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// FORK-PATCH: evaluate end-game on the tick-entry snapshot. A
+			// post-loop check would observe the queue refilled by this tick's
+			// own steal/hedge pushes and never reach the batch sweep.
+			endgame := d.isEndGame(queue)
+
 			// FORK-PATCH: steal before hedge — StealWork gets first claim on
 			// each tick so big tails are split before a hedge can mark them.
 			for queue.IdleWorkers() > 0 {
@@ -1014,10 +1021,10 @@ func (d *ConcurrentDownloader) runBalancer(ctx context.Context, queue *TaskQueue
 				}
 			}
 
-			// FORK-PATCH: End-game detection and proactive hedge. Evaluated on
-			// the post-loop snapshot: a queue refilled by stealing stays on the
-			// normal interval and skips HedgeAll for this tick.
-			if d.isEndGame(queue) {
+			// FORK-PATCH: on an end-game tick switch to the fast interval and
+			// batch-race every remaining eligible tail after the on-demand
+			// pass; a tick entered with a non-empty queue stays normal.
+			if endgame {
 				ticker.Reset(types.EndGameTickInterval)
 				d.HedgeAll(queue)
 			} else {

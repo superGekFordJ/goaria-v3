@@ -802,6 +802,12 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	current := active.CurrentOffset.Load()
 	newStopAt := current + splitSize
 
+	// FORK-PATCH: the stolen range must end at the victim's true end — take the
+	// StopAt snapshot before overwriting it. Re-deriving the end as
+	// current+scannedRemaining mixes two snapshots and can overshoot into the
+	// next chunk or undershoot below StopAt when progress moved mid-steal.
+	originalEnd := active.StopAt.Load()
+
 	// Update the active task stop point
 	active.StopAt.Store(newStopAt)
 
@@ -815,8 +821,6 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 	if stolenStart >= currentStopAt && currentStopAt != newStopAt {
 		utils.Debug("StealWork race detected: stolenStart >= currentStopAt")
 	}
-
-	originalEnd := current + remaining
 
 	if stolenStart >= originalEnd {
 		return false

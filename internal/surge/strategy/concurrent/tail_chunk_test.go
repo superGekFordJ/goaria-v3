@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"fmt"
+	"sync/atomic"
 	"testing"
 
 	"goaria-v3/internal/surge/types"
@@ -440,6 +441,46 @@ func TestStealWork_TailSingleIdleManyActive(t *testing.T) {
 	victim.SharedMaxOffsetMu.RUnlock()
 	if vptr != nil {
 		t.Fatal("never-hedged victim must keep SharedMaxOffset nil")
+	}
+}
+
+// TestStealWork_StolenEndMatchesStopAt pins the stolen range's far edge to the
+// victim's pre-steal StopAt. A shared progress pointer makes the scanned
+// RemainingBytes diverge from the raw CurrentOffset read at steal time; the
+// stolen task must still cover the range up to StopAt exactly — neither
+// undershoot (bytes left uncovered) nor overshoot (into the next chunk).
+func TestStealWork_StolenEndMatchesStopAt(t *testing.T) {
+	floor := int64(types.MinChunkDynamicFloor)
+	stopAt := int64(2 * utils.MiB)
+
+	shared := &atomic.Int64{}
+	shared.Store(utils.MiB)
+	d := &ConcurrentDownloader{
+		activeTasks: make(map[int]*ActiveTask),
+		Runtime:     &types.RuntimeConfig{},
+	}
+	victim := newActiveFixture(0, stopAt, 0, shared)
+	d.activeTasks[0] = victim
+
+	queue := NewTaskQueue()
+	queue.idleWorkers.Add(1)
+	defer queue.Close()
+
+	if !d.StealWork(queue) {
+		t.Fatal("StealWork should split the effective remaining")
+	}
+	stolen, ok := queue.Pop()
+	if !ok {
+		t.Fatal("expected one stolen task")
+	}
+	if stolen.Offset != floor {
+		t.Fatalf("stolen.Offset = %d, want aligned half %d", stolen.Offset, floor)
+	}
+	if end := stolen.Offset + stolen.Length; end != stopAt {
+		t.Fatalf("stolen end = %d, want victim pre-steal StopAt %d", end, stopAt)
+	}
+	if got := victim.StopAt.Load(); got != floor {
+		t.Fatalf("victim StopAt = %d, want %d", got, floor)
 	}
 }
 
