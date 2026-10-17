@@ -921,6 +921,9 @@ func (d *ConcurrentDownloader) isEndGame(queue *TaskQueue) bool {
 	defaultMinChunk := d.Runtime.GetMinChunkSize()
 	d.activeMu.Lock()
 	activeWorkers := len(d.activeTasks)
+	// FORK-PATCH: a hedged victim+racer pair registers both sides over the
+	// same range, so this sum counts it twice — the over-estimate only
+	// delays the endgame/steal gates (conservative, bounded); do not dedup.
 	var totalRemaining int64
 	for _, active := range d.activeTasks {
 		totalRemaining += active.RemainingBytes()

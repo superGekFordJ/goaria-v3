@@ -143,6 +143,10 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 			// remains (CDNDetector exits early on len<=1), fall back to
 			// RuntimeConfig so the global-session-speed tail guard stays armed.
 			threshold := d.slowThresholdOrDefault(d.Runtime.GetSlowWorkerThreshold())
+			// FORK-PATCH: a worker between task pop and activeTasks insert is
+			// invisible to this len (µs window), so the count may read 1 low —
+			// at worst one bounded early kill of a truly slow worker, covered
+			// by requeue. Accepted transient, not a defect.
 			if len(d.activeTasks) == 1 && threshold == 0 {
 				threshold = d.Runtime.GetSlowWorkerThreshold()
 			}
