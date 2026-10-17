@@ -245,28 +245,37 @@ func TestStealWork_HalfEqualsDynamicMinChunk(t *testing.T) {
 
 // TestAlignedSplitSizeWithMin_HedgeBoundary pins the exact byte boundary where
 // the aligned half first reaches the floor: remaining >= 2*floor splits while
-// anything below does not. MaxHedgeChunk mirrors that same boundary so steal
-// and hedge partition the size axis with no dead-zone.
+// anything below does not. The split threshold T=2*floor is independent of the
+// hedge ceiling H=MaxHedgeChunk — the two gates overlap on [T, H).
 func TestAlignedSplitSizeWithMin_HedgeBoundary(t *testing.T) {
 	floor := int64(types.MinChunkDynamicFloor)
 	align := int64(types.AlignSize)
-	boundary := int64(types.MaxHedgeChunk)
+	splitThreshold := 2 * floor // T
+	hedgeBoundary := int64(types.MaxHedgeChunk)
 
 	if floor%align != 0 {
 		t.Fatalf("floor %d must be a multiple of AlignSize %d for an exact boundary", floor, align)
 	}
-	if boundary != 2*floor {
-		t.Fatalf("MaxHedgeChunk = %d, want %d (2*floor)", boundary, 2*floor)
+	// Lock the decoupled geometry: F=512KiB, T=1MiB, H=4MiB — H is a fixed
+	// ceiling aligned with the normal-phase 2*MinChunk split minimum.
+	if floor != 512*utils.KiB {
+		t.Fatalf("MinChunkDynamicFloor = %d, want %d", floor, int64(512*utils.KiB))
+	}
+	if hedgeBoundary != 4*utils.MiB {
+		t.Fatalf("MaxHedgeChunk = %d, want %d", hedgeBoundary, int64(4*utils.MiB))
+	}
+	if hedgeBoundary <= splitThreshold {
+		t.Fatalf("MaxHedgeChunk (%d) must exceed split threshold 2*floor (%d)", hedgeBoundary, splitThreshold)
 	}
 
 	cases := []struct {
 		remaining int64
 		want      int64
 	}{
-		{boundary - align, 0},
-		{boundary - 1, 0},
-		{boundary, floor},
-		{boundary + 1, floor},
+		{splitThreshold - align, 0},
+		{splitThreshold - 1, 0},
+		{splitThreshold, floor},
+		{splitThreshold + 1, floor},
 	}
 	for _, tc := range cases {
 		if got := alignedSplitSizeWithMin(tc.remaining, floor); got != tc.want {
@@ -286,64 +295,141 @@ func TestAlignedSplitSizeWithMin_HedgeBoundary(t *testing.T) {
 	}
 }
 
-// TestTailPhase_BoundaryHandoff_NoDeadZone verifies the steal/hedge handoff at
-// MaxHedgeChunk: with the dynamic floor sitting on the package floor,
-// remaining < boundary cannot split but can be hedged, while remaining >=
-// boundary is refused by both hedge entries and splits cleanly.
+// TestTailPhase_BoundaryHandoff_NoDeadZone verifies the steal/hedge handoff
+// across the decoupled thresholds: below the split threshold T=2*floor only
+// hedging applies; the [T, H) overlap band admits both operations on
+// independent fixtures (steal-first ordering decides on demand, a batch
+// sweep may still race a shrunk victim); at or above H only StealWork
+// remains. Every size class therefore has a live redistribution path.
 func TestTailPhase_BoundaryHandoff_NoDeadZone(t *testing.T) {
 	floor := int64(types.MinChunkDynamicFloor)
 	align := int64(types.AlignSize)
-	boundary := int64(types.MaxHedgeChunk)
+	splitThreshold := 2 * floor // T = 1MiB
+	hedgeBoundary := int64(types.MaxHedgeChunk)
 
-	for _, rem := range []int64{boundary - align, boundary - 1, boundary, boundary + 1} {
-		t.Run(fmt.Sprintf("remaining_%d", rem), func(t *testing.T) {
-			d := makeStealTestDownloader([]struct {
-				offset int64
-				length int64
-			}{
-				{offset: 0, length: rem},
-			})
-			queue := NewTaskQueue()
-			queue.idleWorkers.Add(1)
+	// newFixture builds a single-task downloader in the tail phase: MinChunkSize
+	// above the task remainder forces the dynamic floor to degrade (to F for
+	// small remainders, ≈rem/4 for ceiling-sized ones).
+	newFixture := func(rem int64) (*ConcurrentDownloader, *TaskQueue) {
+		d := &ConcurrentDownloader{
+			activeTasks: make(map[int]*ActiveTask),
+			Runtime:     &types.RuntimeConfig{MinChunkSize: 2 * hedgeBoundary},
+		}
+		at := &ActiveTask{Task: types.Task{Offset: 0, Length: rem}}
+		at.CurrentOffset.Store(0)
+		at.StopAt.Store(rem)
+		d.activeTasks[0] = at
+		queue := NewTaskQueue()
+		queue.idleWorkers.Add(1)
+		return d, queue
+	}
+
+	// Below T: steal cannot split, but HedgeWork still races the tail.
+	for _, rem := range []int64{splitThreshold - align, splitThreshold - 1} {
+		t.Run(fmt.Sprintf("below_split_%d", rem), func(t *testing.T) {
+			d, queue := newFixture(rem)
 			defer queue.Close()
-
 			at := d.activeTasks[0]
 			stopBefore := at.StopAt.Load()
 
-			if rem < boundary {
-				if d.StealWork(queue) {
-					t.Fatalf("StealWork should fail below the %d boundary", boundary)
-				}
-				if got := at.StopAt.Load(); got != stopBefore {
-					t.Fatalf("failed steal must not move StopAt: %d, want %d", got, stopBefore)
-				}
-				if !d.HedgeWork(queue) {
-					t.Fatalf("HedgeWork should hedge a sub-%d tail", boundary)
-				}
-				if queue.Len() != 1 {
-					t.Fatalf("queue.Len() = %d, want 1 hedge racer", queue.Len())
-				}
-				tsk, _ := queue.Pop()
-				if tsk.Offset != 0 || tsk.Length != rem {
-					t.Fatalf("hedge task = {%d,%d}, want {0,%d}", tsk.Offset, tsk.Length, rem)
-				}
-				at.SharedMaxOffsetMu.RLock()
-				ptr := at.SharedMaxOffset
-				at.SharedMaxOffsetMu.RUnlock()
-				if ptr == nil || tsk.SharedMaxOffset != ptr {
-					t.Fatal("hedge task must share the victim's SharedMaxOffset pointer")
-				}
-				if at.Hedged.Load() != 1 {
-					t.Fatal("victim Hedged should be 1 after hedge")
-				}
-				return
+			if d.StealWork(queue) {
+				t.Fatalf("StealWork should fail below the %d split threshold", splitThreshold)
+			}
+			if got := at.StopAt.Load(); got != stopBefore {
+				t.Fatalf("failed steal must not move StopAt: %d, want %d", got, stopBefore)
 			}
 
+			if !d.HedgeWork(queue) {
+				t.Fatalf("HedgeWork should hedge a sub-%d tail", splitThreshold)
+			}
+			tsk, ok := queue.Pop()
+			if !ok {
+				t.Fatal("expected one racer task")
+			}
+			if tsk.Offset != 0 || tsk.Length != rem {
+				t.Fatalf("racer = {%d,%d}, want {0,%d}", tsk.Offset, tsk.Length, rem)
+			}
+			at.SharedMaxOffsetMu.RLock()
+			ptr := at.SharedMaxOffset
+			at.SharedMaxOffsetMu.RUnlock()
+			if ptr == nil || tsk.SharedMaxOffset != ptr {
+				t.Fatal("racer must share the victim's SharedMaxOffset pointer")
+			}
+			if at.Hedged.Load() != 1 {
+				t.Fatal("victim Hedged should be 1 after hedge")
+			}
+		})
+	}
+
+	// [T, H) overlap band: StealWork and HedgeWork each succeed on fresh
+	// independent fixtures — a successful hedge would mark the task and
+	// forbid a later steal on it, so each operation gets its own.
+	for _, rem := range []int64{splitThreshold, splitThreshold + 1, hedgeBoundary - 1} {
+		t.Run(fmt.Sprintf("overlap_steal_%d", rem), func(t *testing.T) {
+			d, queue := newFixture(rem)
+			defer queue.Close()
+			at := d.activeTasks[0]
+			if !d.StealWork(queue) {
+				t.Fatalf("StealWork should split remaining %d", rem)
+			}
+			tsk, ok := queue.Pop()
+			if !ok {
+				t.Fatal("expected one stolen task")
+			}
+			half := alignedSplitSizeWithMin(rem, floor)
+			if half <= 0 {
+				t.Fatalf("fixture invariant broken: aligned half of %d at floor is 0", rem)
+			}
+			if tsk.Offset != half || tsk.Length != rem-half {
+				t.Fatalf("stolen = {%d,%d}, want {%d,%d} (aligned half)", tsk.Offset, tsk.Length, half, rem-half)
+			}
+			if tsk.SharedMaxOffset != nil {
+				t.Fatal("stolen task must keep SharedMaxOffset nil")
+			}
+			if got := at.StopAt.Load(); got != half {
+				t.Fatalf("victim StopAt = %d, want %d (aligned half)", got, half)
+			}
+		})
+		t.Run(fmt.Sprintf("overlap_hedge_%d", rem), func(t *testing.T) {
+			d, queue := newFixture(rem)
+			defer queue.Close()
+			at := d.activeTasks[0]
+			if !d.HedgeWork(queue) {
+				t.Fatalf("HedgeWork should accept remaining %d < %d", rem, hedgeBoundary)
+			}
+			tsk, ok := queue.Pop()
+			if !ok {
+				t.Fatal("expected one racer task")
+			}
+			if tsk.Offset != 0 || tsk.Length != rem {
+				t.Fatalf("racer = {%d,%d}, want {0,%d}", tsk.Offset, tsk.Length, rem)
+			}
+			at.SharedMaxOffsetMu.RLock()
+			ptr := at.SharedMaxOffset
+			at.SharedMaxOffsetMu.RUnlock()
+			if ptr == nil || tsk.SharedMaxOffset != ptr {
+				t.Fatal("racer must share the victim's SharedMaxOffset pointer")
+			}
+			if at.Hedged.Load() != 1 {
+				t.Fatal("victim Hedged should be 1 after hedge")
+			}
+		})
+	}
+
+	// At/above H: both hedge entries refuse without marking; StealWork still
+	// splits under the degraded tail floor.
+	for _, rem := range []int64{hedgeBoundary, hedgeBoundary + 1} {
+		t.Run(fmt.Sprintf("at_ceiling_%d", rem), func(t *testing.T) {
+			d, queue := newFixture(rem)
+			defer queue.Close()
+			at := d.activeTasks[0]
+
+			stopBefore := at.StopAt.Load()
 			if d.HedgeWork(queue) {
-				t.Fatalf("HedgeWork must reject remaining %d >= %d", rem, boundary)
+				t.Fatalf("HedgeWork must reject remaining %d >= %d", rem, hedgeBoundary)
 			}
 			if n := d.HedgeAll(queue); n != 0 {
-				t.Fatalf("HedgeAll must reject remaining %d >= %d, got %d", rem, boundary, n)
+				t.Fatalf("HedgeAll must reject remaining %d >= %d, got %d", rem, hedgeBoundary, n)
 			}
 			if queue.Len() != 0 {
 				t.Fatalf("rejected hedge must not enqueue, len=%d", queue.Len())
@@ -351,22 +437,31 @@ func TestTailPhase_BoundaryHandoff_NoDeadZone(t *testing.T) {
 			if at.Hedged.Load() != 0 {
 				t.Fatal("rejected hedge must not set Hedged")
 			}
+			at.SharedMaxOffsetMu.RLock()
+			ptr := at.SharedMaxOffset
+			at.SharedMaxOffsetMu.RUnlock()
+			if ptr != nil {
+				t.Fatal("rejected hedge must not install SharedMaxOffset")
+			}
 			if got := at.StopAt.Load(); got != stopBefore {
 				t.Fatalf("rejected hedge must not move StopAt: %d, want %d", got, stopBefore)
 			}
 
 			if !d.StealWork(queue) {
-				t.Fatalf("StealWork should split remaining %d", rem)
+				t.Fatalf("StealWork should split remaining %d once the floor degrades", rem)
 			}
-			if queue.Len() != 1 {
-				t.Fatalf("queue.Len() = %d, want 1 stolen task", queue.Len())
+			tsk, ok := queue.Pop()
+			if !ok {
+				t.Fatal("expected one stolen task")
 			}
-			tsk, _ := queue.Pop()
-			if tsk.Offset != floor || tsk.Length != rem-floor {
-				t.Fatalf("stolen task = {%d,%d}, want {%d,%d}", tsk.Offset, tsk.Length, floor, rem-floor)
+			// Degraded floor ≈ rem/4 (≈ hedgeBoundary/4 here), so the aligned
+			// half lands at rem/2 rounded down to AlignSize.
+			half := rem / 2 / align * align
+			if tsk.Offset != half || tsk.Length != rem-half {
+				t.Fatalf("stolen = {%d,%d}, want {%d,%d}", tsk.Offset, tsk.Length, half, rem-half)
 			}
-			if got := at.StopAt.Load(); got != floor {
-				t.Fatalf("victim StopAt = %d, want %d (aligned half)", got, floor)
+			if tsk.SharedMaxOffset != nil {
+				t.Fatal("stolen task must keep SharedMaxOffset nil")
 			}
 		})
 	}
@@ -430,11 +525,8 @@ func TestStealWork_TailSingleIdleManyActive(t *testing.T) {
 	if front := victim.StopAt.Load() - victim.Task.Offset; front != 920*utils.KiB {
 		t.Fatalf("victim keeps %d bytes, want %d", front, 920*utils.KiB)
 	}
-	if stolen.SharedMaxOffset == nil {
-		t.Fatal("stolen task must carry an independent SharedMaxOffset")
-	}
-	if got := stolen.SharedMaxOffset.Load(); got != stolen.Offset {
-		t.Fatalf("stolen SharedMaxOffset = %d, want %d (stolenStart)", got, stolen.Offset)
+	if stolen.SharedMaxOffset != nil {
+		t.Fatal("stolen task is a plain disjoint split: SharedMaxOffset must be nil")
 	}
 	victim.SharedMaxOffsetMu.RLock()
 	vptr := victim.SharedMaxOffset
@@ -489,7 +581,7 @@ func TestStealWork_StolenEndMatchesStopAt(t *testing.T) {
 // fully-completed tasks must never panic nor enqueue zero-length work.
 func TestStealWork_DynamicBudgetEdges(t *testing.T) {
 	floor := int64(types.MinChunkDynamicFloor)
-	boundary := int64(types.MaxHedgeChunk)
+	splitThreshold := 2 * floor // smallest splittable remainder at the floor
 
 	t.Run("no active workers", func(t *testing.T) {
 		d := makeStealTestDownloader(nil)
@@ -509,7 +601,7 @@ func TestStealWork_DynamicBudgetEdges(t *testing.T) {
 			offset int64
 			length int64
 		}{
-			{offset: 0, length: boundary},
+			{offset: 0, length: splitThreshold},
 		})
 		queue := NewTaskQueue()
 		defer queue.Close()
@@ -522,8 +614,11 @@ func TestStealWork_DynamicBudgetEdges(t *testing.T) {
 		if !ok {
 			t.Fatal("expected one stolen task")
 		}
-		if stolen.Offset != floor || stolen.Length != boundary-floor {
-			t.Errorf("stolen = {%d,%d}, want {%d,%d}", stolen.Offset, stolen.Length, floor, boundary-floor)
+		if stolen.Offset != floor || stolen.Length != splitThreshold-floor {
+			t.Errorf("stolen = {%d,%d}, want {%d,%d}", stolen.Offset, stolen.Length, floor, splitThreshold-floor)
+		}
+		if stolen.SharedMaxOffset != nil {
+			t.Error("stolen task must keep SharedMaxOffset nil")
 		}
 	})
 

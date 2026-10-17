@@ -387,14 +387,14 @@ func newActiveFixture(offset, length int64, hedged int32, shared *atomic.Int64) 
 }
 
 // TestIsEndGame_FalseOnLargeRemaining isolates the global byte cap: a single
-// active with 10MiB remaining still fits under its own 16MiB per-worker
+// active with 20MiB remaining still fits under its own 32MiB per-worker
 // budget, so only EndGameMaxRemaining can refuse end-game.
 func TestIsEndGame_FalseOnLargeRemaining(t *testing.T) {
 	d := &ConcurrentDownloader{
 		activeTasks: make(map[int]*ActiveTask),
-		Runtime:     &types.RuntimeConfig{MinChunkSize: 16 * utils.MiB},
+		Runtime:     &types.RuntimeConfig{MinChunkSize: 32 * utils.MiB},
 	}
-	d.activeTasks[0] = newActiveFixture(0, 10*utils.MiB, 0, nil)
+	d.activeTasks[0] = newActiveFixture(0, 20*utils.MiB, 0, nil)
 
 	queue := NewTaskQueue()
 	queue.idleWorkers.Add(1)
@@ -405,7 +405,8 @@ func TestIsEndGame_FalseOnLargeRemaining(t *testing.T) {
 }
 
 // TestIsEndGame_ByteBoundaries pins the inclusive global cap and the strict
-// per-worker comparison.
+// per-worker comparison. The cap cases use minChunk = 2*E so the strict
+// per-worker gate cannot shadow the cap boundary.
 func TestIsEndGame_ByteBoundaries(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -413,8 +414,8 @@ func TestIsEndGame_ByteBoundaries(t *testing.T) {
 		remaining int64
 		want      bool
 	}{
-		{"cap inclusive", 8 * utils.MiB, types.EndGameMaxRemaining, true},
-		{"cap exceeded", 8 * utils.MiB, types.EndGameMaxRemaining + 1, false},
+		{"cap inclusive", 2 * types.EndGameMaxRemaining, types.EndGameMaxRemaining, true},
+		{"cap exceeded", 2 * types.EndGameMaxRemaining, types.EndGameMaxRemaining + 1, false},
 		{"per-worker strict", 2 * utils.MiB, 2 * utils.MiB, false},
 		{"per-worker under", 2 * utils.MiB, 2*utils.MiB - 1, true},
 		{"all completed", 2 * utils.MiB, 0, false},
@@ -505,28 +506,30 @@ func TestMidGame_FastWorkerFinishes_StealsNotHedges(t *testing.T) {
 		t.Fatalf("stolen = {%d,%d}, want {%d,%d}", stolen.Offset, stolen.Length,
 			victim.StopAt.Load(), 5*utils.MiB)
 	}
-	if stolen.SharedMaxOffset == nil {
-		t.Fatal("stolen task must carry an independent SharedMaxOffset")
+	if stolen.SharedMaxOffset != nil {
+		t.Fatal("stolen task is a plain disjoint split: SharedMaxOffset must be nil")
 	}
 	victim.SharedMaxOffsetMu.RLock()
 	vptr := victim.SharedMaxOffset
 	victim.SharedMaxOffsetMu.RUnlock()
 	if vptr != nil {
-		t.Fatal("stolen task's pointer must be independent of the victim's")
+		t.Fatal("never-hedged victim must keep SharedMaxOffset nil")
 	}
 }
 
 // TestEndGame_BalancerStealsBeforeHedging drives the real runBalancer: on an
 // end-game tick the first enqueue must be the stolen half of the big task,
 // after which the same tick's batch sweep races the remaining small tail.
-// The fake idle worker never consumes, so the queue stays non-empty and the
-// observation is stable.
+// The big victim's post-steal remainder sits exactly on MaxHedgeChunk, which
+// is still too large to duplicate — steal-first ordering is what keeps it
+// splittable. The fake idle worker never consumes, so the queue stays
+// non-empty and the observation is stable.
 func TestEndGame_BalancerStealsBeforeHedging(t *testing.T) {
-	big := int64(5 * utils.MiB / 2)   // splittable tail
-	small := int64(1 * utils.MiB / 2) // hedge-size tail
+	big := int64(2 * types.MaxHedgeChunk) // splits to a victim remainder of exactly H
+	small := int64(types.MinChunkDynamicFloor)
 	d := &ConcurrentDownloader{
 		activeTasks: make(map[int]*ActiveTask),
-		Runtime:     &types.RuntimeConfig{},
+		Runtime:     &types.RuntimeConfig{MinChunkSize: 16 * utils.MiB},
 	}
 	d.activeTasks[0] = newActiveFixture(0, big, 0, nil)
 	d.activeTasks[1] = newActiveFixture(big, small, 0, nil)
@@ -560,6 +563,9 @@ func TestEndGame_BalancerStealsBeforeHedging(t *testing.T) {
 		t.Fatalf("first enqueue = {%d,%d}, want stolen {%d,%d} from the big task",
 			stolen.Offset, stolen.Length, big/2, big/2)
 	}
+	if stolen.SharedMaxOffset != nil {
+		t.Fatal("stolen task is a plain disjoint split: SharedMaxOffset must be nil")
+	}
 	racer := drained[1]
 	if racer.Offset != big || racer.Length != small {
 		t.Fatalf("second enqueue = {%d,%d}, want hedge racer {%d,%d} for the small tail",
@@ -569,7 +575,7 @@ func TestEndGame_BalancerStealsBeforeHedging(t *testing.T) {
 		t.Fatalf("big task StopAt = %d, want %d", got, big/2)
 	}
 	if got := d.activeTasks[0].Hedged.Load(); got != 0 {
-		t.Fatalf("big task must not be hedged: post-steal remainder %d stays splittable", big/2)
+		t.Fatalf("big task must not be hedged: post-steal remainder %d sits on the hedge ceiling", big/2)
 	}
 	if got := d.activeTasks[1].Hedged.Load(); got != 1 {
 		t.Fatal("batch sweep must hedge the eligible small tail on the same tick")
@@ -579,6 +585,96 @@ func TestEndGame_BalancerStealsBeforeHedging(t *testing.T) {
 	d.activeTasks[1].SharedMaxOffsetMu.RUnlock()
 	if ptr == nil || racer.SharedMaxOffset != ptr {
 		t.Fatal("racer must carry the victim's SharedMaxOffset pointer")
+	}
+}
+
+// TestEndGame_BalancerHedgesPostStealOverlap pins the accepted overlap-chain
+// behavior: inside the [T, H) band the same end-game tick first splits the
+// big task (stolen half pushed nil-pointer), then the batch sweep still
+// races the freshly shrunk victim because its remainder is below
+// MaxHedgeChunk. Both racers' order in the drain is unspecified — match by
+// range, not position.
+func TestEndGame_BalancerHedgesPostStealOverlap(t *testing.T) {
+	big := int64(5 * utils.MiB / 2)   // 2.5MiB — splits into the [1MiB,2MiB) overlap
+	small := int64(1 * utils.MiB / 2) // hedge-size tail
+	d := &ConcurrentDownloader{
+		activeTasks: make(map[int]*ActiveTask),
+		Runtime:     &types.RuntimeConfig{},
+	}
+	d.activeTasks[0] = newActiveFixture(0, big, 0, nil)
+	d.activeTasks[1] = newActiveFixture(big, small, 0, nil)
+
+	queue := NewTaskQueue()
+	queue.idleWorkers.Add(1)
+	defer queue.Close()
+
+	if !d.isEndGame(queue) {
+		t.Fatal("fixture must start in end-game state")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() { d.runBalancer(ctx, queue) })
+
+	// Wait for the full first end-game tick: stolen half + two racers.
+	deadline := time.Now().Add(3 * time.Second)
+	for queue.Len() < 3 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	wg.Wait()
+
+	drained := queue.DrainRemaining()
+	if len(drained) != 3 {
+		t.Fatalf("drained %d tasks, want 3 (stolen half + victim racer + small racer)", len(drained))
+	}
+
+	stolen := drained[0]
+	if stolen.Offset != big/2 || stolen.Length != big/2 {
+		t.Fatalf("first enqueue = {%d,%d}, want stolen {%d,%d} from the big task",
+			stolen.Offset, stolen.Length, big/2, big/2)
+	}
+	if stolen.SharedMaxOffset != nil {
+		t.Fatal("stolen task is a plain disjoint split: SharedMaxOffset must be nil")
+	}
+
+	// Match the two racers by range: the shrunk victim front [0, big/2) and
+	// the small tail [big, big+small).
+	victim := d.activeTasks[0]
+	victim.SharedMaxOffsetMu.RLock()
+	victimPtr := victim.SharedMaxOffset
+	victim.SharedMaxOffsetMu.RUnlock()
+	if victim.Hedged.Load() != 1 || victimPtr == nil {
+		t.Fatal("overlap band: the post-steal victim must be hedged with a shared pointer")
+	}
+	smallTask := d.activeTasks[1]
+	smallTask.SharedMaxOffsetMu.RLock()
+	smallPtr := smallTask.SharedMaxOffset
+	smallTask.SharedMaxOffsetMu.RUnlock()
+	if smallTask.Hedged.Load() != 1 || smallPtr == nil {
+		t.Fatal("the small tail must be hedged with a shared pointer")
+	}
+
+	var victimRacer, smallRacer *types.Task
+	for i := range drained[1:] {
+		tsk := &drained[i+1]
+		switch {
+		case tsk.Offset == 0 && tsk.Length == big/2:
+			victimRacer = tsk
+		case tsk.Offset == big && tsk.Length == small:
+			smallRacer = tsk
+		}
+	}
+	if victimRacer == nil || victimRacer.SharedMaxOffset != victimPtr {
+		t.Fatal("victim racer must cover [0, big/2) with the victim's SharedMaxOffset")
+	}
+	if smallRacer == nil || smallRacer.SharedMaxOffset != smallPtr {
+		t.Fatal("small racer must cover the small tail with its SharedMaxOffset")
+	}
+
+	// The hedged victim is no longer stealable — the chain is bounded.
+	if d.StealWork(queue) {
+		t.Error("StealWork must refuse once every candidate is hedged")
 	}
 }
 
@@ -747,7 +843,7 @@ func TestHedgeAll_SizeGate(t *testing.T) {
 // [shared, StopAt) is duplicated on the pre-existing pointer.
 func TestHedgeWork_EffectiveRemaining(t *testing.T) {
 	floor := int64(types.MinChunkDynamicFloor)
-	stopAt := int64(2 * utils.MiB)
+	stopAt := int64(2 * types.MaxHedgeChunk)
 
 	shared := &atomic.Int64{}
 	shared.Store(stopAt - floor)
@@ -818,7 +914,7 @@ func TestHedgeWork_EffectiveRemaining(t *testing.T) {
 // to the proactive entry.
 func TestHedgeAll_EffectiveRemaining(t *testing.T) {
 	floor := int64(types.MinChunkDynamicFloor)
-	stopAt := int64(2 * utils.MiB)
+	stopAt := int64(2 * types.MaxHedgeChunk)
 
 	shared := &atomic.Int64{}
 	shared.Store(stopAt - floor)

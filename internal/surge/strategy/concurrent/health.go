@@ -139,8 +139,13 @@ func (d *ConcurrentDownloader) checkWorkerHealth() {
 			workerSpeed := active.GetSpeed()
 			// FORK-PATCH: prefer runtime override (policy layer takeover) over
 			// the static RuntimeConfig value. Override 0 disables this cancel
-			// while stall detection above stays armed.
+			// while multiple tasks are active; when only a single activeTask
+			// remains (CDNDetector exits early on len<=1), fall back to
+			// RuntimeConfig so the global-session-speed tail guard stays armed.
 			threshold := d.slowThresholdOrDefault(d.Runtime.GetSlowWorkerThreshold())
+			if len(d.activeTasks) == 1 && threshold == 0 {
+				threshold = d.Runtime.GetSlowWorkerThreshold()
+			}
 			isBelowThreshold := threshold > 0 && workerSpeed > 0 && workerSpeed < threshold*meanSpeed
 
 			if isBelowThreshold {

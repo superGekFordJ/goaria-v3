@@ -7,6 +7,7 @@ import (
 
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/types"
+	"goaria-v3/internal/surge/utils"
 )
 
 func TestHealth_LastManStanding(t *testing.T) {
@@ -299,4 +300,109 @@ func TestHealth_PublishesWorkerStats(t *testing.T) {
 	if s.WorkerStartUnix != 0 || s.SessionBytes != 0 {
 		t.Errorf("missing session should be zero: start=%d bytes=%d", s.WorkerStartUnix, s.SessionBytes)
 	}
+}
+
+// TestHealth_SingleWorkerOverrideHandoff pins the len(activeTasks)==1 gate on
+// the zero-override fallback: the CDN detector's threshold takeover must not
+// be bypassed while multiple tasks are active — even when only one reports a
+// positive speed sample — but a leftover override=0 must not starve the
+// engine's globalSpeed fallback once a single task remains.
+func TestHealth_SingleWorkerOverrideHandoff(t *testing.T) {
+	now := time.Now()
+	// ~10 MiB/s global session speed (100 MiB verified over ~10s).
+	state := progress.New("test", 200*1024*1024)
+	state.Bytes.VerifiedProgress.Store(100 * 1024 * 1024)
+	state.Session.SetStartTimeForTest(now.Add(-10 * time.Second))
+	d := NewConcurrentDownloader("test", nil, state, &types.RuntimeConfig{
+		SlowWorkerThreshold:   0.30,
+		SlowWorkerGracePeriod: 0,
+	})
+	d.SetSlowWorkerThreshold(0)
+
+	parent := t.Context()
+	// newActive returns a worker past grace/volume/stall guards, isolated to
+	// the relative-speed check. The returned ctx fires when health cancels it.
+	newActive := func(speed float64) (*ActiveTask, context.Context) {
+		wCtx, wCancel := context.WithCancel(parent)
+		at := &ActiveTask{
+			Task:      types.Task{Offset: 0, Length: 10 * utils.MiB},
+			StartTime: now.Add(-10 * time.Second),
+			Speed:     speed,
+			Cancel:    wCancel,
+		}
+		at.CurrentOffset.Store(2 * utils.MiB) // >1MiB volume grace
+		at.StopAt.Store(10 * utils.MiB)
+		at.LastActivity.Store(now.UnixNano())
+		return at, wCtx
+	}
+	cancelled := func(c context.Context) bool {
+		select {
+		case <-c.Done():
+			return true
+		default:
+			return false
+		}
+	}
+
+	slow, slowCtx := newActive(25 * 1024) // 25 KiB/s << 0.30 * ~10MiB/s
+	zero, zeroCtx := newActive(0)         // connected but no speed sample yet
+
+	t.Run("multi_active_override_zero_blocks_cancel", func(t *testing.T) {
+		// speedCount==1 (only slow reports speed) but len(activeTasks)==2 —
+		// override=0 stays authoritative, no engine-side cancel.
+		d.activeTasks[0] = slow
+		d.activeTasks[1] = zero
+		d.checkWorkerHealth()
+		if cancelled(slowCtx) {
+			t.Error("override=0 must hold with 2 active tasks even when speedCount==1")
+		}
+		if cancelled(zeroCtx) {
+			t.Error("zero-speed worker must not be cancelled")
+		}
+	})
+
+	t.Run("single_active_override_zero_falls_back_to_runtime", func(t *testing.T) {
+		// Second worker done — a single active task remains; the leftover
+		// override=0 must fall back to the Runtime threshold.
+		d.activeMu.Lock()
+		delete(d.activeTasks, 1)
+		d.activeMu.Unlock()
+		d.checkWorkerHealth()
+		if !cancelled(slowCtx) {
+			t.Error("single active task with leftover override=0 must fall back to Runtime threshold")
+		}
+	})
+
+	t.Run("single_active_positive_override_respected", func(t *testing.T) {
+		// A positive override still beats the RuntimeConfig threshold on the
+		// single-active path: 4MiB/s is above 0.30*global (3MiB) but below
+		// 0.50*global (5MiB) — only the override can explain a cancel.
+		d2 := NewConcurrentDownloader("test-pos", nil, state, &types.RuntimeConfig{
+			SlowWorkerThreshold:   0.30,
+			SlowWorkerGracePeriod: 0,
+		})
+		d2.SetSlowWorkerThreshold(0.50)
+		at, wCtx := newActive(4 * utils.MiB)
+		d2.activeTasks[0] = at
+		d2.checkWorkerHealth()
+		if !cancelled(wCtx) {
+			t.Error("positive override=0.5 must govern the single-active relative check")
+		}
+	})
+
+	t.Run("single_active_runtime_zero_stays_disabled", func(t *testing.T) {
+		// An explicit Runtime threshold of 0 is a legitimate disable even in
+		// the single-active fallback — nothing is hardcoded back.
+		d3 := NewConcurrentDownloader("test-zero", nil, state, &types.RuntimeConfig{
+			SlowWorkerThreshold:   0,
+			SlowWorkerGracePeriod: 0,
+		})
+		d3.SetSlowWorkerThreshold(0)
+		at, wCtx := newActive(25 * 1024)
+		d3.activeTasks[0] = at
+		d3.checkWorkerHealth()
+		if cancelled(wCtx) {
+			t.Error("Runtime threshold=0 must stay disabled even for the last worker")
+		}
+	})
 }

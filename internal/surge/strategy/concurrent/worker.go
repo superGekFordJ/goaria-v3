@@ -829,16 +829,15 @@ func (d *ConcurrentDownloader) StealWork(queue *TaskQueue) bool {
 		return false
 	}
 
-	// FORK-PATCH: SharedMaxOffset is for HEDGING (racing on the same byte
-	// range). Stealing creates a strictly disjoint, adjacent byte range —
-	// use an independent pointer initialized to stolenStart.
-	newSharedPtr := &atomic.Int64{}
-	newSharedPtr.Store(stolenStart)
-
+	// FORK-PATCH: SharedMaxOffset is exclusively for HEDGING (multiple workers
+	// racing the same byte range). Stealing creates a strictly disjoint
+	// adjacent byte range [stolenStart, originalEnd) after shrinking the
+	// victim's StopAt, so SharedMaxOffset must remain nil — otherwise worker
+	// pickup marks the stolen task Hedged=1 and locks it out of further
+	// StealWork splits, tail hedging, and CDNDetector monitoring.
 	stolenTask := types.Task{
-		Offset:          stolenStart,
-		Length:          originalEnd - stolenStart,
-		SharedMaxOffset: newSharedPtr,
+		Offset: stolenStart,
+		Length: originalEnd - stolenStart,
 	}
 
 	queue.Push(stolenTask)

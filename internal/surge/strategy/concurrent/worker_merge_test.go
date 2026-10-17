@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 )
@@ -88,6 +90,139 @@ func TestWorkerPickup_SharedMaxOffsetMarksHedged(t *testing.T) {
 	at.SharedMaxOffsetMu.RUnlock()
 	if ptr != shared {
 		t.Fatal("picked-up task must propagate the SharedMaxOffset pointer")
+	}
+}
+
+// parkedHeaderHandler holds the request without writing response headers
+// until the request context ends, so a real worker pickup registers the task
+// in activeTasks but never transfers a byte.
+type parkedHeaderHandler struct{}
+
+func (parkedHeaderHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	<-r.Context().Done()
+}
+
+func newParkedHeaderServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := testutil.NewHTTPServerT(t, parkedHeaderHandler{})
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestWorkerPickup_StolenTaskRemainsUnhedged drives the full stolen-worker
+// eligibility chain through a real StealWork split and a real worker pickup:
+// the stolen range registers Hedged=0 with no dedup pointer, stays splittable
+// by a second StealWork, and becomes a real hedge racer once its remaining
+// tail fits under MaxHedgeChunk.
+func TestWorkerPickup_StolenTaskRemainsUnhedged(t *testing.T) {
+	fileSize := int64(16 * utils.MiB)
+	d := NewConcurrentDownloader("pickup-stolen", nil, nil, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * utils.KiB,
+	})
+	srv := newParkedHeaderServer(t)
+
+	// Seed a single victim [0,16MiB) and run a real steal → stolen [8,16MiB).
+	victim := &ActiveTask{Task: types.Task{Offset: 0, Length: fileSize}}
+	victim.CurrentOffset.Store(0)
+	victim.StopAt.Store(fileSize)
+	d.activeMu.Lock()
+	d.activeTasks[0] = victim
+	d.activeMu.Unlock()
+
+	queue := NewTaskQueue()
+	if !d.StealWork(queue) {
+		t.Fatal("StealWork should split the 16MiB victim")
+	}
+	stolen, ok := queue.Pop()
+	if !ok {
+		t.Fatal("expected a stolen task")
+	}
+	if stolen.Offset != 8*utils.MiB || stolen.Length != 8*utils.MiB {
+		t.Fatalf("stolen = {%d,%d}, want {%d,%d}", stolen.Offset, stolen.Length, 8*utils.MiB, 8*utils.MiB)
+	}
+	if stolen.SharedMaxOffset != nil {
+		t.Fatal("stolen task must be a plain disjoint range (nil SharedMaxOffset)")
+	}
+	queue.Push(stolen) // hand back to the picking worker
+
+	// A real worker pops the stolen task and blocks inside the parked server.
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		_ = d.worker(ctx, 1, []string{srv.URL}, nil, queue, fileSize, &http.Client{})
+	})
+	t.Cleanup(func() {
+		cancel()
+		queue.Close()
+		wg.Wait()
+	})
+	var at *ActiveTask
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		d.activeMu.Lock()
+		at = d.activeTasks[1]
+		d.activeMu.Unlock()
+		if at != nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if at == nil {
+		t.Fatal("worker never registered the stolen task")
+	}
+
+	// Pickup must not mark a plain stolen range as a hedge racer.
+	d.activeMu.Lock()
+	hedged := at.Hedged.Load()
+	d.activeMu.Unlock()
+	if hedged != 0 {
+		t.Error("stolen pickup must not mark the task Hedged")
+	}
+	at.SharedMaxOffsetMu.RLock()
+	ptr := at.SharedMaxOffset
+	at.SharedMaxOffsetMu.RUnlock()
+	if ptr != nil {
+		t.Error("stolen pickup must not install SharedMaxOffset")
+	}
+
+	// The stolen task stays splittable: shrink the victim below it so the
+	// stolen worker is the largest-remaining candidate, then steal again.
+	victim.CurrentOffset.Store(4 * utils.MiB)
+	if !d.StealWork(queue) {
+		t.Fatal("a picked-up stolen task must be stealable again")
+	}
+	second, ok := queue.Pop()
+	if !ok {
+		t.Fatal("expected a second stolen task")
+	}
+	if second.Offset != 12*utils.MiB || second.Length != 4*utils.MiB {
+		t.Fatalf("second stolen = {%d,%d}, want {%d,%d}", second.Offset, second.Length, 12*utils.MiB, 4*utils.MiB)
+	}
+	if second.SharedMaxOffset != nil {
+		t.Error("second-generation stolen task must keep SharedMaxOffset nil")
+	}
+
+	// Advance the stolen worker to a <MaxHedgeChunk tail: the same task must
+	// now be hedgeable as a real racer.
+	at.CurrentOffset.Store(at.StopAt.Load() - types.MinChunkDynamicFloor)
+	if !d.HedgeWork(queue) {
+		t.Fatal("a stolen task must be hedgeable once it is a small tail")
+	}
+	if at.Hedged.Load() != 1 {
+		t.Fatal("a real hedge must mark the stolen worker Hedged")
+	}
+	at.SharedMaxOffsetMu.RLock()
+	shared := at.SharedMaxOffset
+	at.SharedMaxOffsetMu.RUnlock()
+	if shared == nil {
+		t.Fatal("a real hedge must install SharedMaxOffset")
+	}
+	racer, ok := queue.Pop()
+	if !ok {
+		t.Fatal("expected a racer task")
+	}
+	if racer.SharedMaxOffset != shared {
+		t.Fatal("racer must carry the same SharedMaxOffset pointer")
 	}
 }
 

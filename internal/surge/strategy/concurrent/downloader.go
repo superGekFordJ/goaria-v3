@@ -81,7 +81,8 @@ type ConcurrentDownloader struct {
 	// FORK-PATCH: runtime override for the relative slow-worker threshold.
 	// When set (slowThresholdSet=true), checkWorkerHealth uses this instead of
 	// RuntimeConfig. A value of 0 disables the relative slow-speed cancel while
-	// leaving stall detection armed.
+	// multiple tasks are active (leaving stall detection and the single-active
+	// global-speed fallback armed).
 	slowThresholdSet      atomic.Bool
 	slowThresholdOverride atomic.Uint64 // math.Float64bits(v)
 

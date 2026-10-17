@@ -8,16 +8,17 @@ import (
 	"goaria-v3/internal/surge/utils"
 )
 
-// TestStealWork_StolenTaskHasIndependentSharedMaxOffset verifies that the
-// stolen task gets a fresh, independent SharedMaxOffset pointer initialized
-// to stolenStart, rather than sharing the original worker's pointer.
-func TestStealWork_StolenTaskHasIndependentSharedMaxOffset(t *testing.T) {
+// TestStealWork_StolenTaskHasNilSharedMaxOffset verifies that the stolen task
+// is a plain disjoint split: neither side carries a dedup pointer (that state
+// is reserved for real hedge racers), the stolen range starts at the victim's
+// reduced StopAt, and it ends at the victim's original end.
+func TestStealWork_StolenTaskHasNilSharedMaxOffset(t *testing.T) {
 	d := &ConcurrentDownloader{
 		activeTasks: make(map[int]*ActiveTask),
 		Runtime:     &types.RuntimeConfig{MinChunkSize: 2 * utils.MiB},
 	}
 
-	// Original worker at offset 0, length 4MB, not yet hedged (SharedMaxOffset nil).
+	// Original worker at offset 0, length 4MB, not hedged (SharedMaxOffset nil).
 	active := &ActiveTask{
 		Task: types.Task{Offset: 0, Length: 4 * utils.MiB},
 	}
@@ -37,24 +38,23 @@ func TestStealWork_StolenTaskHasIndependentSharedMaxOffset(t *testing.T) {
 		t.Fatal("expected a stolen task in the queue")
 	}
 
-	if stolen.SharedMaxOffset == nil {
-		t.Fatal("stolen task SharedMaxOffset should not be nil")
+	if stolen.SharedMaxOffset != nil {
+		t.Error("stolen task is a disjoint range, not a racer: SharedMaxOffset must be nil")
 	}
-	if stolen.SharedMaxOffset == active.SharedMaxOffset {
-		t.Fatal("stolen task should have an independent SharedMaxOffset pointer")
-	}
-	if got := stolen.SharedMaxOffset.Load(); got != stolen.Offset {
-		t.Errorf("stolen SharedMaxOffset = %d, want %d (stolenStart)", got, stolen.Offset)
-	}
-	// Original worker's pointer must be untouched (still nil — never hedged).
 	if active.SharedMaxOffset != nil {
-		t.Errorf("original worker SharedMaxOffset should remain nil, got %v", active.SharedMaxOffset)
+		t.Errorf("never-hedged victim SharedMaxOffset should remain nil, got %v", active.SharedMaxOffset)
+	}
+	if stolen.Offset != 2*utils.MiB || stolen.Length != 2*utils.MiB {
+		t.Errorf("stolen = {%d,%d}, want {%d,%d}", stolen.Offset, stolen.Length, 2*utils.MiB, 2*utils.MiB)
+	}
+	if got := active.StopAt.Load(); got != 2*utils.MiB {
+		t.Errorf("victim StopAt = %d, want %d (aligned half)", got, 2*utils.MiB)
 	}
 }
 
 // TestStealWork_NilSharedMaxOffset_OriginalUnchanged verifies that when the
-// original worker was never hedged (SharedMaxOffset nil), StealWork gives the
-// stolen task an independent pointer and leaves the original nil.
+// original worker was never hedged, StealWork leaves both sides with no dedup
+// state: a plain stolen range and an untouched nil SharedMaxOffset victim.
 func TestStealWork_NilSharedMaxOffset_OriginalUnchanged(t *testing.T) {
 	d := &ConcurrentDownloader{
 		activeTasks: make(map[int]*ActiveTask),
@@ -77,11 +77,8 @@ func TestStealWork_NilSharedMaxOffset_OriginalUnchanged(t *testing.T) {
 	if !ok {
 		t.Fatal("expected a stolen task")
 	}
-	if stolen.SharedMaxOffset == nil {
-		t.Fatal("stolen task should have a non-nil SharedMaxOffset")
-	}
-	if got := stolen.SharedMaxOffset.Load(); got != stolen.Offset {
-		t.Errorf("stolen SharedMaxOffset = %d, want %d", got, stolen.Offset)
+	if stolen.SharedMaxOffset != nil {
+		t.Error("stolen task must keep SharedMaxOffset nil")
 	}
 	if active.SharedMaxOffset != nil {
 		t.Errorf("original SharedMaxOffset should still be nil")
@@ -89,51 +86,36 @@ func TestStealWork_NilSharedMaxOffset_OriginalUnchanged(t *testing.T) {
 }
 
 // TestStealWork_DedupDoesNotMaskOriginalWorker verifies the core Bug A
-// scenario: when the stolen worker advances its independent SharedMaxOffset,
-// the original worker's dedup check is not masked. We simulate the CAS logic
-// from downloadTask with two independent pointers.
+// scenario: with SharedMaxOffset nil on both sides of a stolen split,
+// downloadTask skips the CAS dedup branch entirely — the stolen worker and
+// the original worker each take the else path and count
+// newlyWritten = readSoFar, so neither masks the other's progress.
 func TestStealWork_DedupDoesNotMaskOriginalWorker(t *testing.T) {
-	// Original worker: never hedged → SharedMaxOffset nil → no dedup.
-	// Stolen worker: independent pointer initialized to stolenStart.
-	stolenPtr := &atomic.Int64{}
-	stolenStart := int64(2 * utils.MiB)
-	stolenPtr.Store(stolenStart)
+	// StealWork now leaves SharedMaxOffset nil on both sides — simulate the
+	// dedup branch from downloadTask for both write paths.
+	var stolenPtr, originalPtr *atomic.Int64
 
-	// Simulate the stolen worker downloading 2MB–4MB and advancing its pointer.
-	stolenPtr.Store(4 * utils.MiB)
-
-	// Original worker writes at offset ~0. With nil pointer (never hedged),
-	// downloadTask takes the else branch: newlyWritten = readSoFar (full credit).
-	// This is the correct behavior — no masking.
-	var originalPtr *atomic.Int64
-	var newlyWritten int64
-	readSoFar := int64(4096)
-	offset := int64(4096)
-	rangeStart := int64(0)
-
-	if originalPtr != nil {
-		// Would be masked if sharing the stolen pointer.
-		maxOff := originalPtr.Load()
-		if offset <= maxOff {
-			newlyWritten = 0
-		} else if rangeStart >= maxOff {
-			if originalPtr.CompareAndSwap(maxOff, offset) {
-				newlyWritten = readSoFar
+	credit := func(ptr *atomic.Int64, readSoFar, offset, rangeStart int64) int64 {
+		if ptr != nil {
+			maxOff := ptr.Load()
+			if offset <= maxOff {
+				return 0 // masked by the racing partner
 			}
+			if rangeStart >= maxOff {
+				if ptr.CompareAndSwap(maxOff, offset) {
+					return readSoFar
+				}
+			}
+			return 0
 		}
-	} else {
-		newlyWritten = readSoFar
+		return readSoFar // nil pointer: full credit, no dedup
 	}
 
-	if newlyWritten == 0 {
-		t.Error("original worker's write was masked — Bug A present")
+	readSoFar := int64(4096)
+	if got := credit(originalPtr, readSoFar, 4096, 0); got != readSoFar {
+		t.Errorf("original worker newlyWritten = %d, want %d (full credit, nil pointer)", got, readSoFar)
 	}
-	if newlyWritten != readSoFar {
-		t.Errorf("newlyWritten = %d, want %d (full credit with nil pointer)", newlyWritten, readSoFar)
-	}
-
-	// Confirm the stolen pointer does not affect the original worker's accounting.
-	if got := stolenPtr.Load(); got != 4*utils.MiB {
-		t.Errorf("stolen pointer = %d, want %d (should be independent)", got, 4*utils.MiB)
+	if got := credit(stolenPtr, readSoFar, 3*utils.MiB, 2*utils.MiB); got != readSoFar {
+		t.Errorf("stolen worker newlyWritten = %d, want %d (full credit, nil pointer)", got, readSoFar)
 	}
 }

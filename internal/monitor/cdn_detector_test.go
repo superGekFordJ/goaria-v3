@@ -536,3 +536,80 @@ func TestCDNDetector_ThresholdReissuedAfterGap(t *testing.T) {
 		t.Errorf("threshold after resume = %v, want 0 (re-armed)", got)
 	}
 }
+
+// TestCDNDetector_StolenWorkerEligibility pins the contract the engine's
+// nil-pointer steal split relies on: the snapshot has no "stolen" origin
+// field, so a worker carrying a stolen range reports Hedged=false and is
+// treated like any other mature worker — steady-slow beside a healthy peer
+// is killable after the sustain window. A genuinely hedged twin
+// (Hedged=true) stays warmup-exempt.
+func TestCDNDetector_StolenWorkerEligibility(t *testing.T) {
+	run := func(hedged bool) *mockCDNControl {
+		ctrl := newMockCDNControl()
+		stolen := matureWorker(1, 100*utils.KiB, 206) // steady-slow tail worker
+		stolen.Hedged = hedged
+		setStats(ctrl, stolen, matureWorker(2, 5*utils.MiB, 206))
+		d, clock := newTestDetector(ctrl)
+		for range 18 {
+			advanceTick(d, clock)
+		}
+		return ctrl
+	}
+
+	if ctrl := run(false); ctrl.killsCount() == 0 {
+		t.Error("mature Hedged=false worker beside a healthy peer must be killable after the window")
+	} else if ctrl.kills[0].workerID != 1 {
+		t.Errorf("killed worker %d, want 1 (the slow one)", ctrl.kills[0].workerID)
+	}
+	if ctrl := run(true); ctrl.killsCount() != 0 {
+		t.Errorf("Hedged=true worker must stay exempt, got %d kills", ctrl.killsCount())
+	}
+}
+
+// TestCDNDetector_SingleWorkerHandoffContract pins the ownership boundary the
+// engine's single-active globalSpeed fallback relies on: while >=2 workers
+// are reported the detector holds the slow-threshold override at 0 (it owns
+// relative-slow disposal); when a gid drops to a single worker the detector
+// must stay hands-off — no Kill, no Drain, and no fabricated threshold
+// "reset" — so the engine's own fallback can resume. Back at >=2 workers it
+// re-issues the takeover.
+func TestCDNDetector_SingleWorkerHandoffContract(t *testing.T) {
+	ctrl := newMockCDNControl()
+	slow := matureWorker(1, 100*utils.KiB, 206)
+	fast := matureWorker(2, 5*utils.MiB, 206)
+	setStats(ctrl, slow, fast)
+	d, clock := newTestDetector(ctrl)
+
+	// Two workers: detector writes override 0 and owns slow-worker disposal.
+	advanceTick(d, clock)
+	if got := ctrl.thresholds["test"]; got != 0 {
+		t.Fatalf("two workers: threshold = %v, want 0 (takeover)", got)
+	}
+
+	// Handoff to a single worker: hands-off. The sentinel proves no write —
+	// neither a re-issued 0 nor an invented non-zero "reset".
+	ctrl.mu.Lock()
+	ctrl.thresholds["test"] = -1
+	ctrl.mu.Unlock()
+	setStats(ctrl, matureWorker(1, 25*utils.KiB, 206))
+	for range 10 {
+		advanceTick(d, clock)
+	}
+	if ctrl.killsCount() != 0 || ctrl.drainsCount() != 0 {
+		t.Fatalf("single worker must never be killed/drained: kills=%d drains=%d",
+			ctrl.killsCount(), ctrl.drainsCount())
+	}
+	ctrl.mu.Lock()
+	got := ctrl.thresholds["test"]
+	ctrl.mu.Unlock()
+	if got != -1 {
+		t.Errorf("single-worker ticks must not touch the threshold, wrote %v", got)
+	}
+
+	// Back to two workers: the detector resumes control on the next tick.
+	setStats(ctrl, slow, fast)
+	advanceTick(d, clock)
+	if got := ctrl.thresholds["test"]; got != 0 {
+		t.Errorf("threshold after scale-back = %v, want 0 (control resumed)", got)
+	}
+}

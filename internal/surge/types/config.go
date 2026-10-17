@@ -73,18 +73,17 @@ const (
 	// work stealing to split smaller chunks, utilizing idle workers in the tail phase.
 	MinChunkDynamicFloor = 512 * utils.KiB
 
-	// FORK-PATCH: Hedge size ceiling. Only remaining ranges strictly below this
-	// boundary may be duplicated for racing; larger ranges stay splittable by
-	// StealWork. Equals the smallest splittable remainder at the floor, so the
-	// hedge/steal size handoff is exact once the dynamic minimum has degraded
-	// to MinChunkDynamicFloor. While the dynamic minimum sits above the floor
-	// (normal-phase defaultMinChunk), the band [MaxHedgeChunk, ~2*dynMin) is
-	// intentionally neither splittable nor hedgeable.
-	MaxHedgeChunk = 2 * MinChunkDynamicFloor
+	// FORK-PATCH: Hedge size ceiling (4 MiB = 2 * default MinChunk). Only
+	// remaining ranges strictly below this boundary may be duplicated for
+	// racing; larger ranges must be split by StealWork first. In the tail
+	// overlap band [2*MinChunkDynamicFloor, MaxHedgeChunk), on-demand
+	// runBalancer ticks try StealWork before HedgeWork, while post-loop
+	// HedgeAll may immediately race a freshly-split sub-MaxHedgeChunk tail.
+	MaxHedgeChunk = 4 * utils.MiB
 
 	// FORK-PATCH: Global end-game cap — proactive hedge engages only while the
 	// summed remaining bytes of all active tasks stay at or below this bound.
-	EndGameMaxRemaining = 4 * utils.MiB
+	EndGameMaxRemaining = 16 * utils.MiB
 )
 
 // ByteLimiter abstracts byte-based throttling for downloads.
