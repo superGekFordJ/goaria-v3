@@ -224,6 +224,13 @@ func TestWorkerPickup_StolenTaskRemainsUnhedged(t *testing.T) {
 	if racer.SharedMaxOffset != shared {
 		t.Fatal("racer must carry the same SharedMaxOffset pointer")
 	}
+	// The racer must duplicate exactly the remaining tail [current, StopAt):
+	// after the second steal StopAt is 12MiB, so [11.5MiB, 12MiB).
+	wantOff := int64(12*utils.MiB) - types.MinChunkDynamicFloor
+	if racer.Offset != wantOff || racer.Length != types.MinChunkDynamicFloor {
+		t.Fatalf("racer = {%d,%d}, want {%d,%d} (remaining tail of the stolen worker)",
+			racer.Offset, racer.Length, wantOff, int64(types.MinChunkDynamicFloor))
+	}
 }
 
 func TestStealWork_SkipsHedgedTasks(t *testing.T) {
