@@ -389,6 +389,10 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 	c.mu.Lock()
 	prevGids := c.prevActiveGids
 	prevOcc := c.prevActiveOccupancy
+	// Same-GID pause→resume inside one tick gap leaves no membership trace;
+	// collect it per-GID so the dirty window below can still invalidate the
+	// poisoned sample span.
+	reActivated := make(map[string]bool)
 	for i := range sampled {
 		if !strings.HasPrefix(sampled[i].GID, "sg_") {
 			continue
@@ -396,6 +400,9 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 		if s, ok := c.states[sampled[i].GID]; ok && s != nil {
 			sampled[i].RawBps = s.lastRawBps
 			sampled[i].MacroReady = s.macroReady
+			if stateReActivatedInWindow(s, sampled[i].ActivatedAt) {
+				reActivated[sampled[i].GID] = true
+			}
 		}
 	}
 	margins := make([]verdictMarginRef, len(surgeTasks))
@@ -412,18 +419,38 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 	} else {
 		netDelta, changedDomains, perturbUnknown = occupancyDelta(sampled, activeGids, prevGids, prevOcc, now)
 	}
+	// A hidden re-activation must not count as this domain's clean unlock
+	// confirmation. Merge only after the diff assigns changedDomains, and
+	// keep the bootstrap "first sight resets nothing" discipline.
+	if prevOcc != nil {
+		for gid := range reActivated {
+			if info, ok := activeGids[gid]; ok && info.Scope != "" && info.Domain != "" {
+				changedDomains[limitKey(info.Scope, info.Domain)] = true
+			}
+		}
+	}
 	c.mu.Unlock()
 
 	// A task is affected only when the net occupancy shift reaches half the
 	// throughput its pending decision window can move. Margin-less windows
-	// degrade conservatively once perturbation is non-zero or unknown.
+	// degrade conservatively once perturbation is non-zero or unknown. A
+	// re-activated GID is dirty on its own — without widening the
+	// margin-less fallback for unaffected peers.
+	hasPerturbation := perturbUnknown || netDelta > 0
 	var affected map[string]bool
-	if perturbUnknown || netDelta > 0 {
+	if hasPerturbation || len(reActivated) > 0 {
 		affected = make(map[string]bool, len(surgeTasks))
 		for i := range surgeTasks {
-			margin, ok := probeMarginThreshold(margins[i])
-			if perturbUnknown || !ok || float64(netDelta) >= margin {
-				affected[surgeTasks[i].GID] = true
+			gid := surgeTasks[i].GID
+			if reActivated[gid] {
+				affected[gid] = true
+				continue
+			}
+			if hasPerturbation {
+				margin, ok := probeMarginThreshold(margins[i])
+				if perturbUnknown || !ok || float64(netDelta) >= margin {
+					affected[gid] = true
+				}
 			}
 		}
 	}
@@ -1136,6 +1163,26 @@ func verdictMargin(s *convergenceState, workers int) verdictMarginRef {
 	}
 }
 
+// stateReActivatedInWindow reports whether a same-GID pause→resume landed
+// strictly inside the last sample window: the GID never left the sampled
+// set, so only a newer activation anchor betrays it. The check reads the
+// pre-update anchor; callers hold c.mu. Missing state, missing anchor, and
+// anchor-less legacy rows never match.
+func stateReActivatedInWindow(s *convergenceState, activatedAt time.Time) bool {
+	return s != nil && !s.prevSampleAt.IsZero() && !activatedAt.IsZero() && activatedAt.After(s.prevSampleAt)
+}
+
+// advanceSampleAnchor returns the left endpoint of the next sample window,
+// never before this run's activation anchor. Tick capture can lag a µs-late
+// ObserveActivation; anchoring below ActivatedAt would re-fire the
+// re-activation detector on the next clean tick.
+func advanceSampleAnchor(now, activatedAt time.Time) time.Time {
+	if activatedAt.After(now) {
+		return activatedAt
+	}
+	return now
+}
+
 // probeMarginThreshold is the occupancy shift that could plausibly flip the
 // gated verdict — half the throughput the decision window can move by.
 // Malformed windows report ok=false so callers can degrade conservatively.
@@ -1302,26 +1349,27 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 	gid := task.GID
 
 	if len(stats) == 0 {
-		if affected {
-			// Telemetry gap on a dirty tick: an armed verdict must not
-			// survive to be judged across a pollution-spanning window.
-			// Cancel it and re-base the sample window so the next measured
-			// tick cannot double-count the gap. Existing state only —
-			// never create state on a no-telemetry path.
-			c.mu.Lock()
-			if s := c.states[gid]; s != nil {
-				s.cancelPendingVerdict()
-				if s.probeCooldown > 0 {
-					s.probeCooldown--
-				}
-				if s.frozenCooldown > 0 {
-					s.frozenCooldown--
-				}
-				s.prevCompleted = max(task.CompletedLength, 0)
-				s.prevSampleAt = now
+		// Telemetry gap on a dirty tick: an armed verdict must not
+		// survive to be judged across a pollution-spanning window.
+		// Detection runs under the lock — a same-window pause→resume is
+		// invisible to the caller's affected flag. Cancel it and re-base
+		// the sample window so the next measured tick cannot double-count
+		// the gap. Existing state only — never create state on a
+		// no-telemetry path.
+		c.mu.Lock()
+		s := c.states[gid]
+		if isDirty := affected || stateReActivatedInWindow(s, task.ActivatedAt); isDirty && s != nil {
+			s.cancelPendingVerdict()
+			if s.probeCooldown > 0 {
+				s.probeCooldown--
 			}
-			c.mu.Unlock()
+			if s.frozenCooldown > 0 {
+				s.frozenCooldown--
+			}
+			s.prevCompleted = max(task.CompletedLength, 0)
+			s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		}
+		c.mu.Unlock()
 		return pendingScale{}, false
 	}
 
@@ -1354,11 +1402,16 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 	s := c.getOrCreateState(gid)
 	defer c.mu.Unlock()
 
+	// A same-window pause→resume poisons every in-flight verdict and the
+	// terminal-peak write below even on an externally clean tick — detect
+	// it on the pre-update anchor before any branch re-bases the window.
+	affected = affected || stateReActivatedInWindow(s, task.ActivatedAt)
+
 	// Tail blackout zone: per-gid permanent sleep when totalRemaining <
 	// activeWorkers × effectiveMinChunk. Blackout is permanent — never reset.
 	if s.blackout {
 		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 
@@ -1406,7 +1459,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 			}
 
 			s.prevCompleted = task.CompletedLength
-			s.prevSampleAt = now
+			s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 			return pendingScale{}, false
 		}
 	}
@@ -1419,7 +1472,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 		// with a real timestamp is a valid baseline, not a missing one.
 		// Clamp a pathological negative like the anomaly re-base does.
 		s.prevCompleted = max(task.CompletedLength, 0)
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 
@@ -1430,7 +1483,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 		// the baseline it spanned no longer exists.
 		s.cancelPendingVerdict()
 		s.prevCompleted = max(task.CompletedLength, 0)
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 	if s.prevCompleted < 0 || task.CompletedLength < 0 || task.CompletedLength < s.prevCompleted {
@@ -1441,7 +1494,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 		s.macroReady = true
 		s.cancelPendingVerdict()
 		s.prevCompleted = max(task.CompletedLength, 0)
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 	rawBps := clampedBps(float64(task.CompletedLength-s.prevCompleted) / dt.Seconds())
@@ -1462,7 +1515,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 			s.frozenCooldown--
 		}
 		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 
@@ -1473,7 +1526,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 		s.phase = phaseStable
 		s.sustainCount = 0 // C3: reset so peakSustainCycles stability is required after settling
 		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 
@@ -1566,7 +1619,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 			s.probeUpBaselineWorkers = 0
 			s.probeUpDelta = 0
 			s.prevCompleted = task.CompletedLength
-			s.prevSampleAt = now
+			s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 			return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: -rebound}, true
 		}
 	}
@@ -1626,7 +1679,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 				c.peakRecorder.RecordPeakEfficiency(gid, rawBps, currentWorkers)
 			}
 			s.prevCompleted = task.CompletedLength
-			s.prevSampleAt = now
+			s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 			s.lastStep = 0
 			if rebound > 0 {
 				log.Printf("[convergence] knee-crossed: gid=%s raw=%d baseline=%d dropRatio=%.2f rebound=+%d floorHit",
@@ -1660,7 +1713,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 				s.ceilingMemory = 0
 				s.frozenCooldown = 0
 				s.prevCompleted = task.CompletedLength
-				s.prevSampleAt = now
+				s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 				return pendingScale{}, false
 			}
 		} else {
@@ -1678,7 +1731,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 			s.ceilingMemory = 0
 		}
 		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 
@@ -1701,7 +1754,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 				s.floorMemory = 0
 				s.frozenCooldown = 0
 				s.prevCompleted = task.CompletedLength
-				s.prevSampleAt = now
+				s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 				return pendingScale{}, false
 			}
 		} else {
@@ -1719,7 +1772,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 			s.floorMemory = 0
 		}
 		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 
@@ -1735,7 +1788,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 			log.Printf("[convergence] frozen-expired: gid=%s allowing cold re-probe", gid)
 		}
 		s.prevCompleted = task.CompletedLength
-		s.prevSampleAt = now
+		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 		return pendingScale{}, false
 	}
 
@@ -1791,7 +1844,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 						s.probeUpDelta = delta
 						s.phase = phaseProbingUp
 						s.prevCompleted = task.CompletedLength
-						s.prevSampleAt = now
+						s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 						log.Printf("[convergence] probe-up: gid=%s workers=%d baseline=%d",
 							gid, currentWorkers, rawBps)
 						return pendingScale{gid: gid, scope: task.Scope, domain: task.Domain, envKey: task.EnvKey, delta: delta}, true
@@ -1822,7 +1875,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 				// probe-down cycle (probeBaseline=0 dead zone).
 				if rawBps == 0 {
 					s.prevCompleted = task.CompletedLength
-					s.prevSampleAt = now
+					s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 					return pendingScale{}, false
 				}
 
@@ -1837,7 +1890,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 					s.probeBaselineWorkers = currentWorkers
 					s.phase = phaseSettling
 					s.prevCompleted = task.CompletedLength
-					s.prevSampleAt = now
+					s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 					log.Printf("[convergence] probe-down: gid=%s workers=%d step=%d baseline=%d momentum=%v",
 						gid, currentWorkers, step, rawBps, s.probeMomentum)
 					if c.peakRecorder != nil && rawBps > 0 && currentWorkers > 0 {
@@ -1859,7 +1912,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 	}
 
 	s.prevCompleted = task.CompletedLength
-	s.prevSampleAt = now
+	s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
 	return pendingScale{}, false
 }
 
