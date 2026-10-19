@@ -286,45 +286,79 @@ func TestConvergence_FloorHit_KneeFrozenSet(t *testing.T) {
 	}
 }
 
-func TestConvergence_FloorHit_PartialDrainReboundRespectsMax(t *testing.T) {
-	speedstats.ResetRecordsForTest()
-	t.Cleanup(speedstats.ResetRecordsForTest)
+// TestConvergence_FloorHit_PartialDrainVoidAndReboundClamp covers the
+// exact-step verdict gate at the rebound boundary: a baseline-8/step-8
+// request observed at 7 workers is a partial drain (actualStep 1 ≠ 8), so
+// the experiment voids without knee/rebound — while a baseline-8/step-1
+// request observed at 7 workers is an exact match whose knee rebound is
+// still clamped by the per-task max.
+func TestConvergence_FloorHit_PartialDrainVoidAndReboundClamp(t *testing.T) {
+	setup := func(t *testing.T, lastStep int) (*ConvergenceTicker, *mockTracker) {
+		t.Helper()
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
 
-	gid := "sg_floor_partial_max"
-	tracker := &mockTracker{
-		tasks: []TrackedTaskInfo{
-			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
-		},
-	}
-	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{gid: makeWorkers(7, 2*1024*1024)}}
-	ct := NewConvergenceTicker(
-		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
-		tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 8,
-	)
-	ct.limits.Clear(limitKey("wan", "example.com"))
-	ct.mu.Lock()
-	s := ct.getOrCreateState(gid)
-	s.phase = phaseStable
-	s.lastStep = 8
-	s.probeBaseline = 32 * 1024 * 1024
-	s.probeBaselineWorkers = 8
-	s.probeMomentum = true
-	s.probeCooldown = 0
-	s.prevCompleted = 100 * 1024 * 1024
-	setPrevSampleAgoState(s, 5*time.Second)
-	ct.mu.Unlock()
+		gid := "sg_floor_partial_max"
+		tracker := &mockTracker{
+			tasks: []TrackedTaskInfo{
+				{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * 1024 * 1024},
+			},
+		}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{gid: makeWorkers(7, 2*1024*1024)}}
+		ct := NewConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry, &mockPeakRecorder{}, &mockRateChecker{}, 0, 8,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		ct.limits.Clear(limitKey("wan", "example.com"))
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.lastStep = lastStep
+		s.probeBaseline = 32 * 1024 * 1024
+		s.probeBaselineWorkers = 8
+		s.probeMomentum = true
+		s.probeCooldown = 0
+		s.prevCompleted = 100 * 1024 * 1024
+		setPrevSampleAgoState(s, 5*time.Second)
+		ct.mu.Unlock()
 
-	telemetry.data[gid] = makeWorkers(7, 2*1024*1024)
-	tracker.tasks[0].CompletedLength = 114 * 1024 * 1024
-	ct.mu.Lock()
-	setPrevSampleAgoState(ct.states[gid], 5*time.Second)
-	ct.mu.Unlock()
+		tracker.tasks[0].CompletedLength = 114 * 1024 * 1024
+		return ct, tracker
+	}
 
-	ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
-	if !ok || ps.delta <= 0 {
-		t.Fatalf("expected clamped rebound, got ok=%v delta=%d", ok, ps.delta)
-	}
-	if 7+ps.delta > 8 {
-		t.Fatalf("rebound %d would exceed max from current 7", ps.delta)
-	}
+	t.Run("partial_drain_voids", func(t *testing.T) {
+		ct, tracker := setup(t, 8) // requested 8 of 8, observed 1 of 8
+
+		ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
+		if ok && ps.delta != 0 {
+			t.Fatalf("partial drain must not emit scale work, got delta=%d", ps.delta)
+		}
+		ct.mu.Lock()
+		s := ct.states["sg_floor_partial_max"]
+		ct.mu.Unlock()
+		if s.lastStep != 0 || s.probeBaseline != 0 || s.probeBaselineWorkers != 0 {
+			t.Fatalf("void must clear pending fields: step=%d baseline=%d@%d",
+				s.lastStep, s.probeBaseline, s.probeBaselineWorkers)
+		}
+		if s.probeMomentum || s.kneeFrozen || s.phase != phaseStable {
+			t.Fatalf("void must avoid momentum/knee: momentum=%v knee=%v phase=%d",
+				s.probeMomentum, s.kneeFrozen, s.phase)
+		}
+		if s.probeCooldown != probeIntervalCycles {
+			t.Fatalf("void must apply probe cooldown %d, got %d", probeIntervalCycles, s.probeCooldown)
+		}
+	})
+
+	t.Run("complete_step_rebound_respects_max", func(t *testing.T) {
+		ct, tracker := setup(t, 1) // requested 1 of 8, observed 8→7 exactly
+
+		ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
+		if !ok || ps.delta <= 0 {
+			t.Fatalf("expected clamped rebound, got ok=%v delta=%d", ok, ps.delta)
+		}
+		if 7+ps.delta > 8 {
+			t.Fatalf("rebound %d would exceed max from current 7", ps.delta)
+		}
+	})
 }

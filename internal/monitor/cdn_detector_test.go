@@ -613,3 +613,95 @@ func TestCDNDetector_SingleWorkerHandoffContract(t *testing.T) {
 		t.Errorf("threshold after scale-back = %v, want 0 (control resumed)", got)
 	}
 }
+
+// TestCDNDetector_DrainWorker_CooldownApplied verifies a successful drain
+// consumes the same action slot as a kill: the drained worker's lastKill /
+// heldSince / killCount bookkeeping is written at the drain instant, the
+// per-worker cooldown blocks an immediate re-drain, and — because the
+// drained worker's snapshot is retained in telemetry — a second eligible
+// worker is not starved by the one-action-per-tick slot.
+func TestCDNDetector_DrainWorker_CooldownApplied(t *testing.T) {
+	ctrl := newMockCDNControl()
+	setStats(ctrl,
+		matureWorker(1, 100, 206),         // dead, lowest ID → drains first
+		matureWorker(3, 100, 206),         // dead, second candidate
+		matureWorker(2, 5*utils.MiB, 206), // healthy peer
+	)
+	d, clock := newTestDetector(ctrl)
+
+	// Seed both candidates at the drain threshold: killCount >= cdnMaxKillCount
+	// routes verdict actions to DrainWorker instead of KillWorker.
+	d.mu.Lock()
+	d.getWorkerStateLocked("sg_test", 1).killCount = cdnMaxKillCount
+	d.getWorkerStateLocked("sg_test", 3).killCount = cdnMaxKillCount
+	d.mu.Unlock()
+
+	// Drive ticks; capture the first drain instant per worker plus every
+	// re-drain on worker 1 for the cooldown assertions.
+	var firstW1, firstW3 time.Time
+	var w1Drains []time.Time
+	seen := 0
+	bookkeepingChecked := false
+	for range 30 {
+		advanceTick(d, clock)
+		for seen < ctrl.drainsCount() {
+			wid := ctrl.drains[seen].workerID
+			switch wid {
+			case 1:
+				w1Drains = append(w1Drains, *clock)
+				if firstW1.IsZero() {
+					firstW1 = *clock
+					// Bookkeeping parity with a kill, read at the drain tick.
+					d.mu.Lock()
+					ws1 := d.getWorkerStateLocked("sg_test", 1)
+					lastKill, held, kc := ws1.lastKill, ws1.heldSince, ws1.killCount
+					d.mu.Unlock()
+					if !lastKill.Equal(*clock) {
+						t.Errorf("drain must arm cdnActionCooldown: lastKill=%v want %v", lastKill, *clock)
+					}
+					if !held.IsZero() {
+						t.Errorf("drain must clear the sustain timer, heldSince=%v", held)
+					}
+					if kc != cdnMaxKillCount+1 {
+						t.Errorf("drain must count as an action: killCount=%d, want %d", kc, cdnMaxKillCount+1)
+					}
+					bookkeepingChecked = true
+				}
+			case 3:
+				if firstW3.IsZero() {
+					firstW3 = *clock
+				}
+			}
+			seen++
+		}
+	}
+	if firstW1.IsZero() {
+		t.Fatal("expected worker 1 to drain after sustain")
+	}
+	if !bookkeepingChecked {
+		t.Fatal("bookkeeping was never sampled")
+	}
+	if ctrl.killsCount() != 0 {
+		t.Fatalf("killCount-threshold workers must drain, not kill: kills=%d", ctrl.killsCount())
+	}
+	if ctrl.drains[0].workerID != 1 {
+		t.Fatalf("first drain hit worker %d, want 1 (lowest eligible ID)", ctrl.drains[0].workerID)
+	}
+
+	// No re-drain inside the cooldown window; expiry re-arms the same path.
+	for i, at := range w1Drains {
+		if i > 0 && at.Sub(w1Drains[0]) < cdnActionCooldown {
+			t.Errorf("worker 1 re-drained inside cooldown: first=%v again=%v", w1Drains[0], at)
+		}
+	}
+
+	// Starvation: worker 3's verdict matures while worker 1's snapshot is
+	// retained. With missing bookkeeping the retained verdict on worker 1
+	// would re-fire every tick and own the one-action slot forever.
+	if firstW3.IsZero() {
+		t.Fatal("worker 3 never drained — retained draining snapshot starved the slot")
+	}
+	if gap := firstW3.Sub(firstW1); gap > 2*cdnDetectorInterval {
+		t.Errorf("worker 3 starved %v after worker 1, want the next tick or two", gap)
+	}
+}

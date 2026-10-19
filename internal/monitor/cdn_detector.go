@@ -220,6 +220,10 @@ func (d *CDNDetector) evaluateGid(gid, rawGid string, stats []types.WorkerSnapsh
 			ws := d.getWorkerStateForFire(gid, wid)
 			if ws.killCount >= cdnMaxKillCount {
 				if d.control.DrainWorker(rawGid, wid) {
+					// A successful drain consumes the same action slot as a
+					// kill: without its cooldown/sustain reset the retained
+					// draining snapshot starves later eligible workers.
+					d.recordKill(gid, wid, now)
 					log.Printf("cdn-throttle-drain: gid=%s worker=%d killCount=%d reason=%s", gid, wid, ws.killCount, reason)
 					return
 				}

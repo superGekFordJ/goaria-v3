@@ -134,6 +134,18 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			activeTask.WindowStart = now
 			activeTask.WindowBytes.Store(0)
 			activeTask.LastActivity.Store(now.UnixNano())
+			// FORK-PATCH: inherit a drain that landed before this attempt
+			// published — the persistent marker covers map-absent gaps (worker
+			// blocked in Pop or between Pop and registration), the flag covers
+			// a drain that found the entry while Cancel was still nil. Cancel
+			// under the same lock keeps the ordering: whichever side wins
+			// activeMu sees the other.
+			if _, marked := d.drainingWorkers.Load(id); marked {
+				activeTask.Draining.Store(true)
+			}
+			if activeTask.Draining.Load() {
+				taskCancel()
+			}
 			d.activeMu.Unlock()
 			// FORK-PATCH: Record retry attempt count for N_max fuse telemetry.
 			// Uses genericAttempt (NOT rlRetries) — rate-limit retries are
@@ -247,7 +259,9 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 							// cycle cancel→requeue forever at frozen VP. Clean up
 							// per the early-exit convention; do NOT fall through
 							// to break (post-loop would re-Push the same residual).
-							if d.recordNoProgressRequeue(time.Now()) {
+							// Intentional drain is not stalled progress: skip
+							// the fuse entirely for this residual.
+							if !activeTask.Draining.Load() && d.recordNoProgressRequeue(time.Now()) {
 								d.activeMu.Lock()
 								delete(d.activeTasks, id)
 								d.activeMu.Unlock()
@@ -373,7 +387,10 @@ func (d *ConcurrentDownloader) worker(ctx context.Context, id int, mirrors []str
 			// skipped here and that dedicated channel always decides first.
 			// The sentinel reaches executeWorkers for initial workers; scaled
 			// workers forward it best-effort (existing non-blocking send).
-			if activeTask.LastHTTPStatus.Load() != http.StatusForbidden &&
+			// Draining workers are exempt: the residual Push is intentional
+			// teardown, not evidence of a frozen-VP rotation.
+			if !activeTask.Draining.Load() &&
+				activeTask.LastHTTPStatus.Load() != http.StatusForbidden &&
 				d.recordNoProgressRequeue(time.Now()) {
 				utils.Debug("Worker %d: no-progress fuse tripped (%d residual requeues, VP frozen)", id, noProgressResidualExhaustions)
 				return fmt.Errorf("%w: %d residual requeues without verified progress", types.ErrNoProgress, noProgressResidualExhaustions)

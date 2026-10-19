@@ -2,6 +2,7 @@ package concurrent
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -17,11 +18,12 @@ import (
 )
 
 // TestDrainWorker_MarksDraining verifies that DrainWorker sets both the
-// drainingWorkers map entry and the ActiveTask.Draining flag.
+// drainingWorkers map entry and the ActiveTask.Draining flag, and cancels
+// the in-flight attempt under activeMu.
 func TestDrainWorker_MarksDraining(t *testing.T) {
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
 
-	_, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	active := &ActiveTask{Cancel: cancel}
@@ -38,6 +40,33 @@ func TestDrainWorker_MarksDraining(t *testing.T) {
 
 	if _, draining := d.drainingWorkers.Load(0); !draining {
 		t.Error("drainingWorkers should contain worker 0")
+	}
+
+	select {
+	case <-ctx.Done():
+		// Interruptive drain cancels the in-flight attempt.
+	case <-time.After(time.Second):
+		t.Error("DrainWorker must cancel the in-flight attempt context")
+	}
+}
+
+// TestDrainWorker_MappedNilCancel covers the mapped-nil active-task case:
+// an entry registered without a published Cancel still gets flagged — the
+// drain is inherited when the next attempt publishes its cancel.
+func TestDrainWorker_MappedNilCancel(t *testing.T) {
+	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
+
+	active := &ActiveTask{} // Cancel not yet published
+	d.activeTasks[7] = active
+
+	if !d.DrainWorker(7) {
+		t.Fatal("DrainWorker should return true for mapped worker without Cancel")
+	}
+	if !active.Draining.Load() {
+		t.Error("Draining flag must be set even when Cancel is nil")
+	}
+	if _, draining := d.drainingWorkers.Load(7); !draining {
+		t.Error("persistent marker must be stored")
 	}
 }
 
@@ -56,9 +85,10 @@ func TestDrainWorker_NotFound(t *testing.T) {
 	}
 }
 
-// TestDrainWorker_ExitsAfterCurrentChunk verifies that a drained worker
-// completes its current chunk but does not pick up new tasks from the queue.
-func TestDrainWorker_ExitsAfterCurrentChunk(t *testing.T) {
+// TestDrainWorker_InterruptsInFlightChunk verifies that a drained worker's
+// in-flight attempt is cancelled mid-chunk: the worker exits promptly, the
+// unfinished range is requeued, and no new task is picked up.
+func TestDrainWorker_InterruptsInFlightChunk(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
@@ -143,21 +173,21 @@ func TestDrainWorker_ExitsAfterCurrentChunk(t *testing.T) {
 	cancel()
 }
 
-// TestDrainWorker_IdleWorker_DesignLimit documents and verifies the design
-// limitation of draining an idle worker: a worker blocked on queue.Pop()
-// cannot be interrupted by the drain flag. If a task arrives after drain,
-// the worker will execute it (completing the in-flight task) and then exit
-// on the next loop iteration when the drain check fires.
-func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
+// TestDrainWorker_IdleWorker_PublicationGap closes the marker-before-
+// publication gap: a worker blocked in queue.Pop() holds no activeTasks
+// entry when the drain lands, so only the persistent marker is stored. When
+// a task is pushed afterwards the worker registers and publishes its
+// per-attempt cancel — the marker check inside that same critical section
+// must flag and immediately cancel the attempt. The tarpit body proves the
+// cancel landed: without it the worker would block in Read until timeout.
+func TestDrainWorker_IdleWorker_PublicationGap(t *testing.T) {
 	tmpDir, cleanup := initTestState(t)
 	defer cleanup()
 
 	fileSize := int64(64 * utils.KiB)
-	server := testutil.NewMockServerT(t,
-		testutil.WithFileSize(fileSize),
-		testutil.WithRangeSupport(true),
-	)
-	defer server.Close()
+	// 206 headers, zero body bytes, holds the connection — any attempt the
+	// drain fails to inherit blocks forever in resp.Body.Read().
+	server := newTarpitServer(t, fileSize, 0, 0)
 
 	destPath := filepath.Join(tmpDir, "drain_idle.bin")
 	workingPath := destPath + types.IncompleteSuffix
@@ -170,20 +200,23 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{
 		WorkerBufferSize: 32 * utils.KiB,
+		MaxTaskRetries:   1,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	queue := NewTaskQueue()
+	defer queue.Close()
 
 	workerID := int(d.nextWorkerID.Add(1)) - 1
 	d.workerWg.Go(func() {
-		_ = d.worker(ctx, workerID, []string{server.URL()}, f, queue, fileSize, &http.Client{})
+		_ = d.worker(ctx, workerID, []string{server.URL}, f, queue, fileSize, &http.Client{})
 	})
 
 	time.Sleep(100 * time.Millisecond)
 
+	// Drain while the worker is parked in Pop — no ActiveTask exists yet.
 	d.DrainWorker(workerID)
 
 	queue.Push(types.Task{Offset: 0, Length: fileSize})
@@ -197,18 +230,21 @@ func TestDrainWorker_IdleWorker_DesignLimit(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(30 * time.Second):
+	case <-time.After(10 * time.Second):
 		cancel()
-		queue.Close()
-		t.Fatal("Idle drained worker did not exit after task completion")
+		t.Fatal("drained worker blocked in tarpit read — publication did not inherit the marker")
 	}
 
-	remaining := queue.Len()
-	if remaining < 1 {
-		t.Errorf("Expected at least 1 remaining task (drain should prevent 2nd pickup), got %d", remaining)
+	if remaining := queue.Len(); remaining < 1 {
+		t.Errorf("cancelled attempt must requeue its residual, got %d queued", remaining)
 	}
 
-	queue.Close()
+	d.activeMu.Lock()
+	_, exists := d.activeTasks[workerID]
+	d.activeMu.Unlock()
+	if exists {
+		t.Error("drained worker must be removed from activeTasks on exit")
+	}
 }
 
 // TestDrainWorker_IdleWorker_QueueClose verifies that an idle drained worker
@@ -244,6 +280,162 @@ func TestDrainWorker_IdleWorker_QueueClose(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatal("Idle worker did not exit after queue close")
+	}
+}
+
+// TestDrainWorker_InterruptsBlockedRead drains a worker parked in a real
+// blocked HTTP body read (206 headers + partial bytes, then a tarpit hold).
+// The interruptive drain must unwind the attempt promptly: the written
+// prefix stays committed (residual starts after it), the residual range is
+// requeued un-shrunk, the worker is removed from activeTasks exactly once,
+// and ActiveWorkers returns to zero.
+func TestDrainWorker_InterruptsBlockedRead(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	const partial = int64(64 * utils.KiB)
+	fileSize := int64(256 * utils.KiB)
+	server := newTarpitServer(t, fileSize, partial, 0)
+
+	workingPath := filepath.Join(tmpDir, "drain_block.surge")
+	f, err := os.Create(workingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	state := progress.New("drain-block", fileSize)
+	d := NewConcurrentDownloader("drain-block", nil, state, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * utils.KiB,
+		MaxTaskRetries:   1,
+	})
+
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 0, Length: fileSize})
+	defer queue.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	workerID := int(d.nextWorkerID.Add(1)) - 1
+	done := make(chan error, 1)
+	d.workerWg.Go(func() {
+		done <- d.worker(ctx, workerID, []string{server.URL}, f, queue, fileSize, &http.Client{})
+	})
+
+	waitForActiveTask(t, d, workerID, 5*time.Second)
+
+	// Wait until the partial prefix is committed and the body read is parked.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		d.activeMu.Lock()
+		at := d.activeTasks[workerID]
+		d.activeMu.Unlock()
+		if at == nil {
+			t.Fatal("active task disappeared before drain")
+		}
+		if at.CurrentOffset.Load() >= partial {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("worker never committed the partial prefix (offset=%d)", at.CurrentOffset.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	d.DrainWorker(workerID)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("drained worker returned non-nil error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("interruptive drain did not unwind the blocked body read")
+	}
+
+	// Residual coverage: only the committed prefix is skipped — the drained
+	// range restarts exactly at the written offset.
+	remaining, ok := queue.Pop()
+	if !ok {
+		t.Fatal("expected the unfinished range to be requeued")
+	}
+	if remaining.Offset != partial || remaining.Length != fileSize-partial {
+		t.Fatalf("residual = [%d+%d), want [%d+%d)", remaining.Offset, remaining.Length, partial, fileSize-partial)
+	}
+
+	// Exactly-once cleanup: one map delete, one ActiveWorkers decrement.
+	d.activeMu.Lock()
+	_, exists := d.activeTasks[workerID]
+	d.activeMu.Unlock()
+	if exists {
+		t.Error("drained worker must be removed from activeTasks on exit")
+	}
+	if got := state.ActiveWorkers.Load(); got != 0 {
+		t.Errorf("ActiveWorkers=%d after drain exit, want 0", got)
+	}
+}
+
+// TestDrainWorker_NoProgressFuseExempt verifies an intentional drain's
+// residual requeue is not counted by the no-progress fuse — even with the
+// fuse armed to trip on a single event, the drained worker exits cleanly.
+func TestDrainWorker_NoProgressFuseExempt(t *testing.T) {
+	tmpDir, cleanup := initTestState(t)
+	defer cleanup()
+
+	setNoProgressGuardTestLimits(t, 1, 50*time.Millisecond)
+
+	fileSize := int64(64 * utils.KiB)
+	server := newTarpitServer(t, fileSize, 8*utils.KiB, 0)
+
+	workingPath := filepath.Join(tmpDir, "drain_fuse.surge")
+	f, err := os.Create(workingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	state := progress.New("drain-fuse", fileSize)
+	d := NewConcurrentDownloader("drain-fuse", nil, state, &types.RuntimeConfig{
+		WorkerBufferSize: 32 * utils.KiB,
+		MaxTaskRetries:   1,
+	})
+
+	queue := NewTaskQueue()
+	queue.Push(types.Task{Offset: 0, Length: fileSize})
+	defer queue.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	workerID := int(d.nextWorkerID.Add(1)) - 1
+	done := make(chan error, 1)
+	d.workerWg.Go(func() {
+		done <- d.worker(ctx, workerID, []string{server.URL}, f, queue, fileSize, &http.Client{})
+	})
+
+	waitForActiveTask(t, d, workerID, 5*time.Second)
+	d.DrainWorker(workerID)
+
+	select {
+	case err := <-done:
+		if errors.Is(err, types.ErrNoProgress) {
+			t.Fatal("intentional drain must not trip the no-progress fuse")
+		}
+		if err != nil {
+			t.Fatalf("drained worker returned non-nil error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("drained worker did not exit")
+	}
+
+	d.noProgressGuard.mu.Lock()
+	exhaustions := d.noProgressGuard.exhaustions
+	d.noProgressGuard.mu.Unlock()
+	if exhaustions != 0 {
+		t.Fatalf("drain residual counted by the fuse: exhaustions=%d, want 0", exhaustions)
 	}
 }
 
@@ -405,7 +597,7 @@ func TestScaleWorkers_Up(t *testing.T) {
 }
 
 // TestScaleWorkers_Down verifies that ScaleWorkers with negative delta
-// drains the slowest worker.
+// drains the slowest worker and interrupts its in-flight attempt.
 func TestScaleWorkers_Down(t *testing.T) {
 	d := NewConcurrentDownloader("test", nil, nil, &types.RuntimeConfig{})
 
@@ -457,8 +649,9 @@ func TestScaleWorkers_Down(t *testing.T) {
 
 	select {
 	case <-w2Ctx.Done():
-		t.Error("Drained worker context should NOT be cancelled (drain is graceful)")
-	default:
+		// Interruptive drain cancels the in-flight attempt under activeMu.
+	case <-time.After(time.Second):
+		t.Error("Drained worker context should be cancelled (interruptive drain)")
 	}
 }
 

@@ -171,7 +171,8 @@ func TestConvergence_Settling_NoDecision(t *testing.T) {
 	}
 	telemetry := &mockTelemetry{
 		data: map[string][]types.WorkerSnapshot{
-			gid: makeWorkers(8, 2*1024*1024),
+			// Physical post-drain headcount: baseline 8, step 1 → target 7.
+			gid: makeWorkers(7, 2*1024*1024),
 		},
 	}
 
@@ -237,7 +238,8 @@ func TestConvergence_MultiTask_WindowInvalidation(t *testing.T) {
 		}
 		telemetry := &mockTelemetry{
 			data: map[string][]types.WorkerSnapshot{
-				gid1: makeWorkers(4, 2*1024*1024),
+				// Physical post-drain headcount: baseline 4, step 1 → target 3.
+				gid1: makeWorkers(3, 2*1024*1024),
 				gid2: makeWorkers(4, 2*1024*1024),
 			},
 		}
@@ -601,9 +603,10 @@ func TestConvergence_M1_CongestionTrapEscape(t *testing.T) {
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
 
-	// Tick 3: throughput improved to 64MB/s after probe-down
+	// Tick 3: physical drain completed 8→7; throughput improved to 64MB/s.
 	// actualDrop clamped to 0 (speed increased) → dropRatio=0 ≤ 0.5 → success → momentum ignited
 	// 64MB/s * 5s = 320MB delta; prevCompleted=60MB → CompletedLength=380MB
+	telemetry.data[gid] = makeWorkers(7, 2*1024*1024)
 	tracker.tasks[0].CompletedLength = 380 * 1024 * 1024
 	ct.tick()
 
@@ -656,9 +659,10 @@ func TestConvergence_M2_M3_KneeCrossingReboundAndZeroScale(t *testing.T) {
 	setPrevSampleAgoState(s, 5*time.Second)
 	ct.mu.Unlock()
 
-	// Throughput crashed to 30MB/s after probe-down.
+	// Physical drain completed 8→7; throughput crashed to 30MB/s after probe-down.
 	// Marginal Drop Ratio: expectedDrop=1/8=0.125, actualDrop=1-30/50=0.4, dropRatio=0.4/0.125=3.2 > 0.5
 	// → knee crossed → rebound issued (delta>0), kneeFrozen=true, phase=frozen
+	telemetry.data[gid] = makeWorkers(7, 2*1024*1024)
 	tracker.tasks[0].CompletedLength = 130 * 1024 * 1024 // +30MB in 5s = 30MB/s
 	ct.tick()
 
@@ -696,7 +700,8 @@ func TestConvergence_C3_SustainCountResetOnSettling(t *testing.T) {
 	}
 	telemetry := &mockTelemetry{
 		data: map[string][]types.WorkerSnapshot{
-			gid: makeWorkers(8, 2*1024*1024),
+			// Physical post-drain headcount: baseline 8, step 1 → target 7.
+			gid: makeWorkers(7, 2*1024*1024),
 		},
 	}
 
@@ -811,7 +816,8 @@ func TestConvergence_m2_InvalidationResetsLastStepAndPhase(t *testing.T) {
 		}
 		telemetry := &mockTelemetry{
 			data: map[string][]types.WorkerSnapshot{
-				gid1: makeWorkers(4, 2*1024*1024),
+				// Physical post-drain headcount: baseline 4, step 1 → target 3.
+				gid1: makeWorkers(3, 2*1024*1024),
 				gid2: makeWorkers(4, 2*1024*1024),
 			},
 		}
@@ -1605,8 +1611,10 @@ func TestConvergence_LocalWindow_ProbeDownBothWindows(t *testing.T) {
 	mb := int64(1024 * 1024)
 	settle := "sg_pd_settle" // margin 0.5*(40/4)*1 = 5MB → affected by E=10MB
 	stable := "sg_pd_stable" // margin 5MB → affected
-	high := "sg_pd_highm"    // margin 0.5*(40/1)*8 = 160MB → unaffected
-	donor := "ar_pd_donor"   // 10MB exit → E=10MB
+	// Physically valid large-step window: 12→4 is exactly step 8.
+	// margin 0.5*(40/12)*8 ≈ 13.3MB → unaffected by E=10MB.
+	high := "sg_pd_highm"
+	donor := "ar_pd_donor" // 10MB exit → E=10MB
 	t0 := time.Now()
 	tracker := &mockTracker{tasks: []TrackedTaskInfo{
 		{GID: settle, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "a.com", CompletedLength: 10 * mb},
@@ -1620,7 +1628,7 @@ func TestConvergence_LocalWindow_ProbeDownBothWindows(t *testing.T) {
 	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 		settle: makeWorkers(4, 2*1024*1024),
 		stable: makeWorkers(4, 2*1024*1024),
-		// Above the probe floor so a successful verdict keeps momentum.
+		// 12→4: exact step-8 drain; still above the probe floor for the combo.
 		high: makeWorkers(4, 2*1024*1024),
 	}}
 	ct := newTestConvergenceTicker(
@@ -1645,14 +1653,18 @@ func TestConvergence_LocalWindow_ProbeDownBothWindows(t *testing.T) {
 	ct.mu.Lock()
 	arm(settle, phaseSettling, 1, 40*mb, 4)
 	arm(stable, phaseStable, 1, 40*mb, 4)
-	arm(high, phaseStable, 8, 40*mb, 1)
+	arm(high, phaseStable, 8, 40*mb, 12)
 	ct.mu.Unlock()
 
-	// Drop donor → E=10MB. All survivors progress 50MB in 5s → raw=10MB/s.
+	// Drop donor → E=10MB. settle/stable progress 50MB in 5s → raw=10MB/s.
+	// high progresses 160MB in 5s → raw=32MB/s so its clean verdict lands in
+	// plateau territory: actualDrop 0.2 vs expectedDrop 8/12 ≈ 0.667 →
+	// dropRatio 0.3 ≤ 0.5 → success → momentum.
 	tracker.tasks = tracker.tasks[:3]
 	for i := range tracker.tasks {
 		tracker.tasks[i].CompletedLength = 60 * mb
 	}
+	tracker.tasks[2].CompletedLength = 170 * mb
 	ct.tickAt(t0.Add(5 * time.Second))
 
 	ct.mu.Lock()
@@ -1692,9 +1704,9 @@ func TestConvergence_LocalWindow_ProbeDownBothWindows(t *testing.T) {
 		}
 	}
 
-	// Same perturbation, high margin: the verdict still evaluates.
-	// raw=10MB vs baseline=40MB → actualDrop 0.75, expectedDrop 8 →
-	// dropRatio ≈ 0.09 ≤ 0.5 → plateau success → momentum set.
+	// Same perturbation, high margin: the verdict still evaluates on the
+	// exact-step physical drain (12→4). Plateau success → momentum; the
+	// momentum-combo re-probe's engine no-op consumes the fresh step.
 	if sHigh == nil {
 		t.Fatal("high-margin state missing")
 	}
@@ -1702,7 +1714,7 @@ func TestConvergence_LocalWindow_ProbeDownBothWindows(t *testing.T) {
 		t.Errorf("high-margin verdict must still evaluate: momentum=%v lastStep=%d",
 			sHigh.probeMomentum, sHigh.lastStep)
 	}
-	if sHigh.lastRawBps != 10*mb || !sHigh.macroReady {
+	if sHigh.lastRawBps != 32*mb || !sHigh.macroReady {
 		t.Errorf("unaffected task D2 unaffected: raw=%d ready=%v", sHigh.lastRawBps, sHigh.macroReady)
 	}
 }
@@ -1889,4 +1901,574 @@ func TestConvergence_LocalWindow_SamplingDegrades(t *testing.T) {
 			t.Fatalf("overflow must clamp to MaxInt64, got %d", s.lastRawBps)
 		}
 	})
+}
+
+// TestProbeDown_SettleProlonged_UntilDrained verifies the physical headcount
+// gate on the settling window: while observed workers stay above the
+// requested post-drain target the experiment counts eligible observations
+// and stays in settling — D2/raw and the sample anchors still advance, but
+// no verdict, D3 adoption, or new probe may run. The tick the exact target
+// appears completes the experiment: wait/sustain reset, stable phase, step
+// and baselines retained, the mixed window re-anchored unjudged — and only
+// a later clean same-count sample may produce the verdict's momentum.
+func TestProbeDown_SettleProlonged_UntilDrained(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	mb := int64(1024 * 1024)
+	gid := "sg_pd_prolonged"
+	tracker := &mockTracker{tasks: []TrackedTaskInfo{
+		{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 10 * mb},
+	}}
+	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+		gid: makeWorkers(9, 2*1024*1024),
+	}}
+	ct := newTestConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry,
+	)
+	defer ct.Stop()
+	ct.limits.Clear(limitKey("wan", "example.com"))
+
+	t0 := time.Now()
+	ct.tickAt(t0)
+
+	// Arm an in-flight probe-down: baseline 9 workers, requested step 1 →
+	// target headcount 8.
+	ct.mu.Lock()
+	s := ct.states[gid]
+	s.phase = phaseSettling
+	s.lastStep = 1
+	s.probeBaseline = 40 * mb
+	s.probeBaselineWorkers = 9
+	s.probeMomentum = true
+	s.prevCompleted = 10 * mb
+	s.prevSampleAt = t0
+	s.sustainCount = 3
+	s.peakWorkers = 9
+	ct.mu.Unlock()
+
+	// Two incomplete observations at the old headcount.
+	for i := 1; i <= 2; i++ {
+		tick := t0.Add(time.Duration(i) * 5 * time.Second)
+		tracker.tasks[0].CompletedLength = 10*mb + int64(i)*50*mb
+		ct.tickAt(tick)
+
+		ct.mu.Lock()
+		s = ct.states[gid]
+		ct.mu.Unlock()
+		if s.phase != phaseSettling {
+			t.Fatalf("tick %d: incomplete drain must stay settling, phase=%d", i, s.phase)
+		}
+		if s.settleWaitTicks != i {
+			t.Fatalf("tick %d: settleWaitTicks=%d, want %d", i, s.settleWaitTicks, i)
+		}
+		if s.lastStep != 1 || s.probeBaseline != 40*mb || s.probeBaselineWorkers != 9 {
+			t.Fatalf("tick %d: probe baseline fields must be preserved: step=%d baseline=%d@%d",
+				i, s.lastStep, s.probeBaseline, s.probeBaselineWorkers)
+		}
+		if s.lastRawBps != 10*mb || !s.macroReady {
+			t.Fatalf("tick %d: D2 must still publish raw=10MB/s: raw=%d ready=%v",
+				i, s.lastRawBps, s.macroReady)
+		}
+		if !s.prevSampleAt.Equal(tick) {
+			t.Fatalf("tick %d: sample anchor must advance to the tick", i)
+		}
+		if !s.probeMomentum || s.kneeFrozen {
+			t.Fatalf("tick %d: no verdict may run while settling: momentum=%v knee=%v",
+				i, s.probeMomentum, s.kneeFrozen)
+		}
+	}
+
+	// Exact target observed: settle completes — wait/sustain reset, stable,
+	// step + baseline retained, the mixed window re-anchored unjudged.
+	telemetry.data[gid] = makeWorkers(8, 2*1024*1024)
+	t3 := t0.Add(15 * time.Second)
+	tracker.tasks[0].CompletedLength = 10*mb + 150*mb
+	ct.tickAt(t3)
+
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if s.phase != phaseStable {
+		t.Fatalf("target headcount must complete settling: phase=%d", s.phase)
+	}
+	if s.settleWaitTicks != 0 || s.sustainCount != 0 {
+		t.Fatalf("completion must reset wait/sustain: wait=%d sustain=%d", s.settleWaitTicks, s.sustainCount)
+	}
+	if s.lastStep != 1 || s.probeBaseline != 40*mb || s.probeBaselineWorkers != 9 {
+		t.Fatalf("pending verdict fields must be retained: step=%d baseline=%d@%d",
+			s.lastStep, s.probeBaseline, s.probeBaselineWorkers)
+	}
+	if !s.prevSampleAt.Equal(t3) {
+		t.Fatalf("completion must re-anchor the mixed window")
+	}
+	if !s.probeMomentum || s.kneeFrozen {
+		t.Fatalf("mixed-window judgment forbidden: momentum=%v knee=%v", s.probeMomentum, s.kneeFrozen)
+	}
+
+	// Clean 8-worker tick: the exact-step gate passes (9-8==1) and a plateau
+	// raw produces the ordinary success — momentum stays, step consumed.
+	t4 := t0.Add(20 * time.Second)
+	tracker.tasks[0].CompletedLength = 10*mb + 150*mb + 40*mb*5 // raw 40MB/s == baseline
+	ct.tickAt(t4)
+
+	ct.mu.Lock()
+	s = ct.states[gid]
+	ct.mu.Unlock()
+	if !s.probeMomentum {
+		t.Fatalf("clean verdict tick must produce plateau success: momentum=%v", s.probeMomentum)
+	}
+	if s.phase != phaseStable || s.lastStep != 0 {
+		t.Fatalf("success consumes the step: phase=%d lastStep=%d", s.phase, s.lastStep)
+	}
+}
+
+// TestProbeDown_SettleTimeout_Abandon covers the four-observation settling
+// timeout: eligible observations that never reach the requested headcount —
+// including positive-but-partial reductions — abandon the experiment on the
+// fourth tick. An observation that reaches the target on the fourth tick
+// completes normally and must not be timed out.
+func TestProbeDown_SettleTimeout_Abandon(t *testing.T) {
+	mb := int64(1024 * 1024)
+	setup := func(t *testing.T) (*ConvergenceTicker, *mockTracker, *mockTelemetry, time.Time) {
+		t.Helper()
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		gid := "sg_pd_timeout"
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 10 * mb},
+		}}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(12, 2*1024*1024),
+		}}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		ct.limits.Clear(limitKey("wan", "example.com"))
+		t0 := time.Now()
+		ct.tickAt(t0)
+
+		// Baseline 12 workers, requested step 3 → target headcount 9.
+		ct.mu.Lock()
+		s := ct.states[gid]
+		s.phase = phaseSettling
+		s.lastStep = 3
+		s.probeBaseline = 40 * mb
+		s.probeBaselineWorkers = 12
+		s.probeMomentum = true
+		s.prevCompleted = 10 * mb
+		s.prevSampleAt = t0
+		ct.mu.Unlock()
+		return ct, tracker, telemetry, t0
+	}
+
+	t.Run("four_incomplete_observations_abandon", func(t *testing.T) {
+		ct, tracker, telemetry, t0 := setup(t)
+		gid := "sg_pd_timeout"
+		// 12 = no drain; 11 and 10 = positive-but-partial multi-worker
+		// reductions — all above the target of 9.
+		for i, workers := range []int{12, 11, 10, 12} {
+			telemetry.data[gid] = makeWorkers(workers, 2*1024*1024)
+			tracker.tasks[0].CompletedLength = 10*mb + int64(i+1)*50*mb
+			ct.tickAt(t0.Add(time.Duration(i+1) * 5 * time.Second))
+
+			ct.mu.Lock()
+			s := ct.states[gid]
+			ct.mu.Unlock()
+			if i < 3 {
+				if s.phase != phaseSettling || s.settleWaitTicks != i+1 {
+					t.Fatalf("obs %d: must wait: phase=%d wait=%d", i+1, s.phase, s.settleWaitTicks)
+				}
+				continue
+			}
+			// Fourth incomplete observation abandons the experiment.
+			if s.phase != phaseStable {
+				t.Fatalf("abandon must rest at stable, phase=%d", s.phase)
+			}
+			if s.lastStep != 0 || s.probeBaseline != 0 || s.probeBaselineWorkers != 0 {
+				t.Fatalf("abandon must clear down-probe fields: step=%d baseline=%d@%d",
+					s.lastStep, s.probeBaseline, s.probeBaselineWorkers)
+			}
+			if s.settleWaitTicks != 0 || s.probeMomentum {
+				t.Fatalf("abandon must clear wait and momentum: wait=%d momentum=%v",
+					s.settleWaitTicks, s.probeMomentum)
+			}
+			if s.probeCooldown != probeIntervalCycles {
+				t.Fatalf("abandon cooldown=%d, want %d", s.probeCooldown, probeIntervalCycles)
+			}
+			if s.kneeFrozen || s.phase == phaseFloorHit {
+				t.Fatalf("abandon must not rebound: knee=%v phase=%d", s.kneeFrozen, s.phase)
+			}
+		}
+	})
+
+	t.Run("target_on_fourth_observation_completes", func(t *testing.T) {
+		ct, tracker, telemetry, t0 := setup(t)
+		gid := "sg_pd_timeout"
+		for i, workers := range []int{12, 12, 12, 9} {
+			telemetry.data[gid] = makeWorkers(workers, 2*1024*1024)
+			tracker.tasks[0].CompletedLength = 10*mb + int64(i+1)*50*mb
+			ct.tickAt(t0.Add(time.Duration(i+1) * 5 * time.Second))
+		}
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if s.phase != phaseStable || s.lastStep != 3 {
+			t.Fatalf("target on tick 4 must complete, not time out: phase=%d lastStep=%d",
+				s.phase, s.lastStep)
+		}
+		if s.settleWaitTicks != 0 {
+			t.Fatalf("completion resets the wait counter, got %d", s.settleWaitTicks)
+		}
+		if s.probeBaseline != 40*mb || s.probeBaselineWorkers != 12 {
+			t.Fatalf("verdict fields must be retained for the clean tick")
+		}
+	})
+}
+
+// TestProbeDown_UncontrolledDrop_Void covers the exact-step verdict gate:
+// the D4 marginal-drop verdict only runs when the observed physical
+// reduction equals the requested step exactly. Zero, negative, partial, and
+// excessive reductions all void the experiment unjudged — no plateau
+// success, no momentum, no knee/rebound, no immediate new probe — while the
+// equality controls keep exercising the ordinary plateau and knee paths.
+func TestProbeDown_UncontrolledDrop_Void(t *testing.T) {
+	mb := int64(1024 * 1024)
+	gid := "sg_pd_void"
+	for _, tc := range []struct {
+		name            string
+		baselineWorkers int
+		step            int
+		currentWorkers  int
+	}{
+		{"zero_step", 8, 1, 8},
+		{"negative_reduction", 8, 1, 10},
+		{"partial_reduction", 16, 2, 15},
+		{"excessive_reduction", 9, 1, 6},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			speedstats.ResetRecordsForTest()
+			t.Cleanup(speedstats.ResetRecordsForTest)
+			tracker := &mockTracker{tasks: []TrackedTaskInfo{
+				{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * mb},
+			}}
+			telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+				gid: makeWorkers(tc.currentWorkers, 2*1024*1024),
+			}}
+			ct := newTestConvergenceTicker(
+				rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+				tracker, telemetry,
+			)
+			defer ct.Stop()
+			ct.limits.Clear(limitKey("wan", "example.com"))
+
+			ct.mu.Lock()
+			s := ct.getOrCreateState(gid)
+			s.phase = phaseStable
+			s.lastStep = tc.step
+			s.probeBaseline = 50 * mb
+			s.probeBaselineWorkers = tc.baselineWorkers
+			s.probeMomentum = true
+			s.probeCooldown = 0
+			s.prevCompleted = 100 * mb
+			setPrevSampleAgoState(s, 5*time.Second)
+			ct.mu.Unlock()
+
+			tracker.tasks[0].CompletedLength = 114 * mb // raw 2.8MB/s
+			ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
+			if ok && ps.delta != 0 {
+				t.Fatalf("uncontrolled drain must not emit scale work, got delta=%d", ps.delta)
+			}
+			ct.mu.Lock()
+			s = ct.states[gid]
+			ct.mu.Unlock()
+			if s.lastStep != 0 || s.probeBaseline != 0 || s.probeBaselineWorkers != 0 {
+				t.Fatalf("void must clear pending fields: step=%d baseline=%d@%d",
+					s.lastStep, s.probeBaseline, s.probeBaselineWorkers)
+			}
+			if s.probeMomentum || s.kneeFrozen || s.phase != phaseStable {
+				t.Fatalf("void must avoid momentum/knee: momentum=%v knee=%v phase=%d",
+					s.probeMomentum, s.kneeFrozen, s.phase)
+			}
+			if s.probeCooldown != probeIntervalCycles {
+				t.Fatalf("void must apply probe cooldown %d, got %d", probeIntervalCycles, s.probeCooldown)
+			}
+		})
+	}
+
+	// Equality controls: baseline 8, step 1, observed 7 → the verdict runs.
+	setupControl := func(t *testing.T) (*ConvergenceTicker, *mockTracker) {
+		t.Helper()
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", Domain: "example.com", IsKeepAlive: true, CompletedLength: 100 * mb},
+		}}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(7, 2*1024*1024),
+		}}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		ct.limits.Clear(limitKey("wan", "example.com"))
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.lastStep = 1
+		s.probeBaseline = 50 * mb
+		s.probeBaselineWorkers = 8
+		s.probeCooldown = 0
+		s.prevCompleted = 100 * mb
+		setPrevSampleAgoState(s, 5*time.Second)
+		ct.mu.Unlock()
+		return ct, tracker
+	}
+
+	t.Run("equality_plateau", func(t *testing.T) {
+		ct, tracker := setupControl(t)
+		// raw 50MB/s == baseline → actualDrop 0 → dropRatio 0 → success.
+		tracker.tasks[0].CompletedLength = 100*mb + 50*mb*5
+		ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if !s.probeMomentum {
+			t.Fatalf("exact-step plateau must ignite momentum")
+		}
+		if s.kneeFrozen {
+			t.Fatalf("plateau must not freeze the knee")
+		}
+	})
+
+	t.Run("equality_knee", func(t *testing.T) {
+		ct, tracker := setupControl(t)
+		// raw 30MB/s vs baseline 50MB/s → dropRatio 3.2 > 0.5 → knee + rebound.
+		tracker.tasks[0].CompletedLength = 130 * mb
+		ps, ok := ct.processTask(tracker.tasks[0], false, nil, nil, nil, time.Now())
+		if !ok || ps.delta <= 0 {
+			t.Fatalf("exact-step knee must rebound, got ok=%v delta=%d", ok, ps.delta)
+		}
+		ct.mu.Lock()
+		s := ct.states[gid]
+		ct.mu.Unlock()
+		if !s.kneeFrozen || s.phase != phaseFloorHit {
+			t.Fatalf("exact-step knee must lock: knee=%v phase=%d", s.kneeFrozen, s.phase)
+		}
+	})
+}
+
+// TestProbeDown_SettleWaitReset covers every reset path for the settling
+// wait counter: dirty windows (with and without stats), broken time windows,
+// counter regressions, fresh probe starts, and zero-result scale cleanup —
+// while raw/ready and long-term memory keep their existing semantics.
+func TestProbeDown_SettleWaitReset(t *testing.T) {
+	mb := int64(1024 * 1024)
+	gid := "sg_pd_waitreset"
+
+	newFixture := func(t *testing.T) (*ConvergenceTicker, *mockTracker, *mockTelemetry) {
+		t.Helper()
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		tracker := &mockTracker{tasks: []TrackedTaskInfo{
+			{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 60 * mb},
+		}}
+		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+			gid: makeWorkers(9, 2*1024*1024),
+		}}
+		ct := newTestConvergenceTicker(
+			rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+			tracker, telemetry,
+		)
+		t.Cleanup(func() { ct.Stop() })
+		ct.limits.Clear(limitKey("wan", "example.com"))
+		return ct, tracker, telemetry
+	}
+
+	seedSettling := func(ct *ConvergenceTicker, t0 time.Time) {
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseSettling
+		s.lastStep = 1
+		s.probeBaseline = 40 * mb
+		s.probeBaselineWorkers = 9
+		s.settleWaitTicks = 2
+		s.prevCompleted = 10 * mb
+		s.prevSampleAt = t0
+		s.sustainCount = 4
+		s.peakSpeed = 50 * mb
+		s.peakWorkers = 9
+		ct.mu.Unlock()
+	}
+
+	assertReset := func(t *testing.T, ct *ConvergenceTicker) *convergenceState {
+		t.Helper()
+		ct.mu.Lock()
+		defer ct.mu.Unlock()
+		s := ct.states[gid]
+		if s == nil {
+			t.Fatal("expected state")
+		}
+		if s.settleWaitTicks != 0 {
+			t.Fatalf("settleWaitTicks=%d, want 0", s.settleWaitTicks)
+		}
+		return s
+	}
+
+	t.Run("dirty_stats", func(t *testing.T) {
+		ct, tracker, telemetry := newFixture(t)
+		t0 := time.Now()
+		seedSettling(ct, t0)
+		ct.processTaskStats(tracker.tasks[0], telemetry.data[gid], true, nil, nil, nil, t0.Add(5*time.Second))
+		s := assertReset(t, ct)
+		if s.lastStep != 0 || s.probeBaseline != 0 {
+			t.Fatalf("dirty tick must cancel the pending verdict")
+		}
+		if s.lastRawBps != 10*mb || !s.macroReady {
+			t.Fatalf("D2 must publish on the dirty tick: raw=%d ready=%v", s.lastRawBps, s.macroReady)
+		}
+		if s.sustainCount != 4 || s.peakSpeed != 50*mb {
+			t.Fatalf("long-term memory must survive")
+		}
+	})
+
+	t.Run("dirty_empty_stats", func(t *testing.T) {
+		ct, tracker, _ := newFixture(t)
+		t0 := time.Now()
+		seedSettling(ct, t0)
+		ct.processTaskStats(tracker.tasks[0], nil, true, nil, nil, nil, t0.Add(5*time.Second))
+		s := assertReset(t, ct)
+		if s.lastStep != 0 {
+			t.Fatalf("empty-stats dirty tick must cancel the pending verdict")
+		}
+	})
+
+	t.Run("dt_nonpositive", func(t *testing.T) {
+		ct, tracker, telemetry := newFixture(t)
+		t0 := time.Now()
+		seedSettling(ct, t0)
+		ct.mu.Lock()
+		ct.states[gid].prevSampleAt = t0.Add(10 * time.Second) // future anchor → dt<0
+		ct.mu.Unlock()
+		ct.processTaskStats(tracker.tasks[0], telemetry.data[gid], false, nil, nil, nil, t0.Add(5*time.Second))
+		assertReset(t, ct)
+	})
+
+	t.Run("counter_regression", func(t *testing.T) {
+		ct, tracker, telemetry := newFixture(t)
+		t0 := time.Now()
+		seedSettling(ct, t0)
+		tracker.tasks[0].CompletedLength = 5 * mb // below prevCompleted=10mb
+		ct.processTaskStats(tracker.tasks[0], telemetry.data[gid], false, nil, nil, nil, t0.Add(5*time.Second))
+		s := assertReset(t, ct)
+		if s.lastRawBps != 0 || !s.macroReady {
+			t.Fatalf("regression publishes measured zero: raw=%d ready=%v", s.lastRawBps, s.macroReady)
+		}
+	})
+
+	t.Run("fresh_probe_start", func(t *testing.T) {
+		ct, tracker, telemetry := newFixture(t)
+		t0 := time.Now()
+		// Stable state with momentum → the combo path issues the next
+		// probe-down immediately (cooldown 0, peak armed).
+		ct.mu.Lock()
+		s := ct.getOrCreateState(gid)
+		s.phase = phaseStable
+		s.probeCooldown = 0
+		s.probeMomentum = true
+		s.peakWorkers = 9
+		s.sustainCount = 4
+		s.settleWaitTicks = 2
+		s.prevCompleted = 10 * mb
+		s.prevSampleAt = t0
+		ct.mu.Unlock()
+		ps, ok := ct.processTaskStats(tracker.tasks[0], telemetry.data[gid], false, nil, nil, nil, t0.Add(5*time.Second))
+		if !ok || ps.delta >= 0 {
+			t.Fatalf("expected a fresh probe-down, got ok=%v delta=%d", ok, ps.delta)
+		}
+		s = assertReset(t, ct)
+		if s.phase != phaseSettling || s.lastStep <= 0 {
+			t.Fatalf("fresh probe must arm settling: phase=%d step=%d", s.phase, s.lastStep)
+		}
+	})
+
+	t.Run("zero_result_scale_cleanup", func(t *testing.T) {
+		ct, tracker, _ := newFixture(t)
+		t0 := time.Now()
+		ct.tickAt(t0)
+		ct.mu.Lock()
+		s := ct.states[gid]
+		s.phase = phaseStable
+		s.probeCooldown = 0
+		s.probeMomentum = true
+		s.peakWorkers = 9
+		s.sustainCount = 4
+		s.settleWaitTicks = 2
+		ct.mu.Unlock()
+		tracker.tasks[0].CompletedLength = 110 * mb // raw 10MB/s
+		// tickAt applies the issued probe-down to the engine; the nil pool
+		// returns 0, running the zero-result cleanup that also clears wait.
+		ct.tickAt(t0.Add(5 * time.Second))
+		s = assertReset(t, ct)
+		if s.lastStep != 0 || s.phase != phaseStable {
+			t.Fatalf("zero-scale cleanup must disarm: step=%d phase=%d", s.lastStep, s.phase)
+		}
+	})
+}
+
+// TestProbeDown_ReleaseElectionWaitsForVerdict verifies that release
+// election — free +1 and deferred settlement alike — skips tasks whose
+// Probe-Down verdict is still open: a settling phase, or a stable phase
+// carrying a pending lastStep. A stable task with no pending step remains
+// eligible under ordinary telemetry/headroom.
+func TestProbeDown_ReleaseElectionWaitsForVerdict(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+
+	mb := int64(1024 * 1024)
+	gid := "sg_release_wait"
+	tracker := &mockTracker{tasks: []TrackedTaskInfo{
+		{GID: gid, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com", IsKeepAlive: true, CompletedLength: 10 * mb},
+	}}
+	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+		gid: makeWorkers(4, 2*1024*1024),
+	}}
+	ct := newTestConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry,
+	)
+	defer ct.Stop()
+	ct.limits.Clear(limitKey("wan", "example.com"))
+	ct.tickAt(time.Now())
+
+	for _, tc := range []struct {
+		name  string
+		phase int
+		step  int
+		want  bool
+	}{
+		{"settling", phaseSettling, 1, false},
+		{"stable_pending_step", phaseStable, 1, false},
+		{"stable_idle", phaseStable, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ct.mu.Lock()
+			defer ct.mu.Unlock()
+			s := ct.states[gid]
+			s.phase = tc.phase
+			s.lastStep = tc.step
+			if tc.step > 0 {
+				s.probeBaseline = 40 * mb
+				s.probeBaselineWorkers = 5
+			}
+			_, ok := ct.electReleaseBeneficiary(tracker.tasks, "wan", "example.com", "testenv", nil, nil, nil, 1)
+			if ok != tc.want {
+				t.Errorf("electReleaseBeneficiary ok=%v, want %v", ok, tc.want)
+			}
+		})
+	}
 }

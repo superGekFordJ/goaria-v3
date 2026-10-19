@@ -138,6 +138,7 @@ func TestConvergence_Reactivation_ProbeDownVerdictCancelled(t *testing.T) {
 			s.probeMomentum = true
 			s.probeCooldown = 2
 			s.frozenCooldown = 1
+			s.settleWaitTicks = 2
 			ct.mu.Unlock()
 
 			// Raw 20MB/s vs baseline 40MB/s would cross the knee for the
@@ -161,6 +162,9 @@ func TestConvergence_Reactivation_ProbeDownVerdictCancelled(t *testing.T) {
 				t.Fatalf("down verdict fields must clear: lastStep=%d baseline=%d@%d momentum=%v",
 					s.lastStep, s.probeBaseline, s.probeBaselineWorkers, s.probeMomentum)
 			}
+			if s.settleWaitTicks != 0 {
+				t.Fatalf("settle wait must reset on cancel, got %d", s.settleWaitTicks)
+			}
 			if s.phase == phaseFloorHit || s.phase == phaseFrozen || s.floorMemory != 0 || s.kneeFrozen {
 				t.Fatalf("must not enter FloorHit: phase=%d floor=%d kneeFrozen=%v",
 					s.phase, s.floorMemory, s.kneeFrozen)
@@ -177,6 +181,43 @@ func TestConvergence_Reactivation_ProbeDownVerdictCancelled(t *testing.T) {
 			}
 		})
 	}
+
+	// Empty telemetry on the re-activation tick still cancels the pending
+	// down verdict — and the settle wait counter with it.
+	t.Run("empty_stats", func(t *testing.T) {
+		gid := "sg_react_down_gap"
+		t0 := time.Now()
+		ct, tracker, telemetry, _ := reactivationFixture(t, gid, 9, t0.Add(-time.Minute))
+		ct.tickAt(t0)
+
+		ct.mu.Lock()
+		s := ct.states[gid]
+		s.phase = phaseSettling
+		s.lastStep = 1
+		s.probeBaseline = 40 * mb
+		s.probeBaselineWorkers = 8
+		s.probeMomentum = true
+		s.settleWaitTicks = 2
+		s.prevCompleted = 10 * mb
+		s.prevSampleAt = t0
+		ct.mu.Unlock()
+
+		delete(telemetry.data, gid)
+		tracker.tasks[0].ActivatedAt = t0.Add(2 * time.Second)
+		tracker.tasks[0].CompletedLength = 60 * mb
+		ct.tickAt(t0.Add(5 * time.Second))
+
+		ct.mu.Lock()
+		s = ct.states[gid]
+		ct.mu.Unlock()
+		if s.phase != phaseStable || s.lastStep != 0 || s.probeBaseline != 0 || s.probeMomentum {
+			t.Fatalf("gap tick must cancel verdict: phase=%d step=%d baseline=%d momentum=%v",
+				s.phase, s.lastStep, s.probeBaseline, s.probeMomentum)
+		}
+		if s.settleWaitTicks != 0 {
+			t.Fatalf("settle wait must reset on empty-stats cancel, got %d", s.settleWaitTicks)
+		}
+	})
 }
 
 // Case 3: continuous tasks are never marked by a peer's re-activation — a
@@ -212,10 +253,14 @@ func TestConvergence_Reactivation_ContinuousTaskNotDirty(t *testing.T) {
 		speedstats.ResetRecordsForTest()
 		t.Cleanup(speedstats.ResetRecordsForTest)
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute)},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute)},
+			{
+				GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute),
+			},
+			{
+				GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute),
+			},
 		}}
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 			gid1: makeWorkers(9, 2*1024*1024),
@@ -587,10 +632,14 @@ func TestConvergence_Reactivation_CompleteRowNotDirty(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 	tracker := &mockTracker{tasks: []TrackedTaskInfo{
-		{GID: gidLive, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute)},
-		{GID: gidDone, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			TotalLength: 100 * mb, CompletedLength: 90 * mb, ActivatedAt: t0.Add(-time.Minute)},
+		{
+			GID: gidLive, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute),
+		},
+		{
+			GID: gidDone, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			TotalLength: 100 * mb, CompletedLength: 90 * mb, ActivatedAt: t0.Add(-time.Minute),
+		},
 	}}
 	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 		gidLive: makeWorkers(3, 2*1024*1024),

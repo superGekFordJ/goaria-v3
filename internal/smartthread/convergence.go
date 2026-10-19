@@ -133,12 +133,16 @@ type convergenceState struct {
 	probeBaseline        int64
 	probeBaselineWorkers int // worker count before probe-down (for Marginal Drop Ratio)
 	lastStep             int
-	frozenCooldown       int
-	kneeFrozen           bool
-	bestEff              int64
-	prevCompleted        int64
-	prevSampleAt         time.Time
-	sustainCount         int
+	// settleWaitTicks counts eligible settling observations that have not yet
+	// reached the requested post-drain headcount. Reset by every probe reset
+	// seam (cancelPendingVerdict, fresh probe issue, settle-done, scale no-op).
+	settleWaitTicks int
+	frozenCooldown  int
+	kneeFrozen      bool
+	bestEff         int64
+	prevCompleted   int64
+	prevSampleAt    time.Time
+	sustainCount    int
 
 	// Shadow copies of tracker's PeakSpeed/PeakThreadCount for ratchet decisions
 	peakSpeed   int64
@@ -661,6 +665,7 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 					s.probeUpBaselineWorkers = 0
 					s.probeUpDelta = 0
 					s.lastStep = 0
+					s.settleWaitTicks = 0
 				}
 			}
 			c.mu.Unlock()
@@ -1044,7 +1049,10 @@ func (c *ConvergenceTicker) electReleaseBeneficiary(
 		s := c.getOrCreateState(t.GID)
 		// Skip phaseProbingUp: arm free +1 / settle jump must not corrupt an
 		// in-flight GainRatio baseline (narrow same-tick race after Probe-Up).
-		if s.kneeFrozen || s.phase == phaseCeilingHit || s.phase == phaseProbingUp || s.blackout {
+		// Settling and stable+lastStep are open Probe-Down windows — an
+		// election must not overwrite a pending verdict with phaseProbingUp.
+		if s.kneeFrozen || s.phase == phaseCeilingHit || s.phase == phaseProbingUp ||
+			s.phase == phaseSettling || (s.phase == phaseStable && s.lastStep > 0) || s.blackout {
 			continue
 		}
 		lk := ""
@@ -1529,14 +1537,36 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 		return pendingScale{}, false
 	}
 
-	// D2: Settling — transition to stable, no decision this tick.
-	// Do NOT overwrite probeBaseline — it must retain the pre-probe throughput
-	// for the marginal drop ratio evaluation in the next tick.
+	// D2: Settling — hold until the observed worker count reaches the
+	// requested post-drain headcount. Do NOT overwrite probeBaseline — it
+	// must retain the pre-probe throughput for the marginal drop ratio
+	// evaluation on a later clean tick.
 	if s.phase == phaseSettling {
+		targetWorkers := s.probeBaselineWorkers - s.lastStep
+		if currentWorkers > targetWorkers {
+			s.settleWaitTicks++
+			if s.settleWaitTicks >= maxProbeSettleTicks {
+				log.Printf("[convergence] probe-down-abandoned: gid=%s workers=%d target=%d wait=%d/%d",
+					gid, currentWorkers, targetWorkers, s.settleWaitTicks, maxProbeSettleTicks)
+				s.cancelPendingVerdict()
+				s.probeCooldown = probeIntervalCycles
+			} else {
+				log.Printf("[convergence] settling-prolonged: gid=%s workers=%d target=%d wait=%d/%d",
+					gid, currentWorkers, targetWorkers, s.settleWaitTicks, maxProbeSettleTicks)
+			}
+			s.prevCompleted = task.CompletedLength
+			s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
+			return pendingScale{}, false
+		}
+		// Physical reduction observed — exit settling but keep this mixed
+		// window unjudged: only the next clean sample may run the verdict.
 		s.phase = phaseStable
+		s.settleWaitTicks = 0
 		s.sustainCount = 0 // C3: reset so peakSustainCycles stability is required after settling
 		s.prevCompleted = task.CompletedLength
 		s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
+		log.Printf("[convergence] settling-done: gid=%s workers=%d target=%d",
+			gid, currentWorkers, targetWorkers)
 		return pendingScale{}, false
 	}
 
@@ -1635,18 +1665,31 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 	}
 
 	// D4 step 4: Evaluate last probe using Marginal Drop Ratio.
-	// ExpectedDrop = lastStep / probeBaselineWorkers (if threads are equally productive,
-	// cutting lastStep out of N should drop speed proportionally).
+	// The verdict only runs when the observed reduction equals the requested
+	// step exactly; zero/negative, partial, and excessive reductions all void
+	// the experiment — the headcount change it measured is not ours.
+	// ExpectedDrop = actualStep / probeBaselineWorkers (if threads are equally
+	// productive, cutting actualStep out of N should drop speed proportionally).
 	// ActualDrop = 1 - rawBps / probeBaseline.
 	// DropRatio = ActualDrop / ExpectedDrop.
 	// DropRatio ≤ 0.5 → actual drop far less than expected → plateau zone → success.
 	// DropRatio > 0.5 → actual drop matches/exceeds expected → linear zone → knee crossed.
 	if s.lastStep > 0 && s.phase == phaseStable && s.probeBaseline > 0 && s.probeBaselineWorkers > 0 {
+		actualStep := s.probeBaselineWorkers - currentWorkers
+		if actualStep != s.lastStep {
+			log.Printf("[convergence] probe-down-void: gid=%s step=%d actual=%d workers=%d baselineWorkers=%d",
+				gid, s.lastStep, actualStep, currentWorkers, s.probeBaselineWorkers)
+			s.cancelPendingVerdict()
+			s.probeCooldown = probeIntervalCycles
+			s.prevCompleted = task.CompletedLength
+			s.prevSampleAt = advanceSampleAnchor(now, task.ActivatedAt)
+			return pendingScale{}, false
+		}
 		actualDrop := 1.0 - float64(rawBps)/float64(s.probeBaseline)
 		if actualDrop < 0 {
 			actualDrop = 0 // speed increased — definitely plateau
 		}
-		expectedDrop := float64(s.lastStep) / float64(s.probeBaselineWorkers)
+		expectedDrop := float64(actualStep) / float64(s.probeBaselineWorkers)
 		dropRatio := actualDrop / expectedDrop
 
 		if dropRatio <= marginalDropThreshold {
@@ -1896,6 +1939,7 @@ func (c *ConvergenceTicker) processTaskStats(task TrackedTaskInfo, stats []types
 				}
 				if step > 0 {
 					s.lastStep = step
+					s.settleWaitTicks = 0
 					s.probeBaseline = rawBps
 					s.probeBaselineWorkers = currentWorkers
 					s.phase = phaseSettling
@@ -1942,6 +1986,7 @@ func (c *ConvergenceTicker) getOrCreateState(gid string) *convergenceState {
 // sustain, raw — is untouched, and physical worker changes already executed
 // are never rolled back.
 func (s *convergenceState) cancelPendingVerdict() {
+	s.settleWaitTicks = 0
 	switch {
 	case s.phase == phaseProbingUp:
 		s.probeUpBaseline = 0

@@ -47,10 +47,11 @@ type ActiveTask struct {
 	// Set while blocked on rate limiter so health monitor doesn't treat it as stalled
 	WaitingOnLimiter atomic.Bool
 
-	// FORK-PATCH: Drain flag for lightweight worker exit .
-	// When true, the worker finishes the current chunk and exits without
-	// popping new tasks from the queue, allowing the underlying TCP
-	// connection to return to the Transport idle pool for reuse.
+	// FORK-PATCH: Drain flag for lightweight worker exit.
+	// When true, the worker's in-flight attempt is cancelled, its
+	// unfinished range is requeued, and the worker exits without popping
+	// new tasks from the queue. The cancelled attempt may close the
+	// current connection rather than returning it to the idle pool.
 	// Mirrors the drainingWorkers sync.Map entry; used by ScaleWorkers
 	// to skip already-draining candidates under activeMu without
 	// querying the sync.Map.

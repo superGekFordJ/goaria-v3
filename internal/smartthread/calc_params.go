@@ -32,8 +32,11 @@ const (
 	marginalDropThreshold = 0.50 // D4: DropRatio ≤ 0.5 → plateau (success); > 0.5 → linear zone (knee crossed)
 	probeIntervalCycles   = 3    // COLD cadence between probes (momentum off); ~15s @ 5s
 	peakSustainCycles     = 2    // consecutive stable raw samples before ratchet records
-	frozenCooldownCycles  = 12   // ~60s @ 5s interval; must be < IdleConnTimeout(90s)/interval
-	probeFloorWorkers     = 2    // hard lower bound for probing (aligns with congestionFloor)
+	// Eligible settling observations before an incomplete probe-down is
+	// abandoned: four 5s samples (~20s). Counts observed ticks, not wall clock.
+	maxProbeSettleTicks  = 4
+	frozenCooldownCycles = 12 // ~60s @ 5s interval; must be < IdleConnTimeout(90s)/interval
+	probeFloorWorkers    = 2  // hard lower bound for probing (aligns with congestionFloor)
 
 	// activationNoProgressTTL is the TargetBandwidth floor granted to a
 	// genuinely activated task that has not yet recorded first effective

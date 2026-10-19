@@ -1177,15 +1177,22 @@ func (d *ConcurrentDownloader) executeWorkers(ctx context.Context, cancel contex
 	return downloadErr
 }
 
-// DrainWorker marks a worker as draining. The worker will finish its current
-// chunk and exit without picking up new work, preserving the TCP connection
-// in the Transport idle pool.
-// FORK-PATCH: Lightweight drain mechanism.
+// DrainWorker marks a worker as draining and cancels its in-flight attempt.
+// The worker requeues its unfinished range and exits without picking up new
+// work; the cancelled attempt may close the current connection rather than
+// returning it to the Transport idle pool. The persistent marker is stored
+// before activeMu so a later cancel publication inherits the drain even when
+// no ActiveTask was mapped yet (worker blocked in queue.Pop or between Pop
+// and registration).
+// FORK-PATCH: Interruptive drain (marker + flag + cancel under activeMu).
 func (d *ConcurrentDownloader) DrainWorker(id int) bool {
 	d.drainingWorkers.Store(id, struct{}{})
 	d.activeMu.Lock()
 	if at, exists := d.activeTasks[id]; exists {
 		at.Draining.Store(true)
+		if at.Cancel != nil {
+			at.Cancel()
+		}
 	}
 	d.activeMu.Unlock()
 	return true
@@ -1261,8 +1268,8 @@ func (d *ConcurrentDownloader) ScaleWorkers(delta int) int {
 		id    int
 		speed float64
 	}
-	candidates := make([]workerSpeed, 0, len(d.activeTasks))
 	d.activeMu.Lock()
+	candidates := make([]workerSpeed, 0, len(d.activeTasks))
 	for id, at := range d.activeTasks {
 		if at.Draining.Load() {
 			continue
