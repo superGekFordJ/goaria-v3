@@ -611,7 +611,7 @@ func TestScaleWorkers_Down(t *testing.T) {
 	}
 	d.activeTasks[0].Speed = 10 * 1024 * 1024
 
-	_, w1Cancel := context.WithCancel(ctx)
+	w1Ctx, w1Cancel := context.WithCancel(ctx)
 	d.activeTasks[1] = &ActiveTask{
 		Task:      types.Task{Offset: 100, Length: 100},
 		StartTime: time.Now().Add(-10 * time.Second),
@@ -652,6 +652,10 @@ func TestScaleWorkers_Down(t *testing.T) {
 		// Interruptive drain cancels the in-flight attempt under activeMu.
 	case <-time.After(time.Second):
 		t.Error("Drained worker context should be cancelled (interruptive drain)")
+	}
+
+	if err := w1Ctx.Err(); err != nil {
+		t.Errorf("unselected worker context should remain live, got %v", err)
 	}
 }
 
