@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1792231418631,
+  "lastUpdate": 1792399086538,
   "repoUrl": "https://github.com/superGekFordJ/goaria-v3",
   "entries": {
     "GoAria Core Engine Benchmarks": [
@@ -5744,6 +5744,724 @@ window.BENCHMARK_DATA = {
             "value": 1,
             "unit": "allocs/op",
             "extra": "668 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "superGekFordJ",
+            "username": "superGekFordJ",
+            "email": "fordjiang125@gmail.com"
+          },
+          "committer": {
+            "name": "superGekFordJ",
+            "username": "superGekFordJ",
+            "email": "fordjiang125@gmail.com"
+          },
+          "id": "29a3f1c6e07bb93759ac68ecb6f2579223bbaae7",
+          "message": "chore: bump version to 3.5.3",
+          "timestamp": "2026-10-19T08:31:34Z",
+          "url": "https://github.com/superGekFordJ/goaria-v3/commit/29a3f1c6e07bb93759ac68ecb6f2579223bbaae7"
+        },
+        "date": 1792399084059,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread100From10000 (goaria-v3/internal/history)",
+            "value": 19758445,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "56 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread100From10000 (goaria-v3/internal/history) - ns/op",
+            "value": 19758445,
+            "unit": "ns/op",
+            "extra": "56 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread100From10000 (goaria-v3/internal/history) - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "56 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread100From10000 (goaria-v3/internal/history) - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "56 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/FrontHeavy100From10000 (goaria-v3/internal/history)",
+            "value": 40845246,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "28 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/FrontHeavy100From10000 (goaria-v3/internal/history) - ns/op",
+            "value": 40845246,
+            "unit": "ns/op",
+            "extra": "28 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/FrontHeavy100From10000 (goaria-v3/internal/history) - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "28 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/FrontHeavy100From10000 (goaria-v3/internal/history) - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "28 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread1000From50000 (goaria-v3/internal/history)",
+            "value": 1234647900,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "1 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread1000From50000 (goaria-v3/internal/history) - ns/op",
+            "value": 1234647900,
+            "unit": "ns/op",
+            "extra": "1 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread1000From50000 (goaria-v3/internal/history) - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "1 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveBatchCurrent/Spread1000From50000 (goaria-v3/internal/history) - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "1 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread100From10000 (goaria-v3/internal/history)",
+            "value": 1208435,
+            "unit": "ns/op\t  879113 B/op\t      72 allocs/op",
+            "extra": "1038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread100From10000 (goaria-v3/internal/history) - ns/op",
+            "value": 1208435,
+            "unit": "ns/op",
+            "extra": "1038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread100From10000 (goaria-v3/internal/history) - B/op",
+            "value": 879113,
+            "unit": "B/op",
+            "extra": "1038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread100From10000 (goaria-v3/internal/history) - allocs/op",
+            "value": 72,
+            "unit": "allocs/op",
+            "extra": "1038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/FrontHeavy100From10000 (goaria-v3/internal/history)",
+            "value": 1180465,
+            "unit": "ns/op\t  879112 B/op\t      72 allocs/op",
+            "extra": "1035 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/FrontHeavy100From10000 (goaria-v3/internal/history) - ns/op",
+            "value": 1180465,
+            "unit": "ns/op",
+            "extra": "1035 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/FrontHeavy100From10000 (goaria-v3/internal/history) - B/op",
+            "value": 879112,
+            "unit": "B/op",
+            "extra": "1035 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/FrontHeavy100From10000 (goaria-v3/internal/history) - allocs/op",
+            "value": 72,
+            "unit": "allocs/op",
+            "extra": "1035 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread1000From50000 (goaria-v3/internal/history)",
+            "value": 6206902,
+            "unit": "ns/op\t 3566000 B/op\t     266 allocs/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread1000From50000 (goaria-v3/internal/history) - ns/op",
+            "value": 6206902,
+            "unit": "ns/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread1000From50000 (goaria-v3/internal/history) - B/op",
+            "value": 3566000,
+            "unit": "B/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkRemoveManyBatch/Spread1000From50000 (goaria-v3/internal/history) - allocs/op",
+            "value": 266,
+            "unit": "allocs/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_Update (goaria-v3/internal/history)",
+            "value": 149.1,
+            "unit": "ns/op\t      16 B/op\t       2 allocs/op",
+            "extra": "8136872 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_Update (goaria-v3/internal/history) - ns/op",
+            "value": 149.1,
+            "unit": "ns/op",
+            "extra": "8136872 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_Update (goaria-v3/internal/history) - B/op",
+            "value": 16,
+            "unit": "B/op",
+            "extra": "8136872 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_Update (goaria-v3/internal/history) - allocs/op",
+            "value": 2,
+            "unit": "allocs/op",
+            "extra": "8136872 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetAll_Scan (goaria-v3/internal/history)",
+            "value": 693248,
+            "unit": "ns/op\t 1687552 B/op\t       1 allocs/op",
+            "extra": "1806 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetAll_Scan (goaria-v3/internal/history) - ns/op",
+            "value": 693248,
+            "unit": "ns/op",
+            "extra": "1806 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetAll_Scan (goaria-v3/internal/history) - B/op",
+            "value": 1687552,
+            "unit": "B/op",
+            "extra": "1806 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetAll_Scan (goaria-v3/internal/history) - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "1806 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkContainsSource (goaria-v3/internal/history)",
+            "value": 18.21,
+            "unit": "ns/op\t       0 B/op\t       0 allocs/op",
+            "extra": "65680725 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkContainsSource (goaria-v3/internal/history) - ns/op",
+            "value": 18.21,
+            "unit": "ns/op",
+            "extra": "65680725 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkContainsSource (goaria-v3/internal/history) - B/op",
+            "value": 0,
+            "unit": "B/op",
+            "extra": "65680725 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkContainsSource (goaria-v3/internal/history) - allocs/op",
+            "value": 0,
+            "unit": "allocs/op",
+            "extra": "65680725 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_New (goaria-v3/internal/history)",
+            "value": 181.2,
+            "unit": "ns/op\t      22 B/op\t       1 allocs/op",
+            "extra": "6453753 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_New (goaria-v3/internal/history) - ns/op",
+            "value": 181.2,
+            "unit": "ns/op",
+            "extra": "6453753 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_New (goaria-v3/internal/history) - B/op",
+            "value": 22,
+            "unit": "B/op",
+            "extra": "6453753 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkAdd_New (goaria-v3/internal/history) - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "6453753 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_100 (goaria-v3/internal/monitor)",
+            "value": 14209,
+            "unit": "ns/op\t    8000 B/op\t     200 allocs/op",
+            "extra": "87398 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_100 (goaria-v3/internal/monitor) - ns/op",
+            "value": 14209,
+            "unit": "ns/op",
+            "extra": "87398 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_100 (goaria-v3/internal/monitor) - B/op",
+            "value": 8000,
+            "unit": "B/op",
+            "extra": "87398 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_100 (goaria-v3/internal/monitor) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "87398 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_500 (goaria-v3/internal/monitor)",
+            "value": 72592,
+            "unit": "ns/op\t   40000 B/op\t    1000 allocs/op",
+            "extra": "16796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_500 (goaria-v3/internal/monitor) - ns/op",
+            "value": 72592,
+            "unit": "ns/op",
+            "extra": "16796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_500 (goaria-v3/internal/monitor) - B/op",
+            "value": 40000,
+            "unit": "B/op",
+            "extra": "16796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_EnrichTasks_500 (goaria-v3/internal/monitor) - allocs/op",
+            "value": 1000,
+            "unit": "allocs/op",
+            "extra": "16796 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_UpdateFromAria2_100 (goaria-v3/internal/monitor)",
+            "value": 72735,
+            "unit": "ns/op\t   90359 B/op\t      37 allocs/op",
+            "extra": "16311 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_UpdateFromAria2_100 (goaria-v3/internal/monitor) - ns/op",
+            "value": 72735,
+            "unit": "ns/op",
+            "extra": "16311 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_UpdateFromAria2_100 (goaria-v3/internal/monitor) - B/op",
+            "value": 90359,
+            "unit": "B/op",
+            "extra": "16311 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_UpdateFromAria2_100 (goaria-v3/internal/monitor) - allocs/op",
+            "value": 37,
+            "unit": "allocs/op",
+            "extra": "16311 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_GetLiveTaskLists (goaria-v3/internal/monitor)",
+            "value": 13523,
+            "unit": "ns/op\t   28672 B/op\t       4 allocs/op",
+            "extra": "85512 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_GetLiveTaskLists (goaria-v3/internal/monitor) - ns/op",
+            "value": 13523,
+            "unit": "ns/op",
+            "extra": "85512 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_GetLiveTaskLists (goaria-v3/internal/monitor) - B/op",
+            "value": 28672,
+            "unit": "B/op",
+            "extra": "85512 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskCache_GetLiveTaskLists (goaria-v3/internal/monitor) - allocs/op",
+            "value": 4,
+            "unit": "allocs/op",
+            "extra": "85512 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskTracker_Update_100 (goaria-v3/internal/monitor)",
+            "value": 112815,
+            "unit": "ns/op\t   21106 B/op\t     709 allocs/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskTracker_Update_100 (goaria-v3/internal/monitor) - ns/op",
+            "value": 112815,
+            "unit": "ns/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskTracker_Update_100 (goaria-v3/internal/monitor) - B/op",
+            "value": 21106,
+            "unit": "B/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkTaskTracker_Update_100 (goaria-v3/internal/monitor) - allocs/op",
+            "value": 709,
+            "unit": "allocs/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/HeavyPayload (goaria-v3/internal/rpc)",
+            "value": 813463,
+            "unit": "ns/op\t  178096 B/op\t    3028 allocs/op",
+            "extra": "1533 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/HeavyPayload (goaria-v3/internal/rpc) - ns/op",
+            "value": 813463,
+            "unit": "ns/op",
+            "extra": "1533 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/HeavyPayload (goaria-v3/internal/rpc) - B/op",
+            "value": 178096,
+            "unit": "B/op",
+            "extra": "1533 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/HeavyPayload (goaria-v3/internal/rpc) - allocs/op",
+            "value": 3028,
+            "unit": "allocs/op",
+            "extra": "1533 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/LightPayload (goaria-v3/internal/rpc)",
+            "value": 1588,
+            "unit": "ns/op\t     200 B/op\t       2 allocs/op",
+            "extra": "821157 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/LightPayload (goaria-v3/internal/rpc) - ns/op",
+            "value": 1588,
+            "unit": "ns/op",
+            "extra": "821157 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/LightPayload (goaria-v3/internal/rpc) - B/op",
+            "value": 200,
+            "unit": "B/op",
+            "extra": "821157 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkUnmarshalTasks/LightPayload (goaria-v3/internal/rpc) - allocs/op",
+            "value": 2,
+            "unit": "allocs/op",
+            "extra": "821157 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Sequential (goaria-v3/internal/rpc)",
+            "value": 33987742,
+            "unit": "ns/op\t 1818182 B/op\t   24322 allocs/op",
+            "extra": "33 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Sequential (goaria-v3/internal/rpc) - ns/op",
+            "value": 33987742,
+            "unit": "ns/op",
+            "extra": "33 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Sequential (goaria-v3/internal/rpc) - B/op",
+            "value": 1818182,
+            "unit": "B/op",
+            "extra": "33 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Sequential (goaria-v3/internal/rpc) - allocs/op",
+            "value": 24322,
+            "unit": "allocs/op",
+            "extra": "33 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Sequential (goaria-v3/internal/rpc)",
+            "value": 33961250,
+            "unit": "ns/op\t 1821148 B/op\t   24330 allocs/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Sequential (goaria-v3/internal/rpc) - ns/op",
+            "value": 33961250,
+            "unit": "ns/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Sequential (goaria-v3/internal/rpc) - B/op",
+            "value": 1821148,
+            "unit": "B/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Sequential (goaria-v3/internal/rpc) - allocs/op",
+            "value": 24330,
+            "unit": "allocs/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Sequential (goaria-v3/internal/rpc)",
+            "value": 19589940,
+            "unit": "ns/op\t 1128796 B/op\t   14333 allocs/op",
+            "extra": "60 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Sequential (goaria-v3/internal/rpc) - ns/op",
+            "value": 19589940,
+            "unit": "ns/op",
+            "extra": "60 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Sequential (goaria-v3/internal/rpc) - B/op",
+            "value": 1128796,
+            "unit": "B/op",
+            "extra": "60 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Sequential (goaria-v3/internal/rpc) - allocs/op",
+            "value": 14333,
+            "unit": "allocs/op",
+            "extra": "60 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Multi (goaria-v3/internal/rpc)",
+            "value": 436089,
+            "unit": "ns/op\t   77666 B/op\t     962 allocs/op",
+            "extra": "2630 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Multi (goaria-v3/internal/rpc) - ns/op",
+            "value": 436089,
+            "unit": "ns/op",
+            "extra": "2630 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Multi (goaria-v3/internal/rpc) - B/op",
+            "value": 77666,
+            "unit": "B/op",
+            "extra": "2630 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchPause_Multi (goaria-v3/internal/rpc) - allocs/op",
+            "value": 962,
+            "unit": "allocs/op",
+            "extra": "2630 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Multi (goaria-v3/internal/rpc)",
+            "value": 444843,
+            "unit": "ns/op\t   78621 B/op\t     962 allocs/op",
+            "extra": "2421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Multi (goaria-v3/internal/rpc) - ns/op",
+            "value": 444843,
+            "unit": "ns/op",
+            "extra": "2421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Multi (goaria-v3/internal/rpc) - B/op",
+            "value": 78621,
+            "unit": "B/op",
+            "extra": "2421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkBatchResume_Multi (goaria-v3/internal/rpc) - allocs/op",
+            "value": 962,
+            "unit": "allocs/op",
+            "extra": "2421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Multi (goaria-v3/internal/rpc)",
+            "value": 1268128,
+            "unit": "ns/op\t  459932 B/op\t    3384 allocs/op",
+            "extra": "926 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Multi (goaria-v3/internal/rpc) - ns/op",
+            "value": 1268128,
+            "unit": "ns/op",
+            "extra": "926 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Multi (goaria-v3/internal/rpc) - B/op",
+            "value": 459932,
+            "unit": "B/op",
+            "extra": "926 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetTaskMetadata_Multi (goaria-v3/internal/rpc) - allocs/op",
+            "value": 3384,
+            "unit": "allocs/op",
+            "extra": "926 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetGlobalStat (goaria-v3/internal/rpc)",
+            "value": 45009,
+            "unit": "ns/op\t    9538 B/op\t     130 allocs/op",
+            "extra": "24619 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetGlobalStat (goaria-v3/internal/rpc) - ns/op",
+            "value": 45009,
+            "unit": "ns/op",
+            "extra": "24619 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetGlobalStat (goaria-v3/internal/rpc) - B/op",
+            "value": 9538,
+            "unit": "B/op",
+            "extra": "24619 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGetGlobalStat (goaria-v3/internal/rpc) - allocs/op",
+            "value": 130,
+            "unit": "allocs/op",
+            "extra": "24619 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_100 (goaria-v3/internal/surge/store)",
+            "value": 116204,
+            "unit": "ns/op\t  107896 B/op\t      46 allocs/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_100 (goaria-v3/internal/surge/store) - ns/op",
+            "value": 116204,
+            "unit": "ns/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_100 (goaria-v3/internal/surge/store) - B/op",
+            "value": 107896,
+            "unit": "B/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_100 (goaria-v3/internal/surge/store) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "10000 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_100 (goaria-v3/internal/surge/store)",
+            "value": 145295,
+            "unit": "ns/op\t   98536 B/op\t    1431 allocs/op",
+            "extra": "7834 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_100 (goaria-v3/internal/surge/store) - ns/op",
+            "value": 145295,
+            "unit": "ns/op",
+            "extra": "7834 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_100 (goaria-v3/internal/surge/store) - B/op",
+            "value": 98536,
+            "unit": "B/op",
+            "extra": "7834 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_100 (goaria-v3/internal/surge/store) - allocs/op",
+            "value": 1431,
+            "unit": "allocs/op",
+            "extra": "7834 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_500 (goaria-v3/internal/surge/store)",
+            "value": 480397,
+            "unit": "ns/op\t  486137 B/op\t      51 allocs/op",
+            "extra": "2298 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_500 (goaria-v3/internal/surge/store) - ns/op",
+            "value": 480397,
+            "unit": "ns/op",
+            "extra": "2298 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_500 (goaria-v3/internal/surge/store) - B/op",
+            "value": 486137,
+            "unit": "B/op",
+            "extra": "2298 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Encode_500 (goaria-v3/internal/surge/store) - allocs/op",
+            "value": 51,
+            "unit": "allocs/op",
+            "extra": "2298 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_500 (goaria-v3/internal/surge/store)",
+            "value": 488366,
+            "unit": "ns/op\t  428650 B/op\t    5431 allocs/op",
+            "extra": "2552 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_500 (goaria-v3/internal/surge/store) - ns/op",
+            "value": 488366,
+            "unit": "ns/op",
+            "extra": "2552 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_500 (goaria-v3/internal/surge/store) - B/op",
+            "value": 428650,
+            "unit": "B/op",
+            "extra": "2552 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkGobMasterState_Decode_500 (goaria-v3/internal/surge/store) - allocs/op",
+            "value": 5431,
+            "unit": "allocs/op",
+            "extra": "2552 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWindowReclaim_TrimWorkingSet (goaria-v3/internal/wailsapp)",
+            "value": 1714990,
+            "unit": "ns/op\t      28 B/op\t       1 allocs/op",
+            "extra": "704 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWindowReclaim_TrimWorkingSet (goaria-v3/internal/wailsapp) - ns/op",
+            "value": 1714990,
+            "unit": "ns/op",
+            "extra": "704 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWindowReclaim_TrimWorkingSet (goaria-v3/internal/wailsapp) - B/op",
+            "value": 28,
+            "unit": "B/op",
+            "extra": "704 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkWindowReclaim_TrimWorkingSet (goaria-v3/internal/wailsapp) - allocs/op",
+            "value": 1,
+            "unit": "allocs/op",
+            "extra": "704 times\n4 procs"
           }
         ]
       }
