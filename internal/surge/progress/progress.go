@@ -447,8 +447,9 @@ func (ps *DownloadProgress) SetDrainWorkerFn(fn func(int) bool) {
 }
 
 // FORK-PATCH: DrainWorker marks a specific worker as draining. Returns false if
-// no function is registered. The worker finishes its current chunk and exits,
-// preserving the TCP connection in the Transport idle pool.
+// no function is registered. The worker's in-flight attempt is cancelled and its
+// unfinished range is requeued; the TCP connection may close rather than return
+// to the Transport idle pool.
 func (ps *DownloadProgress) DrainWorker(workerID int) bool {
 	ps.drainWorkerMu.Lock()
 	fn := ps.drainWorkerFn

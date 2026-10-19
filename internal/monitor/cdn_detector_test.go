@@ -689,9 +689,10 @@ func TestCDNDetector_DrainWorker_CooldownApplied(t *testing.T) {
 	}
 
 	// No re-drain inside the cooldown window; expiry re-arms the same path.
-	for i, at := range w1Drains {
-		if i > 0 && at.Sub(w1Drains[0]) < cdnActionCooldown {
-			t.Errorf("worker 1 re-drained inside cooldown: first=%v again=%v", w1Drains[0], at)
+	for i := 1; i < len(w1Drains); i++ {
+		if gap := w1Drains[i].Sub(w1Drains[i-1]); gap < cdnActionCooldown {
+			t.Errorf("worker 1 re-drained inside cooldown: prev=%v again=%v gap=%v",
+				w1Drains[i-1], w1Drains[i], gap)
 		}
 	}
 

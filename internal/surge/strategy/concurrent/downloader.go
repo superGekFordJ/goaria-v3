@@ -1195,6 +1195,8 @@ func (d *ConcurrentDownloader) DrainWorker(id int) bool {
 		}
 	}
 	d.activeMu.Unlock()
+	// The unconditional true means "marker recorded": for already-exited or
+	// unknown ids it leaves inert residue (ids are monotonic).
 	return true
 }
 
