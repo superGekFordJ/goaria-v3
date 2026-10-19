@@ -400,7 +400,12 @@ func (c *ConvergenceTicker) tickAt(now time.Time) {
 		if s, ok := c.states[sampled[i].GID]; ok && s != nil {
 			sampled[i].RawBps = s.lastRawBps
 			sampled[i].MacroReady = s.macroReady
-			if stateReActivatedInWindow(s, sampled[i].ActivatedAt) {
+			// A row already at 100% is complete-guarded downstream and
+			// never re-bases its anchor: recording its re-activation would
+			// re-fire every lingering tick and pin the domain's N_max
+			// unlock confirmation at zero.
+			complete := sampled[i].TotalLength > 0 && sampled[i].CompletedLength >= sampled[i].TotalLength
+			if !complete && stateReActivatedInWindow(s, sampled[i].ActivatedAt) {
 				reActivated[sampled[i].GID] = true
 			}
 		}
@@ -1167,7 +1172,9 @@ func verdictMargin(s *convergenceState, workers int) verdictMarginRef {
 // strictly inside the last sample window: the GID never left the sampled
 // set, so only a newer activation anchor betrays it. The check reads the
 // pre-update anchor; callers hold c.mu. Missing state, missing anchor, and
-// anchor-less legacy rows never match.
+// anchor-less legacy rows never match. Detection is bounded by tracker
+// observability: a pause that never surfaced a fresh ActivatedAt cannot be
+// seen here.
 func stateReActivatedInWindow(s *convergenceState, activatedAt time.Time) bool {
 	return s != nil && !s.prevSampleAt.IsZero() && !activatedAt.IsZero() && activatedAt.After(s.prevSampleAt)
 }
@@ -1334,10 +1341,13 @@ func (c *ConvergenceTicker) checkVAvailable(scope, domain, envKey string, approv
 }
 
 // processTask evaluates a single task and returns a pending scale operation
-// if one is needed. affected marks a task inside this tick's net membership-
-// perturbation margin: it still runs D2 measurement and advances its sample
-// baseline, but the pending probe verdict is cancelled unjudged and D3 /
-// smart-unlock / new-probe decisions are skipped for the dirty tick.
+// if one is needed. affected is the caller's dirty hint for a task inside
+// this tick's net membership-perturbation margin — the callee also
+// self-detects a same-window pause→resume on the pre-update anchor and
+// treats it as dirty either way. A dirty task still runs D2 measurement and
+// advances its sample baseline, but the pending probe verdict is cancelled
+// unjudged and D3 / smart-unlock / new-probe decisions are skipped for the
+// dirty tick.
 // dStats / domainMacroBps / approvedDelta may be nil in unit tests (degrade
 // safely). now is the tick-captured evaluation instant shared by occupancy
 // checks and sampling.

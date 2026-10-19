@@ -571,3 +571,65 @@ func TestConvergence_Reactivation_DirtyBlackoutNoPeak(t *testing.T) {
 		}
 	})
 }
+
+// Case 10: a same-window re-activation on a lingering 100%-complete row must
+// not count as the domain's dirty membership change — the complete guard
+// intercepts before the sample anchor can re-base, so an unguarded record
+// would re-fire every tick and pin the N_max unlock confirmation at zero for
+// as long as the row stays listed.
+func TestConvergence_Reactivation_CompleteRowNotDirty(t *testing.T) {
+	mb := int64(1024 * 1024)
+	gidLive := "sg_react_live"
+	gidDone := "sg_react_done"
+	lk := limitKey("wan", "example.com")
+	t0 := time.Now()
+
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	tracker := &mockTracker{tasks: []TrackedTaskInfo{
+		{GID: gidLive, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute)},
+		{GID: gidDone, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			TotalLength: 100 * mb, CompletedLength: 90 * mb, ActivatedAt: t0.Add(-time.Minute)},
+	}}
+	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
+		gidLive: makeWorkers(3, 2*1024*1024),
+		gidDone: makeWorkers(2, 2*1024*1024),
+	}}
+	ct := newTestConvergenceTicker(
+		rpc.NewHybridEngine(&rpc.Aria2Engine{}, rpc.NewSurgeEngineForTesting(nil)),
+		tracker, telemetry,
+	)
+	ct.limits = NewServerLimitStore() // isolate from the shared store
+	t.Cleanup(func() { ct.Stop() })
+
+	ct.tickAt(t0) // baseline → prevActiveOccupancy non-nil, prevSampleAt=t0
+
+	ct.limits.SetNMax(lk, 3)
+
+	// gidDone reaches 100% but stays listed, then pause→resumes inside the
+	// gap: its anchor is stuck at t0 because the complete guard never
+	// re-bases it.
+	tracker.tasks[0].CompletedLength = 10*mb + 10*mb*5
+	tracker.tasks[1].ActivatedAt = t0.Add(2 * time.Second)
+	tracker.tasks[1].CompletedLength = 100 * mb
+	t1 := t0.Add(5 * time.Second)
+	ct.tickAt(t1)
+
+	ct.mu.Lock()
+	counter := ct.domainUnlockTicks[lk]
+	ct.mu.Unlock()
+	if counter != 1 {
+		t.Fatalf("lingering complete row must not pin the unlock counter: got %d, want 1", counter)
+	}
+	if _, has := ct.limits.GetNMax(lk); !has {
+		t.Fatal("one clean confirm must not unlock yet")
+	}
+
+	// The row lingers at 100% — the next tick must keep confirming to unlock.
+	tracker.tasks[0].CompletedLength = 10*mb + 10*mb*10
+	ct.tickAt(t1.Add(5 * time.Second))
+	if _, has := ct.limits.GetNMax(lk); has {
+		t.Fatal("two clean confirms must unlock despite the lingering re-activated row")
+	}
+}
