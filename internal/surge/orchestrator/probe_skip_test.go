@@ -424,3 +424,135 @@ func TestBuildDownloadRecord_ProbeFalseWritesRangeUnsupported(t *testing.T) {
 		t.Fatalf("mode = %q, want range_unsupported", rec.RangeAcquisitionMode)
 	}
 }
+
+func TestEnqueue_HLSStrategy_SkipsProbeAndKeepsZeroTotalSize(t *testing.T) {
+	ts, probes := newRangeProbeServer(t)
+	mgr, pool := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
+	destDir := t.TempDir()
+
+	resume := &types.HLSResumeState{
+		ManifestURL:         ts.URL + "/index.m3u8",
+		MediaPlaylistURL:    ts.URL + "/media.m3u8",
+		ManifestFingerprint: "fp-enqueue",
+		TotalSegments:       3,
+		CompletedBitmap:     []byte{0x01},
+		VerifiedBytes:       64,
+		Segments:            make([]types.HLSSegmentState, 3),
+	}
+
+	t.Run("named", func(t *testing.T) {
+		req := &DownloadRequest{
+			URL:       ts.URL + "/index.m3u8",
+			Filename:  "video.ts",
+			Path:      destDir,
+			Strategy:  types.StrategyHLS,
+			HLSResume: resume,
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		id, finalName, err := mgr.Enqueue(ctx, req)
+		if err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		cancelEnqueue(t, mgr, id)
+		if finalName != "video.ts" {
+			t.Fatalf("Filename = %q, want video.ts", finalName)
+		}
+		if probes.Load() != 0 {
+			t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
+		}
+
+		rec, ok := recordByID(pool, id)
+		if !ok {
+			t.Fatal("expected queued record")
+		}
+		if rec.Strategy != types.StrategyHLS {
+			t.Fatalf("Strategy = %q, want %q", rec.Strategy, types.StrategyHLS)
+		}
+		if rec.TotalSize != 0 {
+			t.Fatalf("TotalSize = %d, want 0 (HLS has no trusted byte size)", rec.TotalSize)
+		}
+		if rec.SupportsRange {
+			t.Fatal("SupportsRange = true, want false")
+		}
+		if rec.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue {
+			t.Fatalf("RangeAcquisitionMode = %q, want probe_at_enqueue", rec.RangeAcquisitionMode)
+		}
+		if !rec.SkipServerProbe {
+			t.Fatal("SkipServerProbe = false, want true")
+		}
+		if rec.HLSResume == nil || rec.HLSResume.TotalSegments != 3 || rec.HLSResume.VerifiedBytes != 64 {
+			t.Fatalf("queued HLSResume = %+v", rec.HLSResume)
+		}
+
+		// The queued snapshot must be physically isolated from the caller's.
+		resume.VerifiedBytes = 777
+		resume.Segments[0].URI = "mutated"
+		rec2, _ := recordByID(pool, id)
+		if rec2.HLSResume.VerifiedBytes != 64 || rec2.HLSResume.Segments[0].URI != "" {
+			t.Fatal("caller mutation of req.HLSResume leaked into queued record")
+		}
+		resume.VerifiedBytes = 64
+		resume.Segments[0].URI = ""
+	})
+
+	t.Run("empty_filename", func(t *testing.T) {
+		probes.Store(0)
+		req := &DownloadRequest{
+			URL:      ts.URL + "/index.m3u8",
+			Path:     destDir,
+			Strategy: types.StrategyHLS,
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		id, finalName, err := mgr.Enqueue(ctx, req)
+		if err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		cancelEnqueue(t, mgr, id)
+		if finalName == "" {
+			t.Fatal("expected a filename to be resolved from the URL")
+		}
+		if probes.Load() != 0 {
+			t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
+		}
+		rec, ok := recordByID(pool, id)
+		if !ok {
+			t.Fatal("expected queued record")
+		}
+		if rec.Strategy != types.StrategyHLS || !rec.SkipServerProbe || rec.SupportsRange ||
+			rec.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue || rec.TotalSize != 0 {
+			t.Fatalf("HLS record fields: %+v", rec)
+		}
+	})
+}
+
+func TestEnqueue_HLSStrategy_DoesNotTakeProbeSem(t *testing.T) {
+	ts, probes := newRangeProbeServer(t)
+	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
+
+	drained := drainProbeSem(mgr)
+	if drained == 0 {
+		t.Fatal("expected probeSem tokens to drain")
+	}
+	t.Cleanup(func() { restoreProbeSem(mgr, drained) })
+
+	req := &DownloadRequest{
+		URL:      ts.URL + "/index.m3u8",
+		Filename: "video.ts",
+		Path:     t.TempDir(),
+		Strategy: types.StrategyHLS,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	id, _, err := mgr.Enqueue(ctx, req)
+	if err != nil {
+		t.Fatalf("HLS Enqueue with drained probeSem: %v", err)
+	}
+	cancelEnqueue(t, mgr, id)
+	if probes.Load() != 0 {
+		t.Fatalf("Range bytes=0-0 probes = %d, want 0", probes.Load())
+	}
+}

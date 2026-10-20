@@ -84,6 +84,15 @@ func hydrateConfigFromDisk(cfg *types.DownloadRecord) {
 		cfg.RangeAcquisitionMode = types.UpgradeLegacyRangeMode("", true)
 	}
 	cfg.SkipServerProbe = cfg.SkipServerProbe || saved.SkipServerProbe
+	// FORK-PATCH: strategy is authoritative detail data — a non-empty
+	// persisted value wins over a sparse runtime record, and the checkpoint
+	// is cloned so the hydrated cfg never aliases the decoded gob slices.
+	if saved.Strategy != "" {
+		cfg.Strategy = saved.Strategy
+	}
+	if saved.HLSResume != nil {
+		cfg.HLSResume = saved.HLSResume.Clone()
+	}
 	// FORK-PATCH: cold-resume credential fallback — a non-empty runtime map
 	// is authoritative; detail state only fills in when cfg has none.
 	if len(cfg.Headers) == 0 && len(saved.Headers) > 0 {
@@ -96,6 +105,13 @@ func hydrateConfigFromDisk(cfg *types.DownloadRecord) {
 		cfg.ActualChunkSize = saved.ActualChunkSize
 	} else if cfg.RangeAcquisitionMode != "" {
 		cfg.SupportsRange = types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, cfg.SupportsRange)
+	}
+	// FORK-PATCH: an HLS resume must never resurrect byte-range or probe
+	// state — the strategy owns its own segment scheduler.
+	if cfg.Strategy == types.StrategyHLS {
+		cfg.RangeAcquisitionMode = types.RangeAcquireProbeAtEnqueue
+		cfg.SkipServerProbe = true
+		cfg.SupportsRange = false
 	}
 }
 
@@ -523,6 +539,27 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 		skipOrigin = true
 	}
 
+	// FORK-PATCH: strategy + HLS checkpoint precedence — authoritative detail
+	// store first, then the master index row. The resume snapshot is cloned
+	// so the queued cfg never aliases persisted slices.
+	var strategy types.DownloadStrategy
+	if savedState != nil && savedState.Strategy != "" {
+		strategy = savedState.Strategy
+	} else if entry != nil && entry.Strategy != "" {
+		strategy = entry.Strategy
+	}
+	var hlsResume *types.HLSResumeState
+	if savedState != nil && savedState.HLSResume != nil {
+		hlsResume = savedState.HLSResume.Clone()
+	} else if entry != nil && entry.HLSResume != nil {
+		hlsResume = entry.HLSResume.Clone()
+	}
+	if strategy == types.StrategyHLS {
+		// HLS never probed the origin and never takes a byte-range mode.
+		mode = types.RangeAcquireProbeAtEnqueue
+		skipOrigin = true
+	}
+
 	return types.DownloadRecord{
 		URL:                  url,
 		OutputPath:           outputPath,
@@ -530,9 +567,11 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 		ID:                   id,
 		Filename:             filename,
 		TotalSize:            totalSize,
-		SupportsRange:        types.ShouldUseConcurrent(mode, savedState != nil && len(savedState.Tasks) > 0),
+		SupportsRange:        strategy != types.StrategyHLS && types.ShouldUseConcurrent(mode, savedState != nil && len(savedState.Tasks) > 0),
 		RangeAcquisitionMode: mode,
 		SkipServerProbe:      skipOrigin,
+		Strategy:             strategy,
+		HLSResume:            hlsResume,
 		IsResume:             true,
 		ProgressState:        dmState,
 		Runtime:              runtime,

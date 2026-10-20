@@ -84,6 +84,11 @@ const (
 	// FORK-PATCH: Global end-game cap — proactive hedge engages only while the
 	// summed remaining bytes of all active tasks stay at or below this bound.
 	EndGameMaxRemaining = 16 * utils.MiB
+
+	// FORK-PATCH: Minimum byte size (50 MiB) for a non-HLS download to qualify
+	// for domain speedstats recording and serial measurement locking. HLS
+	// tasks carry their own eligibility flag inside HLSResumeState.
+	RecordEligibleMinFileSize = 50 * utils.MiB
 )
 
 // ByteLimiter abstracts byte-based throttling for downloads.

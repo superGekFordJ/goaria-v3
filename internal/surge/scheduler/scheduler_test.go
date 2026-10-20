@@ -2661,3 +2661,147 @@ func TestSchedulerAdmission_StoppingRejects(t *testing.T) {
 		t.Fatalf("post-shutdown snapshot = %+v", snap)
 	}
 }
+
+// FORK-PATCH: admission telemetry — candidates and busy claims must expose
+// the strategy discriminator plus speedstats eligibility, including during
+// the claim-before-register window where busySlot.ad is still nil.
+func TestSchedulerAdmission_Snapshot_StrategyAndRecordEligible(t *testing.T) {
+	ch := make(chan types.DownloadEvent, 32)
+	pool := New(ch, 1)
+
+	oldClaimed := pool.workerClaimedGate.Load()
+	t.Cleanup(func() { pool.workerClaimedGate.Store(oldClaimed) })
+	t.Cleanup(pool.GracefulShutdown)
+
+	claimed := make(chan struct{})
+	releaseClaim := make(chan struct{})
+	claimGate := func() {
+		pool.workerClaimedGate.Store(nil)
+		close(claimed)
+		<-releaseClaim
+	}
+	pool.workerClaimedGate.Store(&claimGate)
+
+	done := make(chan struct{})
+	releaseDone := make(chan struct{})
+	doneGate := func() {
+		pool.workerDoneGate.Store(nil)
+		close(done)
+		<-releaseDone
+	}
+	oldDone := pool.workerDoneGate.Load()
+	t.Cleanup(func() { pool.workerDoneGate.Store(oldDone) })
+	pool.workerDoneGate.Store(&doneGate)
+
+	var releaseClaimOnce, releaseDoneOnce sync.Once
+	defer releaseClaimOnce.Do(func() { close(releaseClaim) })
+	defer releaseDoneOnce.Do(func() { close(releaseDone) })
+
+	hlsResumeEligible := &types.HLSResumeState{
+		ManifestURL: "http://hls.example.com/eligible.m3u8", TotalSegments: 1,
+		CompletedBitmap: []byte{0x00}, RecordEligible: true,
+		Segments: make([]types.HLSSegmentState, 1),
+	}
+	hlsResumeIneligible := &types.HLSResumeState{
+		ManifestURL: "http://hls.example.com/ineligible.m3u8", TotalSegments: 1,
+		CompletedBitmap: []byte{0x00}, RecordEligible: false,
+		Segments: make([]types.HLSSegmentState, 1),
+	}
+
+	// Holder occupies the single worker slot while candidates queue behind it.
+	if !pool.Add(types.DownloadRecord{
+		ID: "holder", URL: "http://hls.example.com/holder.m3u8",
+		OutputPath: t.TempDir(), Filename: "holder.ts",
+		ProgressState: progress.New("holder", 0), Runtime: &types.RuntimeConfig{},
+		Strategy: types.StrategyHLS, HLSResume: hlsResumeEligible,
+	}) {
+		t.Fatal("holder Add refused")
+	}
+	select {
+	case <-claimed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("worker never claimed the holder")
+	}
+
+	type candWant struct {
+		strategy types.DownloadStrategy
+		eligible bool
+	}
+	add := func(id string, cfg types.DownloadRecord) {
+		cfg.ID = id
+		cfg.OutputPath = t.TempDir()
+		cfg.Filename = id + ".bin"
+		if cfg.ProgressState == nil {
+			cfg.ProgressState = progress.New(id, 0)
+		}
+		if cfg.Runtime == nil {
+			cfg.Runtime = &types.RuntimeConfig{}
+		}
+		if !pool.Add(cfg) {
+			t.Fatalf("Add %s refused", id)
+		}
+	}
+	add("at-threshold", types.DownloadRecord{TotalSize: types.RecordEligibleMinFileSize})
+	add("above-threshold", types.DownloadRecord{TotalSize: types.RecordEligibleMinFileSize + 1})
+	add("zero-size", types.DownloadRecord{TotalSize: 0})
+	add("hls-nil-resume", types.DownloadRecord{Strategy: types.StrategyHLS})
+	add("hls-eligible", types.DownloadRecord{Strategy: types.StrategyHLS, HLSResume: hlsResumeEligible})
+	add("hls-ineligible", types.DownloadRecord{Strategy: types.StrategyHLS, HLSResume: hlsResumeIneligible})
+
+	want := map[string]candWant{
+		"holder":          {types.StrategyHLS, true},
+		"at-threshold":    {"", false}, // strictly greater-than boundary
+		"above-threshold": {"", true},
+		"zero-size":       {"", false},
+		"hls-nil-resume":  {types.StrategyHLS, true},
+		"hls-eligible":    {types.StrategyHLS, true},
+		"hls-ineligible":  {types.StrategyHLS, false},
+	}
+	snap := pool.AdmissionSnapshot()
+	got := make(map[string]candWant, len(snap.Candidates))
+	for _, c := range snap.Candidates {
+		got[c.Key.ID] = candWant{c.Strategy, c.RecordEligible}
+	}
+	for id, w := range want {
+		g, ok := got[id]
+		if !ok {
+			t.Fatalf("candidate %s missing from snapshot", id)
+		}
+		if g != w {
+			t.Errorf("candidate %s = %+v, want %+v", id, g, w)
+		}
+	}
+
+	// Claim-before-register window: slot.ad is nil, so Busy must report the
+	// claim-minted cache, not config lookups.
+	if len(snap.Busy) != 1 {
+		t.Fatalf("busy slots = %d, want 1", len(snap.Busy))
+	}
+	bs := snap.Busy[0]
+	if bs.Key.ID != "holder" {
+		t.Fatalf("busy key = %+v, want holder", bs.Key)
+	}
+	if bs.Running {
+		t.Fatal("busy Running=true before registration")
+	}
+	if bs.Strategy != types.StrategyHLS || !bs.RecordEligible {
+		t.Fatalf("claim-window busy metadata = (%q, %v), want (hls, true)", bs.Strategy, bs.RecordEligible)
+	}
+
+	// After registration the live config drives the same metadata.
+	releaseClaimOnce.Do(func() { close(releaseClaim) })
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("worker never reached post-RunDownload window")
+	}
+	snap2 := pool.AdmissionSnapshot()
+	if len(snap2.Busy) != 1 {
+		t.Fatalf("busy slots after register = %d, want 1", len(snap2.Busy))
+	}
+	bs2 := snap2.Busy[0]
+	if bs2.Strategy != types.StrategyHLS || !bs2.RecordEligible {
+		t.Fatalf("registered busy metadata = (%q, %v), want (hls, true)", bs2.Strategy, bs2.RecordEligible)
+	}
+	releaseDoneOnce.Do(func() { close(releaseDone) })
+}

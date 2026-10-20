@@ -27,6 +27,7 @@ func TestScheduler_ManagedAddRuntimeReady(t *testing.T) {
 		name      string
 		runtime   *types.RuntimeConfig
 		rangeMode types.RangeAcquisitionMode
+		strategy  types.DownloadStrategy
 		wantWork  int
 		wantChunk int64
 	}{
@@ -61,6 +62,29 @@ func TestScheduler_ManagedAddRuntimeReady(t *testing.T) {
 			wantWork:  1,
 			wantChunk: 0,
 		},
+		{
+			// HLS is exempt only from the range_unsupported single-thread
+			// lock; a positive caller ceiling still bounds the workers.
+			name:      "hls exempt from range-unsupported lock",
+			runtime:   &types.RuntimeConfig{Workers: 8},
+			rangeMode: types.RangeAcquireRangeUnsupported,
+			strategy:  types.StrategyHLS,
+			wantWork:  8,
+			wantChunk: 0,
+		},
+		{
+			name:     "hls auto workers materialized",
+			runtime:  &types.RuntimeConfig{Workers: 0},
+			strategy: types.StrategyHLS,
+			wantWork: types.PerDownloadMax,
+		},
+		{
+			name:      "hls sequential still single-threaded",
+			runtime:   &types.RuntimeConfig{Workers: 16, SequentialDownload: true},
+			strategy:  types.StrategyHLS,
+			wantWork:  1,
+			wantChunk: 0,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,6 +104,7 @@ func TestScheduler_ManagedAddRuntimeReady(t *testing.T) {
 				ProgressState:        progress.New(id, 0),
 				Runtime:              tc.runtime,
 				RangeAcquisitionMode: tc.rangeMode,
+				Strategy:             tc.strategy,
 			}) {
 				t.Fatal("managed Add refused")
 			}

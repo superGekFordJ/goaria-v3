@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -818,5 +820,119 @@ func TestSafeSendProgress_CompleteTerminalReliableAgainstCanceledContext(t *test
 	second := <-ch
 	if second.Type != types.EventComplete {
 		t.Fatalf("expected EventComplete, got %v", second.Type)
+	}
+}
+
+func TestRunDownload_HLSStrategy_MutuallyExclusiveNeverFallsBackToSingle(t *testing.T) {
+	var requests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = w.Write([]byte("#EXTM3U\n#EXTINF:4.0,\nseg0.ts\n"))
+	}))
+	defer ts.Close()
+
+	tmpDir := t.TempDir()
+	progressCh := make(chan types.DownloadEvent, 16)
+	cfg := types.DownloadRecord{
+		URL:           ts.URL + "/index.m3u8",
+		OutputPath:    tmpDir,
+		Filename:      "video.ts",
+		ID:            "hls-dispatch",
+		ProgressCh:    progressCh,
+		ProgressState: progress.New("hls-dispatch", 0),
+		Runtime:       &types.RuntimeConfig{},
+		// A single-stream-looking config on purpose: the strategy branch must
+		// win before the concurrent/single selection even runs.
+		SupportsRange: false,
+		Strategy:      types.StrategyHLS,
+		HLSResume: &types.HLSResumeState{
+			ManifestURL: ts.URL + "/index.m3u8", TotalSegments: 1,
+			CompletedBitmap: []byte{0x00}, Segments: make([]types.HLSSegmentState, 1),
+		},
+	}
+
+	err := RunDownload(context.Background(), &cfg)
+	if !errors.Is(err, types.ErrHLSNotImplemented) {
+		t.Fatalf("RunDownload = %v, want ErrHLSNotImplemented", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("server requests = %d, want 0 (no probe/GET ever fires for HLS)", requests.Load())
+	}
+	for len(progressCh) > 0 {
+		ev := <-progressCh
+		if ev.Type == types.EventComplete {
+			t.Fatal("HLS stub must never emit EventComplete — playlist body is not a file")
+		}
+	}
+
+	// A pre-canceled context reports the context error, not the stub.
+	cfg2 := cfg
+	cfg2.ProgressCh = nil
+	cfg2.ID = "hls-dispatch-canceled"
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := RunDownload(ctx, &cfg2); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled RunDownload = %v, want context.Canceled", err)
+	}
+}
+
+func TestScheduler_HLSStrategy_TerminalNotRetried(t *testing.T) {
+	var requests atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("#EXTM3U\n"))
+	}))
+	defer ts.Close()
+
+	ch := make(chan types.DownloadEvent, 16)
+	pool := New(ch, 1)
+	t.Cleanup(pool.GracefulShutdown)
+
+	const id = "hls-terminal"
+	tmpDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(tmpDir, "v.ts")+types.IncompleteSuffix, nil, 0o644); err != nil {
+		t.Fatalf("precreate .surge: %v", err)
+	}
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           ts.URL + "/index.m3u8",
+		OutputPath:    tmpDir,
+		Filename:      "v.ts",
+		ProgressState: progress.New(id, 0),
+		Runtime:       &types.RuntimeConfig{},
+		Strategy:      types.StrategyHLS,
+	}) {
+		t.Fatal("Add refused")
+	}
+
+	sawStarted := false
+	sawError := false
+	deadline := time.After(10 * time.Second)
+	for !sawError {
+		select {
+		case ev := <-ch:
+			if ev.DownloadID != id {
+				continue
+			}
+			switch ev.Type {
+			case types.EventStarted:
+				sawStarted = true
+			case types.EventQueued:
+				t.Fatal("ErrHLSNotImplemented must not requeue the task")
+			case types.EventComplete:
+				t.Fatal("HLS stub must never complete")
+			case types.EventError:
+				sawError = true
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for terminal EventError")
+		}
+	}
+	if !sawStarted {
+		t.Fatal("expected EventStarted before the terminal stub error")
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("server requests = %d, want 0", requests.Load())
 	}
 }

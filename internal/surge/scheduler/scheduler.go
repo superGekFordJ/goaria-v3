@@ -54,23 +54,29 @@ type AdmissionKey struct {
 // AdmissionCandidate is a scalar snapshot of one queued opportunity in FIFO
 // order. TotalSize/Downloaded are config/checkpoint hints, not live measures.
 type AdmissionCandidate struct {
-	Key          AdmissionKey
-	RetryAt      time.Time
-	Admitted     bool
-	InFlight     bool
-	RuntimeReady bool // Runtime present with a positive Workers ceiling
-	Workers      int
-	MinChunkSize int64
-	TotalSize    int64
-	Downloaded   int64
+	Key            AdmissionKey
+	RetryAt        time.Time
+	Admitted       bool
+	InFlight       bool
+	RuntimeReady   bool // Runtime present with a positive Workers ceiling
+	Workers        int
+	MinChunkSize   int64
+	TotalSize      int64
+	Downloaded     int64
+	Strategy       types.DownloadStrategy
+	RecordEligible bool // qualifies for host speedstats recording
 }
 
 // BusySlot is one physical claim held by a worker: from waitForTask claim
 // until the worker finishes the claim's bookkeeping. Running flips true once
 // the task registers as an activeDownload and false when RunDownload returns.
+// Strategy/RecordEligible are cached at claim mint so the claim-before-
+// register window (ad == nil) still reports accurate telemetry metadata.
 type BusySlot struct {
-	Key     AdmissionKey
-	Running bool
+	Key            AdmissionKey
+	Running        bool
+	Strategy       types.DownloadStrategy
+	RecordEligible bool
 }
 
 // AdmissionSnapshot is a consistent view of the pool's admission state.
@@ -109,6 +115,9 @@ const (
 // visible without extra bookkeeping.
 type busySlot struct {
 	ad *activeDownload
+	// Cached at claim mint so snapshots stay accurate while ad is nil.
+	strategy       types.DownloadStrategy
+	recordEligible bool
 }
 
 // shouldRetryFailedDownload reports whether a whole-download failure should be
@@ -123,6 +132,9 @@ func shouldRetryFailedDownload(err error, shuttingDown bool, retries int) bool {
 		!errors.Is(err, types.ErrRangeUnsupported) &&
 		!errors.Is(err, types.ErrSourceMetadataMismatch) &&
 		!errors.Is(err, types.ErrPayloadFirstPersist) &&
+		// FORK-PATCH: every permanent HLS sentinel (including the
+		// not-implemented dispatch stub) is terminal — never retry.
+		!types.IsPermanentHLSError(err) &&
 		retries < 10
 }
 
@@ -320,6 +332,7 @@ func (p *Scheduler) AdmissionSnapshot() AdmissionSnapshot {
 			Admitted:  qt.admitted,
 			InFlight:  qt.inFlight,
 			TotalSize: qt.cfg.TotalSize,
+			Strategy:  qt.cfg.Strategy,
 		}
 		if rt := qt.cfg.Runtime; rt != nil {
 			cand.RuntimeReady = rt.Workers > 0
@@ -335,11 +348,23 @@ func (p *Scheduler) AdmissionSnapshot() AdmissionSnapshot {
 		} else {
 			cand.Downloaded = qt.cfg.Downloaded
 		}
+		cand.RecordEligible = recordEligibleForConfig(&qt.cfg, cand.TotalSize)
 		snap.Candidates = append(snap.Candidates, cand)
 	}
 	snap.Busy = make([]BusySlot, 0, len(p.busy))
 	for key, slot := range p.busy {
-		snap.Busy = append(snap.Busy, BusySlot{Key: key, Running: slot.ad != nil && slot.ad.running.Load()})
+		bs := BusySlot{
+			Key:            key,
+			Running:        slot.ad != nil && slot.ad.running.Load(),
+			Strategy:       slot.strategy,
+			RecordEligible: slot.recordEligible,
+		}
+		if slot.ad != nil {
+			// Once registered, live config wins over the claim-time cache.
+			bs.Strategy = slot.ad.config.Strategy
+			bs.RecordEligible = recordEligibleForConfig(&slot.ad.config, effectiveConfigTotalSize(&slot.ad.config))
+		}
+		snap.Busy = append(snap.Busy, bs)
 	}
 	snap.CommittedSlots = p.committedSlotsLocked()
 	return snap
@@ -428,12 +453,44 @@ func managedRuntimeCeiling(cfg types.DownloadRecord) *types.RuntimeConfig {
 	} else {
 		rt = *types.DefaultRuntimeConfig()
 	}
-	if rt.SequentialDownload || cfg.RangeAcquisitionMode == types.RangeAcquireRangeUnsupported {
+	// FORK-PATCH: HLS is exempt only from the range_unsupported single-thread
+	// lock — its segments fan out on their own scheduler. SequentialDownload
+	// still forces one worker and a positive caller ceiling stays the bound.
+	if rt.SequentialDownload || (cfg.Strategy != types.StrategyHLS && cfg.RangeAcquisitionMode == types.RangeAcquireRangeUnsupported) {
 		rt.Workers = 1
 	} else if rt.Workers <= 0 {
 		rt.Workers = rt.GetMaxConnectionsPerDownload()
 	}
 	return &rt
+}
+
+// effectiveConfigTotalSize resolves the best-known total for a config —
+// progress state, when present, is more current than the persisted hint.
+func effectiveConfigTotalSize(cfg *types.DownloadRecord) int64 {
+	if cfg == nil {
+		return 0
+	}
+	totalSize := cfg.TotalSize
+	if cfg.ProgressState != nil {
+		if _, total, _, _, _, _ := progress.CfgProgress(cfg).GetProgress(); total > 0 {
+			totalSize = total
+		}
+	}
+	return totalSize
+}
+
+// recordEligibleForConfig reports whether a config qualifies for host
+// speedstats recording. HLS tasks carry their own eligibility flag inside
+// the resume checkpoint (nil resume = eligible); byte-range tasks qualify
+// strictly above the size threshold.
+func recordEligibleForConfig(cfg *types.DownloadRecord, effectiveTotal int64) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Strategy == types.StrategyHLS {
+		return cfg.HLSResume == nil || cfg.HLSResume.RecordEligible
+	}
+	return effectiveTotal > types.RecordEligibleMinFileSize
 }
 
 // removeQueueOrderLocked removes an ID from queueOrder preserving the order of other elements.
@@ -522,6 +579,9 @@ func (p *Scheduler) Add(cfg types.DownloadRecord) bool {
 	if p.managed {
 		cfg.Runtime = managedRuntimeCeiling(cfg)
 	}
+	// FORK-PATCH: the queue must own a physically isolated checkpoint —
+	// caller-side mutations must never leak into queued state.
+	cfg.HLSResume = cfg.HLSResume.Clone()
 	p.ensureLimiterForConfigLocked(&cfg)
 	qt := &queuedTask{cfg: cfg, token: token}
 	p.queued[cfg.ID] = qt
@@ -628,12 +688,14 @@ func (p *Scheduler) GetAll() []types.DownloadRecord {
 		cfg := ad.config
 		cfg.Limiter = nil
 		syncConfigFromState(&cfg)
+		cfg.HLSResume = cfg.HLSResume.Clone()
 		configs = append(configs, cfg)
 	}
 	for _, id := range p.queueOrder {
 		if qd, ok := p.queued[id]; ok {
 			cfg := qd.cfg
 			cfg.Limiter = nil
+			cfg.HLSResume = cfg.HLSResume.Clone()
 			configs = append(configs, cfg)
 		}
 	}
@@ -653,6 +715,7 @@ func (p *Scheduler) Pause(downloadID string) PauseResult {
 			queuedConfig.RateLimit, queuedConfig.RateLimitSet = state.GetRateLimit()
 		}
 		queuedConfig.Limiter = nil
+		queuedConfig.HLSResume = queuedConfig.HLSResume.Clone()
 
 		delete(p.queued, downloadID)
 		p.removeQueueOrderLocked(downloadID)
@@ -977,6 +1040,7 @@ func (p *Scheduler) ExtractPausedConfig(downloadID string) *types.DownloadRecord
 	p.mu.Unlock()
 
 	cfg.Limiter = nil
+	cfg.HLSResume = cfg.HLSResume.Clone()
 	if cfg.ProgressState != nil {
 		progress.CfgProgress(&cfg).Resume()
 	}
@@ -1091,7 +1155,13 @@ func (p *Scheduler) waitForTask() (*queuedTask, AdmissionKey) {
 			if p.busy == nil {
 				p.busy = make(map[AdmissionKey]*busySlot)
 			}
-			p.busy[key] = &busySlot{}
+			// FORK-PATCH: cache telemetry metadata at claim mint — the
+			// claim-before-register window has slot.ad == nil, so snapshots
+			// must read strategy/eligibility from the slot, not the config.
+			p.busy[key] = &busySlot{
+				strategy:       qt.cfg.Strategy,
+				recordEligible: recordEligibleForConfig(&qt.cfg, effectiveConfigTotalSize(&qt.cfg)),
+			}
 			return qt, key
 		}
 
@@ -1174,8 +1244,10 @@ func (p *Scheduler) worker() {
 			slot.ad = ad
 		}
 
-		// Make a local copy for RunDownload to mutate safely
+		// Make a local copy for RunDownload to mutate safely; the checkpoint
+		// must be detached too or worker mutation would alias ad.config.
 		localCfg := ad.config
+		localCfg.HLSResume = localCfg.HLSResume.Clone()
 		p.mu.Unlock()
 
 		err := RunDownload(ctx, &localCfg)
@@ -1195,6 +1267,8 @@ func (p *Scheduler) worker() {
 			ad.config.RangeAcquisitionMode = localCfg.RangeAcquisitionMode
 			ad.config.SkipServerProbe = localCfg.SkipServerProbe
 			ad.config.Runtime = localCfg.Runtime
+			ad.config.Strategy = localCfg.Strategy
+			ad.config.HLSResume = localCfg.HLSResume.Clone()
 		}
 		p.mu.Unlock()
 
@@ -1294,6 +1368,9 @@ func (p *Scheduler) worker() {
 				retryDelay := time.Second * time.Duration(qt.retries)
 				qt.retryAt = time.Now().Add(retryDelay)
 				qt.inFlight = true // Keep in-flight while sending progress outside lock
+				// Detach the checkpoint so the requeued entry cannot alias
+				// the worker-local slices the next run may still mutate.
+				localCfg.HLSResume = localCfg.HLSResume.Clone()
 				qt.cfg = localCfg
 				qt.token = newToken
 				qt.admitted = false

@@ -53,6 +53,16 @@ var (
 	// VerifiedProgress delta past the fuse limit. NOT ErrRangeUnsupported —
 	// aliasing it would falsely trigger shouldFallbackToSingle Truncate+single.
 	ErrNoProgress = errors.New("no verified progress across residual rotations")
+
+	// FORK-PATCH: Permanent HLS strategy errors (terminal; must not retry or
+	// fall back to the byte-range downloaders).
+	ErrHLSLiveNotSupported             = errors.New("hls live stream is not supported")
+	ErrHLSDRMNotSupported              = errors.New("hls DRM encrypted stream is not supported")
+	ErrHLSDemuxedAudioNotSupported     = errors.New("hls demuxed external audio stream is not supported")
+	ErrHLSDiscontinuityMapNotSupported = errors.New("hls fMP4 stream with multiple init maps across discontinuity is not supported")
+	ErrHLSInvalidManifest              = errors.New("invalid hls manifest")
+	ErrHLSInvalidSegmentResponse       = errors.New("invalid hls segment response")
+	ErrHLSNotImplemented               = errors.New("hls downloader not implemented")
 )
 
 // PayloadFirstMismatchKind classifies why payload-first headers failed the
@@ -98,6 +108,18 @@ func (e *SourceMetadataMismatchError) Unwrap() error {
 // should not be retried by the scheduler.
 func IsPermanentHTTPError(err error) bool {
 	return errors.Is(err, ErrPermanentHTTP)
+}
+
+// IsPermanentHLSError reports whether err matches a permanent HLS error
+// sentinel that must not be retried by the scheduler.
+func IsPermanentHLSError(err error) bool {
+	return errors.Is(err, ErrHLSLiveNotSupported) ||
+		errors.Is(err, ErrHLSDRMNotSupported) ||
+		errors.Is(err, ErrHLSDemuxedAudioNotSupported) ||
+		errors.Is(err, ErrHLSDiscontinuityMapNotSupported) ||
+		errors.Is(err, ErrHLSInvalidManifest) ||
+		errors.Is(err, ErrHLSInvalidSegmentResponse) ||
+		errors.Is(err, ErrHLSNotImplemented)
 }
 
 // IsPermanentHTTPStatus reports whether the given HTTP status code represents

@@ -3,6 +3,7 @@ package types
 import (
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sync/atomic"
 )
 
@@ -79,6 +80,15 @@ type DownloadRecord struct {
 	// after mode promotes to RangeSupported. Persisted via the detail whitelist.
 	SkipServerProbe bool `json:"skip_server_probe,omitempty"`
 
+	// FORK-PATCH: strategy discriminator. Empty is StrategyAuto; StrategyHLS
+	// routes the task to the HLS downloader. Persisted in both the detail
+	// whitelist and master.gob.
+	Strategy DownloadStrategy `json:"strategy,omitempty"`
+	// FORK-PATCH: immutable HLS resume snapshot. Persisted only in the detail
+	// whitelist — master.gob scrubs it. Every cross-boundary handoff must go
+	// through Clone() so the four inner slices stay physically isolated.
+	HLSResume *HLSResumeState `json:"hls_resume,omitempty"`
+
 	// Runtime / Transient fields. Persistence is controlled by the store
 	// layer's explicit whitelist projection plus master-index scrubbing —
 	// gob ignores struct tags, so the old gob:"-" markers were dead letters.
@@ -92,6 +102,84 @@ type DownloadRecord struct {
 	Limiter            ByteLimiter          `json:"-"`
 	IsExplicitCategory bool                 `json:"-"`
 	SupportsRange      bool                 `json:"-"`
+}
+
+// DownloadStrategy selects the downloader backend for a task.
+// FORK-PATCH: empty is the default byte-range strategy; "hls" routes the
+// task to the HLS segment downloader.
+type DownloadStrategy string
+
+const (
+	StrategyAuto DownloadStrategy = ""    // byte-range: concurrent or single per RangeAcquisitionMode / SupportsRange
+	StrategyHLS  DownloadStrategy = "hls" // HLS segment strategy
+)
+
+// HLSSegmentState is the persisted per-segment checkpoint of an HLS download.
+type HLSSegmentState struct {
+	Index          int    `json:"index"`
+	Sequence       int64  `json:"sequence"`
+	URI            string `json:"uri"`
+	DurationMicros int64  `json:"duration_micros,omitempty"`
+	ByteOffset     int64  `json:"byte_offset,omitempty"`
+	ByteLength     int64  `json:"byte_length,omitempty"`
+	// KeyIndex is 1-based: 0 means the segment is unencrypted, while
+	// 1..len(Keys) maps to Keys[KeyIndex-1].
+	KeyIndex int    `json:"key_index,omitempty"`
+	IVHex    string `json:"iv_hex,omitempty"`
+}
+
+// HLSKeyInfo is one EXT-X-KEY decryption descriptor.
+type HLSKeyInfo struct {
+	Method string `json:"method"`
+	URI    string `json:"uri"`
+	IVHex  string `json:"iv_hex,omitempty"`
+}
+
+// HLSSpillEntry locates one segment payload inside the spill file.
+type HLSSpillEntry struct {
+	SegmentIndex int   `json:"segment_index"`
+	Offset       int64 `json:"offset"`
+	Length       int64 `json:"length"`
+}
+
+// HLSResumeState is the immutable resume snapshot of an HLS download,
+// persisted inside details/<id>.gob only (never master.gob).
+type HLSResumeState struct {
+	ManifestURL         string            `json:"manifest_url"`
+	MediaPlaylistURL    string            `json:"media_playlist_url"`
+	SegmentRefURL       string            `json:"segment_ref_url,omitempty"`
+	ManifestFingerprint string            `json:"manifest_fingerprint"`
+	ContainerFormat     string            `json:"container_format"`
+	EstimatedBytes      int64             `json:"estimated_bytes,omitempty"`
+	RecordEligible      bool              `json:"record_eligible"`
+	InitSegmentURI      string            `json:"init_segment_uri,omitempty"`
+	InitCompleted       bool              `json:"init_completed,omitempty"`
+	InitBytes           int64             `json:"init_bytes,omitempty"`
+	TotalSegments       int               `json:"total_segments"`
+	CompletedBitmap     []byte            `json:"completed_bitmap"`
+	MergedSegments      int               `json:"merged_segments"`
+	MergedBytes         int64             `json:"merged_bytes"`
+	VerifiedBytes       int64             `json:"verified_bytes"`
+	SpillPath           string            `json:"spill_path,omitempty"`
+	SpillFileSize       int64             `json:"spill_file_size,omitempty"`
+	SpillEntries        []HLSSpillEntry   `json:"spill_entries,omitempty"`
+	Keys                []HLSKeyInfo      `json:"keys,omitempty"`
+	Segments            []HLSSegmentState `json:"segments,omitempty"`
+}
+
+// Clone returns a physically isolated copy: scalar fields are copied by value
+// and all four inner slices are deep-copied so a clone can never share
+// backing arrays with the source. Nil-safe.
+func (s *HLSResumeState) Clone() *HLSResumeState {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	cp.CompletedBitmap = slices.Clone(s.CompletedBitmap)
+	cp.SpillEntries = slices.Clone(s.SpillEntries)
+	cp.Keys = slices.Clone(s.Keys)
+	cp.Segments = slices.Clone(s.Segments)
+	return &cp
 }
 
 // MasterList holds all tracked downloads.

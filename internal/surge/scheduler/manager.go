@@ -309,6 +309,9 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		// copyBackConcurrent's later writes to RangeAcquisitionMode/SkipServerProbe
 		// cannot race with copyRangeAcquisition reading m.State.
 		snap := *cfg
+		// FORK-PATCH: detach the checkpoint — the event consumer may hold the
+		// snapshot while the worker keeps mutating the live config.
+		snap.HLSResume = cfg.HLSResume.Clone()
 		safeSendProgress(cfg.ProgressCh, types.DownloadEvent{
 			Type:         types.EventStarted,
 			DownloadID:   cfg.ID,
@@ -341,7 +344,18 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 	var downloadErr error
 	useConcurrent := types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, cfg.SupportsRange)
 
-	if useConcurrent {
+	if cfg.Strategy == types.StrategyHLS {
+		// FORK-PATCH: mutually exclusive HLS dispatch. The segment downloader
+		// lands later; until then HLS must never enter the concurrent or
+		// single downloaders — a playlist body is not a file payload, and a
+		// "successful" single GET would fake completion.
+		utils.Debug("Using HLS downloader strategy")
+		if err := ctx.Err(); err != nil {
+			downloadErr = err
+		} else {
+			downloadErr = types.ErrHLSNotImplemented
+		}
+	} else if useConcurrent {
 		utils.Debug("Using concurrent downloader")
 
 		// We probe all candidate mirrors (mirrors) to filter out invalid ones
@@ -424,7 +438,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		}
 	}
 
-	if !useConcurrent {
+	if cfg.Strategy != types.StrategyHLS && !useConcurrent {
 		// Fallback to single-threaded downloader
 		utils.Debug("Using single-threaded downloader")
 		d := single.NewSingleDownloader(cfg.ID, cfg.ProgressCh, progState, cfg.Runtime)

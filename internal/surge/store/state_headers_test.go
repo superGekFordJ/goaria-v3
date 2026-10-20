@@ -416,3 +416,182 @@ func TestAddToMasterList_ScrubsSecretsAndRuntime(t *testing.T) {
 		t.Error("master.gob contains credential material")
 	}
 }
+
+func TestSaveLoadState_HLSResumeRoundTripAndMasterScrub(t *testing.T) {
+	tmpDir := setupTestDB(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer CloseDB()
+
+	url := "https://hls.example.com/index.m3u8"
+	destPath := filepath.Join(tmpDir, "video.ts")
+	id := "hls-roundtrip-id"
+	resume := &types.HLSResumeState{
+		ManifestURL:         url,
+		MediaPlaylistURL:    "https://hls.example.com/media.m3u8",
+		SegmentRefURL:       "https://hls.example.com/segment-ref.m3u8",
+		ManifestFingerprint: "fingerprint-abc",
+		ContainerFormat:     "mpegts",
+		EstimatedBytes:      8 << 20,
+		RecordEligible:      true,
+		TotalSegments:       9,
+		CompletedBitmap:     []byte{0xFF, 0x01},
+		MergedSegments:      4,
+		MergedBytes:         1234,
+		VerifiedBytes:       5678,
+		SpillPath:           filepath.Join(tmpDir, "video.ts.spill"),
+		SpillFileSize:       4096,
+		SpillEntries:        []types.HLSSpillEntry{{SegmentIndex: 0, Offset: 0, Length: 512}},
+		Keys:                []types.HLSKeyInfo{{Method: "AES-128", URI: "https://hls.example.com/key.bin"}},
+		Segments: []types.HLSSegmentState{
+			{Index: 0, Sequence: 1, URI: "seg00001.ts", DurationMicros: 4e6, KeyIndex: 1},
+			{Index: 8, Sequence: 9, URI: "seg00009.ts", ByteLength: 777},
+		},
+	}
+
+	if err := AddToMasterList(types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "video.ts",
+		Status: "paused", Strategy: types.StrategyHLS, HLSResume: resume,
+	}); err != nil {
+		t.Fatalf("AddToMasterList failed: %v", err)
+	}
+
+	// Master is the lightweight index: Strategy survives, the resume payload
+	// is scrubbed.
+	masterRow, err := GetDownload(id)
+	if err != nil || masterRow == nil {
+		t.Fatalf("GetDownload failed: %v (nil=%v)", err, masterRow == nil)
+	}
+	if masterRow.Strategy != types.StrategyHLS {
+		t.Errorf("master Strategy = %q, want %q", masterRow.Strategy, types.StrategyHLS)
+	}
+	if masterRow.HLSResume != nil {
+		t.Errorf("master HLSResume = %+v, want nil", masterRow.HLSResume)
+	}
+	rawMaster, err := os.ReadFile(getMasterPath())
+	if err != nil {
+		t.Fatalf("read master.gob: %v", err)
+	}
+	if bytes.Contains(rawMaster, []byte("segment-ref.m3u8")) || bytes.Contains(rawMaster, []byte("seg00001.ts")) {
+		t.Error("master.gob leaked HLS resume payload")
+	}
+
+	// HLS detail save must never attempt the byte-range file hash, even when
+	// a .surge artifact exists on disk.
+	if err := os.WriteFile(destPath+types.IncompleteSuffix, []byte("partial"), 0o644); err != nil {
+		t.Fatalf("write .surge: %v", err)
+	}
+	state := &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "video.ts",
+		Status: "paused", Downloaded: 5678, Strategy: types.StrategyHLS,
+		HLSResume: resume,
+	}
+	if err := SaveState(url, destPath, state); err != nil {
+		t.Fatalf("SaveState failed: %v", err)
+	}
+	if state.FileHash != "" {
+		t.Errorf("HLS FileHash = %q, want empty", state.FileHash)
+	}
+
+	loaded, err := LoadState(url, destPath)
+	if err != nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if loaded == nil {
+		t.Fatal("LoadState returned nil")
+	}
+	if loaded.Strategy != types.StrategyHLS {
+		t.Errorf("detail Strategy = %q, want %q", loaded.Strategy, types.StrategyHLS)
+	}
+	lr := loaded.HLSResume
+	if lr == nil {
+		t.Fatal("detail HLSResume is nil")
+	}
+	if lr.ManifestURL != resume.ManifestURL || lr.MediaPlaylistURL != resume.MediaPlaylistURL ||
+		lr.SegmentRefURL != resume.SegmentRefURL || lr.ManifestFingerprint != resume.ManifestFingerprint ||
+		lr.ContainerFormat != resume.ContainerFormat || lr.EstimatedBytes != resume.EstimatedBytes ||
+		!lr.RecordEligible || lr.TotalSegments != resume.TotalSegments ||
+		lr.MergedSegments != resume.MergedSegments || lr.MergedBytes != resume.MergedBytes ||
+		lr.VerifiedBytes != resume.VerifiedBytes || lr.SpillPath != resume.SpillPath ||
+		lr.SpillFileSize != resume.SpillFileSize {
+		t.Errorf("HLSResume scalars corrupted on round-trip: %+v", lr)
+	}
+	if len(lr.CompletedBitmap) != 2 || lr.CompletedBitmap[0] != 0xFF || lr.CompletedBitmap[1] != 0x01 {
+		t.Errorf("CompletedBitmap = %v, want [0xFF 0x01]", lr.CompletedBitmap)
+	}
+	if len(lr.SpillEntries) != 1 || lr.SpillEntries[0].Length != 512 {
+		t.Errorf("SpillEntries = %+v", lr.SpillEntries)
+	}
+	if len(lr.Keys) != 1 || lr.Keys[0].URI != resume.Keys[0].URI {
+		t.Errorf("Keys = %+v", lr.Keys)
+	}
+	if len(lr.Segments) != 2 || lr.Segments[1].ByteLength != 777 {
+		t.Errorf("Segments = %+v", lr.Segments)
+	}
+
+	// The decoded snapshot must be physically isolated from the source.
+	resume.Segments[0].URI = "mutated-source"
+	resume.CompletedBitmap[0] = 0x00
+	if lr.Segments[0].URI != "seg00001.ts" || lr.CompletedBitmap[0] != 0xFF {
+		t.Error("source mutation leaked into decoded HLSResume")
+	}
+
+	// LoadStates decodes the same file.
+	states, err := LoadStates([]string{id})
+	if err != nil {
+		t.Fatalf("LoadStates failed: %v", err)
+	}
+	if st := states[id]; st == nil || st.HLSResume == nil || st.HLSResume.TotalSegments != 9 {
+		t.Errorf("LoadStates[%s] HLSResume = %+v", id, st)
+	}
+
+	// Sparse write: Strategy "" must not demote the master's persisted "hls".
+	sparse := &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "video.ts",
+		Status: "paused", Downloaded: 9999,
+	}
+	if err := SaveStateWithOptions(url, destPath, sparse, SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("sparse SaveStateWithOptions failed: %v", err)
+	}
+	masterRow, err = GetDownload(id)
+	if err != nil || masterRow == nil {
+		t.Fatalf("GetDownload after sparse save failed: %v", err)
+	}
+	if masterRow.Strategy != types.StrategyHLS {
+		t.Errorf("sparse save demoted master Strategy to %q", masterRow.Strategy)
+	}
+	if masterRow.Downloaded != 9999 {
+		t.Errorf("sparse save Downloaded = %d, want 9999", masterRow.Downloaded)
+	}
+}
+
+func TestSaveState_HLSStrategyRestoresEmptyMasterStrategy(t *testing.T) {
+	tmpDir := setupTestDB(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer CloseDB()
+
+	url := "https://hls.example.com/list.m3u8"
+	destPath := filepath.Join(tmpDir, "v.ts")
+	id := "hls-strategy-promote-id"
+
+	// Master row without Strategy (e.g. written before strategy plumbing).
+	if err := AddToMasterList(types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "v.ts", Status: "paused",
+	}); err != nil {
+		t.Fatalf("AddToMasterList failed: %v", err)
+	}
+
+	if err := SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "v.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+	}, SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("SaveStateWithOptions failed: %v", err)
+	}
+
+	masterRow, err := GetDownload(id)
+	if err != nil || masterRow == nil {
+		t.Fatalf("GetDownload failed: %v", err)
+	}
+	if masterRow.Strategy != types.StrategyHLS {
+		t.Errorf("master Strategy = %q, want promoted %q", masterRow.Strategy, types.StrategyHLS)
+	}
+}

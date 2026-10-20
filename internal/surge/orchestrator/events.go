@@ -50,6 +50,25 @@ func advanceRemainingTasks(tasks []types.Task, consumed int64) []types.Task {
 // invalid Tasks are treated as taskless; Downloaded/Tasks accounting equality is
 // not required (saveStateSnapshot uses max(VerifiedProgress, TotalSize-remaining)).
 func isTaskBackedResumeSnapshot(rec types.DownloadRecord) bool {
+	// FORK-PATCH: an HLS snapshot is authoritative only when its resume
+	// checkpoint satisfies the strict invariants; sparse lifecycle events
+	// must not overwrite the durable checkpoint with partial data.
+	if rec.Strategy == types.StrategyHLS {
+		hr := rec.HLSResume
+		if hr == nil || hr.TotalSegments <= 0 {
+			return false
+		}
+		if len(hr.Segments) != hr.TotalSegments || len(hr.CompletedBitmap) != (hr.TotalSegments+7)/8 {
+			return false
+		}
+		if hr.MergedSegments < 0 || hr.MergedSegments > hr.TotalSegments {
+			return false
+		}
+		if hr.MergedBytes < 0 || hr.VerifiedBytes < hr.MergedBytes || rec.Downloaded != hr.VerifiedBytes {
+			return false
+		}
+		return true
+	}
 	if len(rec.Tasks) == 0 || rec.TotalSize <= 0 {
 		return false
 	}
@@ -76,6 +95,10 @@ func copyRangeAcquisition(dst *types.DownloadRecord, src *types.DownloadRecord) 
 	}
 	if !dst.SkipServerProbe {
 		dst.SkipServerProbe = src.SkipServerProbe
+	}
+	// FORK-PATCH: same sparse-merge rule for the strategy discriminator.
+	if dst.Strategy == "" {
+		dst.Strategy = src.Strategy
 	}
 }
 
@@ -147,12 +170,13 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				copyRangeAcquisition(&entry, existing)
 				copyCreatedAt(&entry, existing)
 			}
-			if entry.RangeAcquisitionMode == "" {
-				copyRangeAcquisition(&entry, m.State)
-			}
+			// FORK-PATCH: fill-empty merge is idempotent — also picks up the
+			// strategy discriminator even when the range mode is already set.
+			copyRangeAcquisition(&entry, m.State)
 			// FORK-PATCH: skip gob-zero insert only when no master row exists.
-			// ProbeAtEnqueue queued rows (empty mode) must still move to downloading.
-			if entry.RangeAcquisitionMode == "" && existing == nil {
+			// ProbeAtEnqueue queued rows (empty mode) and HLS strategy rows
+			// must still move to downloading.
+			if entry.RangeAcquisitionMode == "" && entry.Strategy == "" && existing == nil {
 				break
 			}
 			if err := store.AddToMasterList(entry); err != nil {
@@ -169,7 +193,9 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 
 				entry := *existing
 				entry.Status = "paused"
-				if m.Downloaded > 0 {
+				// FORK-PATCH: a sparse pause event is not authoritative for an
+				// HLS task — Downloaded belongs to the resume checkpoint.
+				if existing.Strategy != types.StrategyHLS && m.Downloaded > 0 {
 					entry.Downloaded = m.Downloaded
 				}
 				if err := store.AddToMasterList(entry); err != nil {
@@ -179,10 +205,11 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				if existing.URL != "" && existing.DestPath != "" {
 					saved, err := store.LoadState(existing.URL, existing.DestPath)
 					if err == nil && saved != nil {
+						copyRangeAcquisition(saved, existing)
 						prevDownloaded := saved.Downloaded
 						prevElapsed := saved.Elapsed
 
-						if m.Downloaded > saved.Downloaded {
+						if saved.Strategy != types.StrategyHLS && m.Downloaded > saved.Downloaded {
 							delta := m.Downloaded - saved.Downloaded
 							saved.Tasks = advanceRemainingTasks(saved.Tasks, delta)
 							saved.Downloaded = m.Downloaded
@@ -321,6 +348,18 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			}
 			if err := store.AddToMasterList(entry); err != nil {
 				utils.Debug("Lifecycle: Failed to persist paused state: %v", err)
+			}
+
+			// FORK-PATCH: detach the snapshot's HLS checkpoint slices, and when
+			// a sparse event carries the strategy but no resume, recover the
+			// durable checkpoint so the pause write cannot erase it.
+			if snapshot.HLSResume != nil {
+				snapshot.HLSResume = snapshot.HLSResume.Clone()
+			}
+			if snapshot.Strategy == types.StrategyHLS && snapshot.HLSResume == nil && url != "" && destPath != "" {
+				if prev, prevErr := store.LoadState(url, destPath); prevErr == nil && prev != nil {
+					snapshot.HLSResume = prev.HLSResume.Clone()
+				}
 			}
 
 			// Persist enough chunk metadata for resume, but only once we have the same
@@ -550,6 +589,18 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				}
 				if err := store.AddToMasterList(entry); err != nil {
 					utils.Debug("Lifecycle: Failed to persist error state: %v", err)
+				}
+
+				// FORK-PATCH: same HLS checkpoint protection as EventPaused —
+				// clone before save, recover the durable checkpoint when a
+				// sparse event carried strategy but no resume.
+				if snapshot.HLSResume != nil {
+					snapshot.HLSResume = snapshot.HLSResume.Clone()
+				}
+				if snapshot.Strategy == types.StrategyHLS && snapshot.HLSResume == nil && url != "" && destPath != "" {
+					if prev, prevErr := store.LoadState(url, destPath); prevErr == nil && prev != nil {
+						snapshot.HLSResume = prev.HLSResume.Clone()
+					}
 				}
 
 				if destPath != "" && url != "" {

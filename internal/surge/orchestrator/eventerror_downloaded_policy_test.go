@@ -467,3 +467,212 @@ func TestEventError_Identity_DownloadIDWinsOverSnapshotID(t *testing.T) {
 		t.Fatalf("detail ID=%q, want %q (not snapshot id-B)", saved.ID, masterID)
 	}
 }
+
+func TestIsTaskBackedResumeSnapshot_HLSMatrix(t *testing.T) {
+	t.Parallel()
+
+	validResume := func() *types.HLSResumeState {
+		return &types.HLSResumeState{
+			ManifestURL:         "https://hls.example.com/index.m3u8",
+			MediaPlaylistURL:    "https://hls.example.com/media.m3u8",
+			ManifestFingerprint: "fp",
+			TotalSegments:       9,
+			CompletedBitmap:     []byte{0xFF, 0x01},
+			MergedSegments:      4,
+			MergedBytes:         400,
+			VerifiedBytes:       500,
+			Segments:            make([]types.HLSSegmentState, 9),
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(rec *types.DownloadRecord)
+		want   bool
+	}{
+		{
+			name:   "valid",
+			mutate: func(rec *types.DownloadRecord) {},
+			want:   true,
+		},
+		{
+			name:   "nil_resume",
+			mutate: func(rec *types.DownloadRecord) { rec.HLSResume = nil },
+			want:   false,
+		},
+		{
+			name: "zero_total_segments",
+			mutate: func(rec *types.DownloadRecord) {
+				rec.HLSResume.TotalSegments = 0
+				rec.HLSResume.Segments = nil
+				rec.HLSResume.CompletedBitmap = nil
+			},
+			want: false,
+		},
+		{
+			name: "bitmap_length_mismatch",
+			mutate: func(rec *types.DownloadRecord) {
+				rec.HLSResume.CompletedBitmap = []byte{0xFF}
+			},
+			want: false,
+		},
+		{
+			name: "segments_length_mismatch",
+			mutate: func(rec *types.DownloadRecord) {
+				rec.HLSResume.Segments = rec.HLSResume.Segments[:8]
+			},
+			want: false,
+		},
+		{
+			name: "merged_bytes_gt_verified",
+			mutate: func(rec *types.DownloadRecord) {
+				rec.HLSResume.MergedBytes = 600
+			},
+			want: false,
+		},
+		{
+			name: "downloaded_ne_verified",
+			mutate: func(rec *types.DownloadRecord) {
+				rec.Downloaded = 499
+			},
+			want: false,
+		},
+		{
+			name: "merged_segments_gt_total",
+			mutate: func(rec *types.DownloadRecord) {
+				rec.HLSResume.MergedSegments = 10
+			},
+			want: false,
+		},
+		{
+			name: "negative_merged_bytes",
+			mutate: func(rec *types.DownloadRecord) {
+				rec.HLSResume.MergedBytes = -1
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rec := types.DownloadRecord{
+				Strategy:   types.StrategyHLS,
+				Downloaded: 500,
+				HLSResume:  validResume(),
+			}
+			tt.mutate(&rec)
+			if got := isTaskBackedResumeSnapshot(rec); got != tt.want {
+				t.Fatalf("isTaskBackedResumeSnapshot()=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEventLifecycle_PreservesHLSStrategyAndResumeState(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "video.ts")
+	url := "https://hls.example.com/index.m3u8"
+	id := "hls-lifecycle"
+
+	resume := &types.HLSResumeState{
+		ManifestURL:         url,
+		MediaPlaylistURL:    "https://hls.example.com/media.m3u8",
+		ManifestFingerprint: "fp-life",
+		TotalSegments:       9,
+		CompletedBitmap:     []byte{0x0F, 0x00},
+		MergedSegments:      4,
+		MergedBytes:         400,
+		VerifiedBytes:       500,
+		SpillPath:           filepath.Join(tmpDir, "video.ts.spill"),
+		Segments:            make([]types.HLSSegmentState, 9),
+	}
+
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID:         id,
+		URL:        url,
+		URLHash:    store.URLHash(url),
+		DestPath:   destPath,
+		Filename:   "video.ts",
+		Status:     "downloading",
+		Downloaded: 500,
+		Strategy:   types.StrategyHLS,
+	})
+	// Durable detail checkpoint — the authoritative HLS resume state.
+	if err := store.SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "video.ts",
+		Status: "downloading", Downloaded: 500,
+		Strategy: types.StrategyHLS, HLSResume: resume,
+	}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("seed detail: %v", err)
+	}
+
+	ch := make(chan types.DownloadEvent, 4)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	// EventStarted must not demote the persisted strategy.
+	ch <- types.DownloadEvent{
+		Type:       types.EventStarted,
+		DownloadID: id,
+		URL:        url,
+		DestPath:   destPath,
+		Filename:   "video.ts",
+		State:      &types.DownloadRecord{Strategy: types.StrategyHLS},
+	}
+	// Sparse pause (m.State == nil) must not advance HLS Downloaded.
+	ch <- types.DownloadEvent{
+		Type:       types.EventPaused,
+		DownloadID: id,
+		Downloaded: 9999,
+	}
+	// Sparse error carrying strategy but no resume must not erase the
+	// durable checkpoint.
+	ch <- types.DownloadEvent{
+		Type:       types.EventError,
+		DownloadID: id,
+		Err:        errors.New("network reset"),
+		State:      &types.DownloadRecord{Downloaded: 0},
+	}
+	close(ch)
+	<-done
+
+	entry, err := store.GetDownload(id)
+	if err != nil || entry == nil {
+		t.Fatalf("GetDownload: %v (nil=%v)", err, entry == nil)
+	}
+	if entry.Strategy != types.StrategyHLS {
+		t.Errorf("master Strategy = %q, want %q", entry.Strategy, types.StrategyHLS)
+	}
+	if entry.Status != "error" {
+		t.Errorf("master Status = %q, want error", entry.Status)
+	}
+	// The sparse pause Downloaded=9999 must never reach an HLS row; the
+	// error snapshot merged to the checkpoint-backed 500.
+	if entry.Downloaded != 500 {
+		t.Errorf("master Downloaded = %d, want 500", entry.Downloaded)
+	}
+
+	saved, err := store.LoadState(url, destPath)
+	if err != nil || saved == nil {
+		t.Fatalf("LoadState: %v (nil=%v)", err, saved == nil)
+	}
+	if saved.Strategy != types.StrategyHLS {
+		t.Errorf("detail Strategy = %q, want %q", saved.Strategy, types.StrategyHLS)
+	}
+	if saved.HLSResume == nil {
+		t.Fatal("detail HLSResume erased by sparse events")
+	}
+	if saved.HLSResume.MergedSegments != 4 || saved.HLSResume.VerifiedBytes != 500 ||
+		saved.HLSResume.TotalSegments != 9 || len(saved.HLSResume.CompletedBitmap) != 2 {
+		t.Errorf("detail HLSResume = %+v, want durable checkpoint", saved.HLSResume)
+	}
+	if saved.Downloaded != 500 {
+		t.Errorf("detail Downloaded = %d, want 500 (sparse pause must not advance)", saved.Downloaded)
+	}
+}

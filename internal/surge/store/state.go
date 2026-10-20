@@ -71,6 +71,11 @@ type persistedDetailRecord struct {
 	RangeAcquisitionMode types.RangeAcquisitionMode
 	SkipServerProbe      bool
 	Headers              map[string]string
+	// FORK-PATCH: strategy + HLS checkpoint are authoritative detail-store
+	// data. HLSResume is cloned across the boundary so an in-memory snapshot
+	// can never alias the gob-decoded slices.
+	Strategy  types.DownloadStrategy
+	HLSResume *types.HLSResumeState
 }
 
 func toPersisted(s *types.DownloadRecord) *persistedDetailRecord {
@@ -102,6 +107,8 @@ func toPersisted(s *types.DownloadRecord) *persistedDetailRecord {
 		RangeAcquisitionMode: s.RangeAcquisitionMode,
 		SkipServerProbe:      s.SkipServerProbe,
 		Headers:              s.Headers,
+		Strategy:             s.Strategy,
+		HLSResume:            s.HLSResume.Clone(),
 	}
 }
 
@@ -134,6 +141,8 @@ func toRecord(s *persistedDetailRecord) *types.DownloadRecord {
 		RangeAcquisitionMode: s.RangeAcquisitionMode,
 		SkipServerProbe:      s.SkipServerProbe,
 		Headers:              s.Headers,
+		Strategy:             s.Strategy,
+		HLSResume:            s.HLSResume.Clone(),
 	}
 }
 
@@ -176,7 +185,9 @@ func SaveStateWithOptions(url string, destPath string, state *types.DownloadReco
 	if hashTimeout <= 0 {
 		hashTimeout = DefaultInlineHashTimeout
 	}
-	if opts.SkipFileHash {
+	if opts.SkipFileHash || state.Strategy == types.StrategyHLS {
+		// FORK-PATCH: HLS tasks own a spill/pipeline layout, not a single
+		// .surge artifact — the byte-range file hash is meaningless for them.
 		state.FileHash = ""
 	} else {
 		fileHash, timedOut, err := computeFileHashMD5WithTimeout(state.DestPath+types.IncompleteSuffix, hashTimeout)
@@ -247,6 +258,11 @@ func SaveStateWithOptions(url string, destPath string, state *types.DownloadReco
 			}
 			if state.SkipServerProbe {
 				list.Downloads[i].SkipServerProbe = true
+			}
+			// FORK-PATCH: same sparse-write rule — a gob-zero Strategy must
+			// never demote a persisted "hls" back to auto.
+			if state.Strategy != "" {
+				list.Downloads[i].Strategy = state.Strategy
 			}
 			if err := saveMasterListLocked(list); err != nil {
 				return fmt.Errorf("failed to update master list: %w", err)
@@ -533,6 +549,9 @@ func AddToMasterList(entry types.DownloadRecord) error {
 	// Headers stay confined to details/<id>.gob, and an unregistered
 	// ProgressState can no longer fail the whole master write.
 	entry.Headers = nil
+	// FORK-PATCH: Strategy survives (it is the dispatch discriminator) but the
+	// bulky HLS resume payload stays confined to details/<id>.gob.
+	entry.HLSResume = nil
 	entry.ProgressState = nil
 	entry.ProgressCh = nil
 	entry.Runtime = nil

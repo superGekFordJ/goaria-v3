@@ -204,12 +204,26 @@ type DownloadRequest struct {
 	SupportsRange        *bool
 	RangeAcquisitionMode types.RangeAcquisitionMode
 	SkipServerProbe      bool
+	// FORK-PATCH: strategy discriminator + caller-owned HLS resume snapshot.
+	// StrategyHLS skips the origin probe entirely (a playlist has no byte
+	// range to probe) and carries no FileSize/Range requirements.
+	Strategy  types.DownloadStrategy
+	HLSResume *types.HLSResumeState
 }
 
 // FORK-PATCH: skip ProbeServer iff trusted size, trimmed filename, and skip mode
 // (or 286 explicit Range pointer). Does not take probeSem.
 func shouldSkipServerProbe(req *DownloadRequest) bool {
-	if req == nil || req.FileSize <= 0 || strings.TrimSpace(req.Filename) == "" {
+	if req == nil {
+		return false
+	}
+	// FORK-PATCH: HLS has no byte-range probe target — a Range bytes=0-0
+	// request against an .m3u8 would corrupt inferred TotalSize. Skip the
+	// probe unconditionally, even with an empty filename/size.
+	if req.Strategy == types.StrategyHLS {
+		return true
+	}
+	if req.FileSize <= 0 || strings.TrimSpace(req.Filename) == "" {
 		return false
 	}
 	return types.ShouldSkipServerProbe(req.RangeAcquisitionMode, req.SupportsRange)
@@ -226,6 +240,17 @@ func resolvedRangeMode(req *DownloadRequest) types.RangeAcquisitionMode {
 // SupportsRange bool is true only for proven RangeSupported.
 func synthesizedProbeResult(req *DownloadRequest) *probing.ProbeResult {
 	name := strings.TrimSpace(req.Filename)
+	// FORK-PATCH: HLS tasks have no trusted byte size and no range decision —
+	// keep ProbeAtEnqueue semantics (zero size, SupportsRange false) instead
+	// of inferring RangeUnsupported from the probe-free path.
+	if req.Strategy == types.StrategyHLS {
+		return &probing.ProbeResult{
+			FileSize:         0,
+			SupportsRange:    false,
+			Filename:         name,
+			DetectedFilename: name,
+		}
+	}
 	mode := resolvedRangeMode(req)
 	return &probing.ProbeResult{
 		FileSize:         req.FileSize,
@@ -395,6 +420,8 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			MinChunkSize:         queuedEvent.MinChunkSize,
 			RangeAcquisitionMode: cfg.RangeAcquisitionMode,
 			SkipServerProbe:      cfg.SkipServerProbe,
+			Strategy:             cfg.Strategy,
+			HLSResume:            cfg.HLSResume.Clone(),
 		}); err != nil {
 			utils.Debug("Lifecycle: Failed to persist queued download synchronously: %v", err)
 		}
@@ -404,7 +431,10 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		// precreated 0-byte .surge would plant a hash ValidateIntegrity
 		// later flags as tampering, deleting the file plus master/detail
 		// state. Best-effort: enqueue must not fail on it.
-		if len(req.Headers) > 0 || len(req.Mirrors) > 0 {
+		// FORK-PATCH: HLS requests must also seed the detail gob even without
+		// headers or mirrors — the checkpoint is authoritative detail data and
+		// cold resume reads it back before any worker snapshot exists.
+		if len(req.Headers) > 0 || len(req.Mirrors) > 0 || req.Strategy == types.StrategyHLS || req.HLSResume != nil {
 			mirrors := queuedEvent.Mirrors
 			if len(mirrors) == 0 {
 				mirrors = []string{req.URL}
@@ -425,6 +455,8 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 				RangeAcquisitionMode: cfg.RangeAcquisitionMode,
 				SkipServerProbe:      cfg.SkipServerProbe,
 				Headers:              maps.Clone(req.Headers),
+				Strategy:             cfg.Strategy,
+				HLSResume:            cfg.HLSResume.Clone(),
 			}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
 				utils.Debug("Lifecycle: failed to persist queued detail state: %v", err)
 			}
@@ -501,8 +533,9 @@ func (mgr *LifecycleManager) buildDownloadRecord(req *DownloadRequest, requestID
 	mode := resolvedRangeMode(req)
 	// FORK-PATCH: ProbeServer proved ignore-Range while mode is still empty.
 	// Persist range_unsupported so sequential speedstats can skip. Probe-fail
-	// optimistic SupportsRange=true is unchanged.
-	if mode == types.RangeAcquireProbeAtEnqueue && probeResult != nil && !probeResult.SupportsRange {
+	// optimistic SupportsRange=true is unchanged. HLS keeps ProbeAtEnqueue:
+	// a no-range decision was never made, so no-range lock must not engage.
+	if req.Strategy != types.StrategyHLS && mode == types.RangeAcquireProbeAtEnqueue && probeResult != nil && !probeResult.SupportsRange {
 		mode = types.RangeAcquireRangeUnsupported
 	}
 	skipOrigin := req.SkipServerProbe || shouldSkipServerProbe(req)
@@ -523,6 +556,8 @@ func (mgr *LifecycleManager) buildDownloadRecord(req *DownloadRequest, requestID
 		SkipServerProbe:      skipOrigin,
 		RateLimit:            rateLimit,
 		RateLimitSet:         rateLimitSet,
+		Strategy:             req.Strategy,
+		HLSResume:            req.HLSResume.Clone(),
 	}
 
 	if mgr.eventBus != nil {

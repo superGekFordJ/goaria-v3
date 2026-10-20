@@ -581,3 +581,237 @@ func TestEventComplete_RemovesDetail(t *testing.T) {
 		t.Fatalf("completed file missing after finalize: %v", err)
 	}
 }
+
+// An HLS enqueue without headers or mirrors must still seed the detail gob —
+// the resume checkpoint is authoritative detail data — while master.gob keeps
+// the strategy discriminator but never the payload.
+func TestEnqueue_HLSWithoutHeaders_SeedsDetailAndSurvivesColdResume(t *testing.T) {
+	testutil.SetupStateDB(t)
+	ts, _ := newRangeProbeServer(t)
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{})
+	mgr := NewLifecycleManager(pool, nil, nil)
+	defer mgr.Shutdown()
+	destDir := t.TempDir()
+
+	url := ts.URL + "/index.m3u8"
+	resume := &types.HLSResumeState{
+		ManifestURL:         url,
+		MediaPlaylistURL:    url,
+		ManifestFingerprint: "fp-seed",
+		TotalSegments:       4,
+		CompletedBitmap:     []byte{0x01},
+		VerifiedBytes:       128,
+		Segments:            make([]types.HLSSegmentState, 4),
+	}
+	req := &DownloadRequest{
+		URL:       url,
+		Filename:  "video.ts",
+		Path:      destDir,
+		Strategy:  types.StrategyHLS,
+		HLSResume: resume,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	id, finalName, err := mgr.Enqueue(ctx, req)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	destPath := filepath.Join(destDir, finalName)
+
+	saved, err := store.LoadState(url, destPath)
+	if err != nil || saved == nil {
+		t.Fatalf("queued HLS detail must exist: %v (nil=%v)", err, saved == nil)
+	}
+	if saved.Strategy != types.StrategyHLS {
+		t.Fatalf("detail Strategy = %q, want %q", saved.Strategy, types.StrategyHLS)
+	}
+	if saved.HLSResume == nil || saved.HLSResume.TotalSegments != 4 || saved.HLSResume.VerifiedBytes != 128 {
+		t.Fatalf("detail HLSResume = %+v", saved.HLSResume)
+	}
+	master, err := store.GetDownload(id)
+	if err != nil || master == nil {
+		t.Fatalf("GetDownload: %v", err)
+	}
+	if master.Strategy != types.StrategyHLS {
+		t.Fatalf("master Strategy = %q, want %q", master.Strategy, types.StrategyHLS)
+	}
+	if master.HLSResume != nil {
+		t.Fatalf("master HLSResume = %+v, want nil (payload stays in detail)", master.HLSResume)
+	}
+}
+
+// buildResumeConfig resolves strategy detail-first then master, clones the
+// checkpoint, and forces probe/range normalization for HLS.
+func TestBuildResumeConfig_HLSStrategyPrecedenceAndClone(t *testing.T) {
+	settings := config.DefaultSettings()
+	destDir := t.TempDir()
+	destPath := filepath.Join(destDir, "v.ts")
+	url := "http://hls.example.com/index.m3u8"
+
+	entry := &types.DownloadRecord{
+		URL: url, DestPath: destPath, Filename: "v.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+	}
+	saved := &types.DownloadRecord{
+		URL: url, DestPath: destPath, Filename: "v.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+		HLSResume: &types.HLSResumeState{
+			ManifestURL: url, TotalSegments: 2,
+			CompletedBitmap: []byte{0x03}, VerifiedBytes: 10,
+			Segments: []types.HLSSegmentState{{Index: 0}, {Index: 1}},
+		},
+	}
+
+	cfg := buildResumeConfig("hls-1", destDir, entry, saved, settings)
+	if cfg.Strategy != types.StrategyHLS {
+		t.Fatalf("cfg.Strategy = %q, want %q", cfg.Strategy, types.StrategyHLS)
+	}
+	if cfg.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue {
+		t.Fatalf("mode = %q, want probe_at_enqueue", cfg.RangeAcquisitionMode)
+	}
+	if !cfg.SkipServerProbe {
+		t.Fatal("SkipServerProbe = false, want true for HLS")
+	}
+	if cfg.SupportsRange {
+		t.Fatal("SupportsRange = true, want false for HLS")
+	}
+	if cfg.HLSResume == nil || cfg.HLSResume.TotalSegments != 2 {
+		t.Fatalf("cfg.HLSResume = %+v", cfg.HLSResume)
+	}
+
+	// The resumed cfg must own a physically isolated checkpoint.
+	saved.HLSResume.Segments[0].URI = "mutated"
+	if cfg.HLSResume.Segments[0].URI != "" {
+		t.Fatal("cfg.HLSResume aliases the persisted checkpoint slices")
+	}
+
+	// Master row alone (detail missing) still restores the strategy.
+	cfg2 := buildResumeConfig("hls-2", destDir, entry, nil, settings)
+	if cfg2.Strategy != types.StrategyHLS || !cfg2.SkipServerProbe || cfg2.SupportsRange {
+		t.Fatalf("entry-only resume lost HLS normalization: strategy=%q skip=%v range=%v",
+			cfg2.Strategy, cfg2.SkipServerProbe, cfg2.SupportsRange)
+	}
+	if cfg2.HLSResume != nil {
+		t.Fatal("entry-only resume must not fabricate an HLS checkpoint")
+	}
+}
+
+// Cold Resume / ResumeBatch must deliver a cfg that already carries the
+// restored strategy + checkpoint into the host hook.
+func TestResume_ColdHLS_RestoresStrategyIntoHookAndQueue(t *testing.T) {
+	testutil.SetupStateDB(t)
+	url := "http://hls.example.com/list.m3u8"
+	destPath := filepath.Join(t.TempDir(), "v.ts")
+	id := "hls-cold-resume"
+
+	resume := &types.HLSResumeState{
+		ManifestURL: url, TotalSegments: 5,
+		CompletedBitmap: []byte{0x1F}, VerifiedBytes: 900,
+		Segments: make([]types.HLSSegmentState, 5),
+	}
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID: id, URL: url, URLHash: store.URLHash(url), DestPath: destPath,
+		Filename: "v.ts", Status: "paused", Strategy: types.StrategyHLS,
+	})
+	if err := store.SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "v.ts",
+		Status: "paused", Downloaded: 900,
+		Strategy: types.StrategyHLS, HLSResume: resume,
+	}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("SaveStateWithOptions: %v", err)
+	}
+
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{})
+	mgr := NewLifecycleManager(pool, nil, nil)
+	defer mgr.Shutdown()
+
+	var hookCalls atomic.Int32
+	var sawStrategy atomic.Value
+	var sawResume atomic.Bool
+	mgr.SetEngineHooks(EngineHooks{
+		RecomputeResumeParams: func(cfg *types.DownloadRecord) {
+			hookCalls.Add(1)
+			sawStrategy.Store(cfg.Strategy)
+			sawResume.Store(cfg.HLSResume != nil && cfg.HLSResume.TotalSegments == 5)
+		},
+	})
+
+	if err := mgr.Resume(id); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if hookCalls.Load() != 1 {
+		t.Fatalf("hook calls = %d, want 1", hookCalls.Load())
+	}
+	if got, _ := sawStrategy.Load().(types.DownloadStrategy); got != types.StrategyHLS {
+		t.Fatalf("hook saw Strategy = %q, want %q", got, types.StrategyHLS)
+	}
+	if !sawResume.Load() {
+		t.Fatal("hook saw nil/incorrect HLSResume")
+	}
+
+	rec, ok := recordByID(pool, id)
+	if !ok {
+		t.Fatal("expected re-queued record")
+	}
+	if rec.Strategy != types.StrategyHLS || !rec.SkipServerProbe || rec.SupportsRange ||
+		rec.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue {
+		t.Fatalf("resumed record lost HLS normalization: %+v", rec)
+	}
+	if rec.HLSResume == nil || rec.HLSResume.VerifiedBytes != 900 {
+		t.Fatalf("resumed HLSResume = %+v", rec.HLSResume)
+	}
+	// Mutating the persisted source must not corrupt the queued copy.
+	resume.VerifiedBytes = 1
+	if rec.HLSResume.VerifiedBytes != 900 {
+		t.Fatal("queued HLSResume aliases the persisted checkpoint")
+	}
+}
+
+func TestResumeBatch_ColdHLS_RestoresStrategy(t *testing.T) {
+	testutil.SetupStateDB(t)
+	url := "http://hls.example.com/batch.m3u8"
+	destPath := filepath.Join(t.TempDir(), "b.ts")
+	id := "hls-batch-id"
+
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID: id, URL: url, URLHash: store.URLHash(url), DestPath: destPath,
+		Filename: "b.ts", Status: "paused", Strategy: types.StrategyHLS,
+	})
+	if err := store.SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "b.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+		HLSResume: &types.HLSResumeState{
+			ManifestURL: url, TotalSegments: 2,
+			CompletedBitmap: []byte{0x03}, Segments: make([]types.HLSSegmentState, 2),
+		},
+	}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("SaveStateWithOptions: %v", err)
+	}
+
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{})
+	mgr := NewLifecycleManager(pool, nil, nil)
+	defer mgr.Shutdown()
+
+	var hookCalls atomic.Int32
+	mgr.SetEngineHooks(EngineHooks{
+		RecomputeResumeParams: func(cfg *types.DownloadRecord) {
+			if cfg.Strategy != types.StrategyHLS || cfg.HLSResume == nil {
+				t.Errorf("batch hook saw strategy=%q resume=%v", cfg.Strategy, cfg.HLSResume != nil)
+			}
+			hookCalls.Add(1)
+		},
+	})
+
+	errs := mgr.ResumeBatch([]string{id})
+	if len(errs) != 1 || errs[0] != nil {
+		t.Fatalf("ResumeBatch errs = %v", errs)
+	}
+	if hookCalls.Load() != 1 {
+		t.Fatalf("hook calls = %d, want 1", hookCalls.Load())
+	}
+	rec, ok := recordByID(pool, id)
+	if !ok || rec.Strategy != types.StrategyHLS || rec.HLSResume == nil {
+		t.Fatalf("batch-resumed record: found=%v strategy=%q resume=%v", ok, rec.Strategy, rec.HLSResume != nil)
+	}
+}

@@ -108,3 +108,26 @@ func TestShouldRetryFailedDownload_RangeSentinels(t *testing.T) {
 		t.Fatal("transient failure should still retry")
 	}
 }
+
+func TestShouldRetryFailedDownload_HLSSentinels(t *testing.T) {
+	sentinels := []error{
+		types.ErrHLSLiveNotSupported,
+		types.ErrHLSDRMNotSupported,
+		types.ErrHLSDemuxedAudioNotSupported,
+		types.ErrHLSDiscontinuityMapNotSupported,
+		types.ErrHLSInvalidManifest,
+		types.ErrHLSInvalidSegmentResponse,
+		types.ErrHLSNotImplemented,
+	}
+	for _, sentinel := range sentinels {
+		if shouldRetryFailedDownload(sentinel, false, 0) {
+			t.Errorf("%v must be terminal at the retry gate", sentinel)
+		}
+		if shouldRetryFailedDownload(fmt.Errorf("worker: %w", sentinel), false, 0) {
+			t.Errorf("wrapped %v must be terminal at the retry gate", sentinel)
+		}
+	}
+	if !shouldRetryFailedDownload(errors.New("transient"), false, 0) {
+		t.Fatal("transient failure should still retry")
+	}
+}
