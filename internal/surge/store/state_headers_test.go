@@ -595,3 +595,98 @@ func TestSaveState_HLSStrategyRestoresEmptyMasterStrategy(t *testing.T) {
 		t.Errorf("master Strategy = %q, want promoted %q", masterRow.Strategy, types.StrategyHLS)
 	}
 }
+
+// InvalidateResumeState drops the whole resume payload — for an HLS task the
+// checkpoint is that payload, while Strategy (the dispatch discriminator)
+// and credentials must survive.
+func TestInvalidateResumeState_ClearsHLSCheckpointKeepsStrategy(t *testing.T) {
+	tmpDir := setupTestDB(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer CloseDB()
+
+	url := "https://hls.example.com/inv.m3u8"
+	destPath := filepath.Join(tmpDir, "inv.ts")
+	id := "hls-inv-id"
+
+	if err := AddToMasterList(types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "inv.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+	}); err != nil {
+		t.Fatalf("AddToMasterList failed: %v", err)
+	}
+	if err := SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "inv.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+		Headers: map[string]string{"Cookie": "session=keep"},
+		HLSResume: &types.HLSResumeState{
+			ManifestURL: url, TotalSegments: 2,
+			CompletedBitmap: []byte{0x01}, VerifiedBytes: 64,
+			Segments: []types.HLSSegmentState{{Index: 0}, {Index: 1}},
+		},
+	}, SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("SaveStateWithOptions failed: %v", err)
+	}
+
+	if err := InvalidateResumeState(id); err != nil {
+		t.Fatalf("InvalidateResumeState failed: %v", err)
+	}
+
+	loaded, err := LoadState(url, destPath)
+	if err != nil || loaded == nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if loaded.HLSResume != nil {
+		t.Errorf("HLSResume = %+v, want nil after invalidate", loaded.HLSResume)
+	}
+	if loaded.Strategy != types.StrategyHLS {
+		t.Errorf("Strategy = %q, want %q — the discriminator is not resume payload", loaded.Strategy, types.StrategyHLS)
+	}
+	if loaded.Headers["Cookie"] != "session=keep" {
+		t.Errorf("Headers = %v, credentials must survive invalidate", loaded.Headers)
+	}
+}
+
+// DeleteTasks drops resumability while keeping identity — the HLS segment
+// checkpoint is resumability state and must be cleared with Tasks.
+func TestDeleteTasks_ClearsHLSCheckpoint(t *testing.T) {
+	tmpDir := setupTestDB(t)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+	defer CloseDB()
+
+	url := "https://hls.example.com/dt.m3u8"
+	destPath := filepath.Join(tmpDir, "dt.ts")
+	id := "hls-dt-id"
+
+	if err := AddToMasterList(types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "dt.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+	}); err != nil {
+		t.Fatalf("AddToMasterList failed: %v", err)
+	}
+	if err := SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "dt.ts",
+		Status: "paused", Strategy: types.StrategyHLS,
+		HLSResume: &types.HLSResumeState{
+			ManifestURL: url, TotalSegments: 2,
+			CompletedBitmap: []byte{0x01}, VerifiedBytes: 64,
+			Segments: []types.HLSSegmentState{{Index: 0}, {Index: 1}},
+		},
+	}, SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("SaveStateWithOptions failed: %v", err)
+	}
+
+	if err := DeleteTasks(id); err != nil {
+		t.Fatalf("DeleteTasks failed: %v", err)
+	}
+
+	loaded, err := LoadState(url, destPath)
+	if err != nil || loaded == nil {
+		t.Fatalf("LoadState failed: %v", err)
+	}
+	if loaded.HLSResume != nil {
+		t.Errorf("HLSResume = %+v, want nil after DeleteTasks", loaded.HLSResume)
+	}
+	if loaded.Strategy != types.StrategyHLS {
+		t.Errorf("Strategy = %q, want %q", loaded.Strategy, types.StrategyHLS)
+	}
+}

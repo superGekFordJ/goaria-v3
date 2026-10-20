@@ -439,6 +439,13 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			if len(mirrors) == 0 {
 				mirrors = []string{req.URL}
 			}
+			// FORK-PATCH: the seeded checkpoint's VerifiedBytes is the only
+			// authoritative HLS progress — keep Downloaded consistent with it
+			// so the first lifecycle snapshot still validates as task-backed.
+			var seedDownloaded int64
+			if cfg.HLSResume != nil {
+				seedDownloaded = cfg.HLSResume.VerifiedBytes
+			}
 			if err := store.SaveStateWithOptions(queuedEvent.URL, queuedEvent.DestPath, &types.DownloadRecord{
 				ID:                   cfg.ID,
 				URL:                  queuedEvent.URL,
@@ -447,6 +454,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 				Filename:             queuedEvent.Filename,
 				Status:               "queued",
 				TotalSize:            cfg.TotalSize,
+				Downloaded:           seedDownloaded,
 				Mirrors:              append([]string(nil), mirrors...),
 				RateLimit:            queuedEvent.RateLimit,
 				RateLimitSet:         queuedEvent.RateLimitSet,
@@ -531,11 +539,15 @@ func (mgr *LifecycleManager) buildDownloadRecord(req *DownloadRequest, requestID
 	}
 
 	mode := resolvedRangeMode(req)
-	// FORK-PATCH: ProbeServer proved ignore-Range while mode is still empty.
-	// Persist range_unsupported so sequential speedstats can skip. Probe-fail
-	// optimistic SupportsRange=true is unchanged. HLS keeps ProbeAtEnqueue:
-	// a no-range decision was never made, so no-range lock must not engage.
-	if req.Strategy != types.StrategyHLS && mode == types.RangeAcquireProbeAtEnqueue && probeResult != nil && !probeResult.SupportsRange {
+	if req.Strategy == types.StrategyHLS {
+		// FORK-PATCH: HLS carries no byte-range decision — a caller-supplied
+		// mode or 286 *bool hint must not stamp a range policy onto a
+		// playlist task.
+		mode = types.RangeAcquireProbeAtEnqueue
+	} else if mode == types.RangeAcquireProbeAtEnqueue && probeResult != nil && !probeResult.SupportsRange {
+		// FORK-PATCH: ProbeServer proved ignore-Range while mode is still
+		// empty. Persist range_unsupported so sequential speedstats can
+		// skip. Probe-fail optimistic SupportsRange=true is unchanged.
 		mode = types.RangeAcquireRangeUnsupported
 	}
 	skipOrigin := req.SkipServerProbe || shouldSkipServerProbe(req)

@@ -629,6 +629,11 @@ func TestEnqueue_HLSWithoutHeaders_SeedsDetailAndSurvivesColdResume(t *testing.T
 	if saved.HLSResume == nil || saved.HLSResume.TotalSegments != 4 || saved.HLSResume.VerifiedBytes != 128 {
 		t.Fatalf("detail HLSResume = %+v", saved.HLSResume)
 	}
+	// The seeded record must stay internally consistent: Downloaded tracks
+	// the checkpoint's VerifiedBytes so the first snapshot validates.
+	if saved.Downloaded != 128 {
+		t.Fatalf("detail Downloaded = %d, want 128 == VerifiedBytes", saved.Downloaded)
+	}
 	master, err := store.GetDownload(id)
 	if err != nil || master == nil {
 		t.Fatalf("GetDownload: %v", err)
@@ -813,5 +818,65 @@ func TestResumeBatch_ColdHLS_RestoresStrategy(t *testing.T) {
 	rec, ok := recordByID(pool, id)
 	if !ok || rec.Strategy != types.StrategyHLS || rec.HLSResume == nil {
 		t.Fatalf("batch-resumed record: found=%v strategy=%q resume=%v", ok, rec.Strategy, rec.HLSResume != nil)
+	}
+}
+
+// hydrateConfigFromDisk restores the HLS strategy + cloned checkpoint on the
+// hot-resume path and normalizes any byte-range residue — a stale persisted
+// mode or Tasks must not resurrect SupportsRange on a playlist task.
+func TestHydrate_HLSNormalizationAndCheckpointClone(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "hyd_hls.ts")
+	url := "http://hls.example.com/hyd.m3u8"
+	id := "hyd-hls-id"
+
+	resume := &types.HLSResumeState{
+		ManifestURL:     url,
+		TotalSegments:   2,
+		CompletedBitmap: []byte{0x01},
+		VerifiedBytes:   64,
+		Segments:        []types.HLSSegmentState{{Index: 0}, {Index: 1}},
+	}
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID: id, URL: url, URLHash: store.URLHash(url),
+		DestPath: destPath, Filename: "hyd_hls.ts", Status: "paused",
+		Strategy: types.StrategyHLS,
+	})
+	if err := store.SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: "hyd_hls.ts",
+		Status: "paused", Strategy: types.StrategyHLS, HLSResume: resume,
+		RangeAcquisitionMode: types.RangeAcquireRangeSupported,
+		Tasks:                []types.Task{{Offset: 10, Length: 90}},
+	}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("SaveStateWithOptions: %v", err)
+	}
+
+	cfg := &types.DownloadRecord{URL: url, DestPath: destPath}
+	hydrateConfigFromDisk(cfg)
+
+	if cfg.Strategy != types.StrategyHLS {
+		t.Fatalf("cfg.Strategy = %q, want %q", cfg.Strategy, types.StrategyHLS)
+	}
+	if cfg.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue {
+		t.Fatalf("cfg.RangeAcquisitionMode = %q, want probe_at_enqueue (stale persisted mode must not survive)", cfg.RangeAcquisitionMode)
+	}
+	if !cfg.SkipServerProbe {
+		t.Fatal("cfg.SkipServerProbe = false, want true")
+	}
+	if cfg.SupportsRange {
+		t.Fatal("cfg.SupportsRange = true, want false — stale tasks must not resurrect range state")
+	}
+	if cfg.HLSResume == nil || cfg.HLSResume.VerifiedBytes != 64 || cfg.HLSResume.TotalSegments != 2 {
+		t.Fatalf("cfg.HLSResume = %+v, want cloned checkpoint", cfg.HLSResume)
+	}
+
+	// The hydrated cfg must not alias the persisted checkpoint slices.
+	saved, err := store.LoadState(url, destPath)
+	if err != nil || saved == nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	cfg.HLSResume.Segments[0].URI = "mutated"
+	if saved.HLSResume.Segments[0].URI != "" {
+		t.Fatal("cfg.HLSResume aliases the decoded gob slices")
 	}
 }

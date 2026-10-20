@@ -425,6 +425,50 @@ func TestBuildDownloadRecord_ProbeFalseWritesRangeUnsupported(t *testing.T) {
 	}
 }
 
+// An HLS request must never stamp a caller-supplied byte-range policy —
+// neither an explicit mode nor the 286 *bool hint may survive into the record.
+func TestBuildDownloadRecord_HLSForcesProbeAtEnqueue(t *testing.T) {
+	mgr, _ := newSkipEnqueueManager(t)
+	defer mgr.Shutdown()
+	truth := true
+	fals := false
+
+	cases := []struct {
+		name string
+		req  *DownloadRequest
+	}{
+		{"supports_true_hint", &DownloadRequest{SupportsRange: &truth}},
+		{"supports_false_hint", &DownloadRequest{SupportsRange: &fals}},
+		{"explicit_supported", &DownloadRequest{RangeAcquisitionMode: types.RangeAcquireRangeSupported}},
+		{"explicit_unsupported", &DownloadRequest{RangeAcquisitionMode: types.RangeAcquireRangeUnsupported}},
+		{"explicit_payload_first", &DownloadRequest{RangeAcquisitionMode: types.RangeAcquirePayloadFirstUnknown}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.req.URL = "http://example.com/index.m3u8"
+			tc.req.Filename = "index.m3u8"
+			tc.req.Path = t.TempDir()
+			tc.req.Strategy = types.StrategyHLS
+			rec, err := mgr.buildDownloadRecord(tc.req, "hls-mode-"+tc.name, tc.req.Path, tc.req.Filename, synthesizedProbeResult(tc.req))
+			if err != nil {
+				t.Fatalf("buildDownloadRecord: %v", err)
+			}
+			if rec.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue {
+				t.Fatalf("mode = %q, want probe_at_enqueue", rec.RangeAcquisitionMode)
+			}
+			if rec.SupportsRange {
+				t.Fatal("SupportsRange = true, want false")
+			}
+			if !rec.SkipServerProbe {
+				t.Fatal("SkipServerProbe = false, want true")
+			}
+			if rec.Strategy != types.StrategyHLS {
+				t.Fatalf("Strategy = %q, want %q", rec.Strategy, types.StrategyHLS)
+			}
+		})
+	}
+}
+
 func TestEnqueue_HLSStrategy_SkipsProbeAndKeepsZeroTotalSize(t *testing.T) {
 	ts, probes := newRangeProbeServer(t)
 	mgr, pool := newSkipEnqueueManager(t)

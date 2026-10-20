@@ -676,3 +676,273 @@ func TestEventLifecycle_PreservesHLSStrategyAndResumeState(t *testing.T) {
 		t.Errorf("detail Downloaded = %d, want 500 (sparse pause must not advance)", saved.Downloaded)
 	}
 }
+
+func hlsCheckpoint(url string, verified int64) *types.HLSResumeState {
+	return &types.HLSResumeState{
+		ManifestURL:      url,
+		MediaPlaylistURL: url,
+		TotalSegments:    4,
+		CompletedBitmap:  []byte{0x07},
+		MergedSegments:   3,
+		MergedBytes:      300,
+		VerifiedBytes:    verified,
+		Segments:         make([]types.HLSSegmentState, 4),
+	}
+}
+
+func seedHLSDetail(t *testing.T, id, url, destPath, filename string, downloaded int64, resume *types.HLSResumeState) {
+	t.Helper()
+	if err := store.SaveStateWithOptions(url, destPath, &types.DownloadRecord{
+		ID: id, URL: url, DestPath: destPath, Filename: filename,
+		Status: "downloading", Downloaded: downloaded,
+		Strategy: types.StrategyHLS, HLSResume: resume,
+	}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+		t.Fatalf("seed detail: %v", err)
+	}
+}
+
+// A sparse EventError carrying no resume must adopt the durable checkpoint's
+// VerifiedBytes even when master Downloaded diverges — otherwise the
+// persisted record fails its own Downloaded == VerifiedBytes invariant and
+// every later snapshot degrades to taskless max semantics.
+func TestEventError_HLSSparseSnapshot_RecoversCheckpointVerifiedBytes(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "hls_ev.ts")
+	url := "https://hls.example.com/ev.m3u8"
+	id := "hls-ev-diverge"
+
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID: id, URL: url, URLHash: store.URLHash(url),
+		DestPath: destPath, Filename: "hls_ev.ts",
+		Status: "downloading", Downloaded: 800, Strategy: types.StrategyHLS,
+	})
+	seedHLSDetail(t, id, url, destPath, "hls_ev.ts", 500, hlsCheckpoint(url, 500))
+
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventError,
+		DownloadID: id,
+		Filename:   "hls_ev.ts",
+		DestPath:   destPath,
+		Err:        errors.New("network reset"),
+		State:      &types.DownloadRecord{Downloaded: 0},
+	}
+	close(ch)
+	<-done
+
+	entry, err := store.GetDownload(id)
+	if err != nil || entry == nil {
+		t.Fatalf("GetDownload: %v (nil=%v)", err, entry == nil)
+	}
+	if entry.Downloaded != 500 {
+		t.Fatalf("master Downloaded = %d, want 500 (checkpoint VerifiedBytes, not max→800)", entry.Downloaded)
+	}
+	if entry.Strategy != types.StrategyHLS {
+		t.Fatalf("master Strategy = %q, want %q", entry.Strategy, types.StrategyHLS)
+	}
+
+	saved, err := store.LoadState(url, destPath)
+	if err != nil || saved == nil {
+		t.Fatalf("LoadState: %v (nil=%v)", err, saved == nil)
+	}
+	if saved.HLSResume == nil || saved.HLSResume.VerifiedBytes != 500 {
+		t.Fatalf("detail HLSResume = %+v, want durable checkpoint V=500", saved.HLSResume)
+	}
+	if saved.Downloaded != 500 {
+		t.Fatalf("detail Downloaded = %d, want 500 == VerifiedBytes", saved.Downloaded)
+	}
+	// The persisted record must still validate as task-backed so the next
+	// event keeps checkpoint authority instead of permanent max() demotion.
+	if !isTaskBackedResumeSnapshot(*saved) {
+		t.Fatal("persisted detail no longer satisfies the task-backed invariants")
+	}
+}
+
+// Same divergence coverage for EventPaused: a sparse pause must not let
+// stale master progress override the checkpoint it just recovered.
+func TestEventPaused_HLSSparseSnapshot_RecoversCheckpointVerifiedBytes(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "hls_pv.ts")
+	url := "https://hls.example.com/pv.m3u8"
+	id := "hls-pv-diverge"
+
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID: id, URL: url, URLHash: store.URLHash(url),
+		DestPath: destPath, Filename: "hls_pv.ts",
+		Status: "downloading", Downloaded: 800, Strategy: types.StrategyHLS,
+	})
+	seedHLSDetail(t, id, url, destPath, "hls_pv.ts", 500, hlsCheckpoint(url, 500))
+
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventPaused,
+		DownloadID: id,
+		Filename:   "hls_pv.ts",
+		DestPath:   destPath,
+		State:      &types.DownloadRecord{Downloaded: 0},
+	}
+	close(ch)
+	<-done
+
+	entry, err := store.GetDownload(id)
+	if err != nil || entry == nil {
+		t.Fatalf("GetDownload: %v (nil=%v)", err, entry == nil)
+	}
+	if entry.Downloaded != 500 {
+		t.Fatalf("master Downloaded = %d, want 500 (checkpoint VerifiedBytes, not max→800)", entry.Downloaded)
+	}
+
+	saved, err := store.LoadState(url, destPath)
+	if err != nil || saved == nil {
+		t.Fatalf("LoadState: %v (nil=%v)", err, saved == nil)
+	}
+	if saved.HLSResume == nil || saved.HLSResume.VerifiedBytes != 500 || saved.Downloaded != 500 {
+		t.Fatalf("detail = Downloaded %d / resume %+v, want 500 + checkpoint", saved.Downloaded, saved.HLSResume)
+	}
+	if !isTaskBackedResumeSnapshot(*saved) {
+		t.Fatal("persisted detail no longer satisfies the task-backed invariants")
+	}
+}
+
+// A task-backed HLS pause at zero bytes is authoritative: the valid
+// checkpoint keeps 0 rather than inheriting the master's stale progress.
+func TestEventPaused_HLSZeroCheckpoint_IsAuthoritative(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "hls_zero.ts")
+	url := "https://hls.example.com/zero.m3u8"
+	id := "hls-zero"
+
+	testutil.SeedMasterList(t, types.DownloadRecord{
+		ID: id, URL: url, URLHash: store.URLHash(url),
+		DestPath: destPath, Filename: "hls_zero.ts",
+		Status: "downloading", Downloaded: 500, Strategy: types.StrategyHLS,
+	})
+	seedHLSDetail(t, id, url, destPath, "hls_zero.ts", 500, hlsCheckpoint(url, 500))
+
+	zeroResume := &types.HLSResumeState{
+		ManifestURL:     url,
+		TotalSegments:   4,
+		CompletedBitmap: []byte{0x00},
+		VerifiedBytes:   0,
+		Segments:        make([]types.HLSSegmentState, 4),
+	}
+
+	ch := make(chan types.DownloadEvent, 1)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventPaused,
+		DownloadID: id,
+		Filename:   "hls_zero.ts",
+		DestPath:   destPath,
+		State: &types.DownloadRecord{
+			URL: url, DestPath: destPath, Filename: "hls_zero.ts",
+			Downloaded: 0, Strategy: types.StrategyHLS, HLSResume: zeroResume,
+		},
+	}
+	close(ch)
+	<-done
+
+	entry, err := store.GetDownload(id)
+	if err != nil || entry == nil {
+		t.Fatalf("GetDownload: %v (nil=%v)", err, entry == nil)
+	}
+	if entry.Downloaded != 0 {
+		t.Fatalf("master Downloaded = %d, want 0 (task-backed zero wins over 500)", entry.Downloaded)
+	}
+
+	saved, err := store.LoadState(url, destPath)
+	if err != nil || saved == nil {
+		t.Fatalf("LoadState: %v (nil=%v)", err, saved == nil)
+	}
+	if saved.HLSResume == nil || saved.HLSResume.VerifiedBytes != 0 || saved.Downloaded != 0 {
+		t.Fatalf("detail = Downloaded %d / resume %+v, want zero checkpoint", saved.Downloaded, saved.HLSResume)
+	}
+	if !isTaskBackedResumeSnapshot(*saved) {
+		t.Fatal("zero checkpoint detail must still satisfy the task-backed invariants")
+	}
+}
+
+// With no master row and no event State the minimal error record must still
+// inherit persisted discriminators — a Strategy="" row would switch off the
+// checkpoint recovery guards for the next event on the same task.
+func TestEventError_MinimalRecord_RescuesStrategyFromDetail(t *testing.T) {
+	tmpDir := testutil.SetupStateDB(t)
+	destPath := filepath.Join(tmpDir, "hls_min.ts")
+	url := "https://hls.example.com/min.m3u8"
+	id := "hls-minimal"
+
+	// Detail only — no master row — as after an early pre-enqueue failure.
+	seedHLSDetail(t, id, url, destPath, "hls_min.ts", 500, hlsCheckpoint(url, 500))
+
+	ch := make(chan types.DownloadEvent, 2)
+	mgr := NewLifecycleManager(nil, nil, nil)
+	defer mgr.Shutdown()
+	done := make(chan struct{})
+	go func() {
+		mgr.StartEventWorker(ch)
+		close(done)
+	}()
+
+	ch <- types.DownloadEvent{
+		Type:       types.EventError,
+		DownloadID: id,
+		Filename:   "hls_min.ts",
+		URL:        url,
+		DestPath:   destPath,
+		Err:        errors.New("early failure"),
+	}
+	// A later sparse event must still classify this task as HLS: the
+	// rescued strategy enables checkpoint recovery instead of erasing it.
+	ch <- types.DownloadEvent{
+		Type:       types.EventError,
+		DownloadID: id,
+		Filename:   "hls_min.ts",
+		DestPath:   destPath,
+		Err:        errors.New("second failure"),
+		State:      &types.DownloadRecord{Downloaded: 0},
+	}
+	close(ch)
+	<-done
+
+	entry, err := store.GetDownload(id)
+	if err != nil || entry == nil {
+		t.Fatalf("GetDownload: %v (nil=%v)", err, entry == nil)
+	}
+	if entry.Strategy != types.StrategyHLS {
+		t.Fatalf("minimal master row Strategy = %q, want %q", entry.Strategy, types.StrategyHLS)
+	}
+	if entry.Downloaded != 500 {
+		t.Fatalf("master Downloaded = %d, want 500 (checkpoint adopted on second event)", entry.Downloaded)
+	}
+
+	saved, err := store.LoadState(url, destPath)
+	if err != nil || saved == nil {
+		t.Fatalf("LoadState: %v (nil=%v)", err, saved == nil)
+	}
+	if saved.HLSResume == nil || saved.HLSResume.VerifiedBytes != 500 {
+		t.Fatalf("detail HLSResume = %+v — checkpoint must survive the minimal-record path", saved.HLSResume)
+	}
+}

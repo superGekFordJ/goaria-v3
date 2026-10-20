@@ -170,6 +170,15 @@ func SaveState(url string, destPath string, state *types.DownloadRecord) error {
 	return SaveStateWithOptions(url, destPath, state, SaveStateOptions{})
 }
 
+// SaveStateWithOptions writes the per-download detail gob.
+// FORK-PATCH: detail state is a WHOLE-RECORD replacement, not a merge —
+// the persisted record mirrors `state` (minus fields excluded by
+// persistedDetailRecord). Sparse callers must merge against the on-disk
+// record themselves (the EventPaused/EventError lifecycle paths do).
+// For an HLS task the caller must carry the full resume checkpoint:
+// a nil HLSResume erases the durable checkpoint, and a gob-zero
+// Strategy demotes the detail's strategy marker. The lightweight
+// master-row sync below is the only sparse-guarded part.
 func SaveStateWithOptions(url string, destPath string, state *types.DownloadRecord, opts SaveStateOptions) error {
 	if state.ID == "" {
 		state.ID = uuid.New().String()
@@ -472,6 +481,9 @@ func DeleteTasks(id string) error {
 		return nil
 	}
 	ds.State.Tasks = []types.Task{}
+	// FORK-PATCH: for an HLS task the resume payload is the checkpoint —
+	// clearing Tasks alone would leave stale segment state behind.
+	ds.State.HLSResume = nil
 	if err := atomicWrite(detailPath, ds); err != nil {
 		return fmt.Errorf("failed to clear tasks: %w", err)
 	}
@@ -507,6 +519,9 @@ func InvalidateResumeState(id string) error {
 	ds.State.ActualChunkSize = 0
 	ds.State.FileHash = ""
 	ds.State.RangeAcquisitionMode = types.RangeAcquireProbeAtEnqueue
+	// FORK-PATCH: the HLS checkpoint is resume payload too — drop it while
+	// keeping Strategy, which is the dispatch discriminator, not payload.
+	ds.State.HLSResume = nil
 	if err := atomicWrite(detailPath, ds); err != nil {
 		return fmt.Errorf("failed to invalidate resume state: %w", err)
 	}
