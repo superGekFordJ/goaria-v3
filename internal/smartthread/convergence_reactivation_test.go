@@ -253,10 +253,14 @@ func TestConvergence_Reactivation_ContinuousTaskNotDirty(t *testing.T) {
 		speedstats.ResetRecordsForTest()
 		t.Cleanup(speedstats.ResetRecordsForTest)
 		tracker := &mockTracker{tasks: []TrackedTaskInfo{
-			{GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute)},
-			{GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute)},
+			{
+				GID: gid1, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute),
+			},
+			{
+				GID: gid2, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+				CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute),
+			},
 		}}
 		telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 			gid1: makeWorkers(9, 2*1024*1024),
@@ -628,10 +632,14 @@ func TestConvergence_Reactivation_CompleteRowNotDirty(t *testing.T) {
 	speedstats.ResetRecordsForTest()
 	t.Cleanup(speedstats.ResetRecordsForTest)
 	tracker := &mockTracker{tasks: []TrackedTaskInfo{
-		{GID: gidLive, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute)},
-		{GID: gidDone, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
-			TotalLength: 100 * mb, CompletedLength: 90 * mb, ActivatedAt: t0.Add(-time.Minute)},
+		{
+			GID: gidLive, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			CompletedLength: 10 * mb, ActivatedAt: t0.Add(-time.Minute),
+		},
+		{
+			GID: gidDone, Status: "active", Scope: "wan", EnvKey: "testenv", Domain: "example.com",
+			TotalLength: 100 * mb, CompletedLength: 90 * mb, ActivatedAt: t0.Add(-time.Minute),
+		},
 	}}
 	telemetry := &mockTelemetry{data: map[string][]types.WorkerSnapshot{
 		gidLive: makeWorkers(3, 2*1024*1024),
