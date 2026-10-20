@@ -137,6 +137,47 @@ func TestClampToServerLimit_FileSizeZero_NoMinSizeAdjustment(t *testing.T) {
 	}
 }
 
+// Unknown-size params (FileSize=0, MinSize=0) now arrive with a real
+// TargetBandwidth: the N_max clamp must still tighten Split, leave MinSize
+// alone (fileSize>0 guard), and scale the bandwidth claim by allowed/oldSplit.
+func TestClampToServerLimit_FileSizeZero_TargetBandwidthScales(t *testing.T) {
+	t.Run("ScalesWithNMax", func(t *testing.T) {
+		store := NewServerLimitStore()
+		store.SetNMax(limitKey("wan", "example.com"), 10)
+
+		params := ThreadParams{Split: 16, MinSize: 0, TargetBandwidth: 16 * mb, NSat: 12}
+		got := ClampToServerLimit(params, 0, "wan", "example.com", 4, store)
+
+		if got.Split != 6 {
+			t.Fatalf("Split: got %d, want 6 (nMax=10 - existing=4)", got.Split)
+		}
+		if got.MinSize != 0 {
+			t.Fatalf("MinSize: got %d, want 0 (fileSize<=0 keeps no chunk floor)", got.MinSize)
+		}
+		if got.TargetBandwidth != 6*mb {
+			t.Fatalf("TargetBandwidth: got %d, want %d (16mb scaled by 6/16)", got.TargetBandwidth, 6*mb)
+		}
+		if got.NSat != 12 {
+			t.Fatalf("NSat: got %d, want 12 (unchanged)", got.NSat)
+		}
+	})
+
+	t.Run("ZeroTargetStaysZero", func(t *testing.T) {
+		store := NewServerLimitStore()
+		store.SetNMax(limitKey("wan", "example.com"), 7)
+
+		params := ThreadParams{Split: 16, MinSize: 0, TargetBandwidth: 0}
+		got := ClampToServerLimit(params, 0, "wan", "example.com", 0, store)
+
+		if got.Split != 7 {
+			t.Fatalf("Split: got %d, want 7", got.Split)
+		}
+		if got.MinSize != 0 || got.TargetBandwidth != 0 {
+			t.Fatalf("got %+v, want MinSize=0 TargetBandwidth=0 (scale skipped)", got)
+		}
+	})
+}
+
 func TestClampToServerLimit_TargetBandwidthScales(t *testing.T) {
 	store := NewServerLimitStore()
 	store.SetNMax(limitKey("wan", "example.com"), 7)
