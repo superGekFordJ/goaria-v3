@@ -92,6 +92,222 @@ func TestCalculate_UnknownFileSize(t *testing.T) {
 	}
 }
 
+// Unknown size (FileSize <= 0) with complete BBR history runs the normal
+// bandwidth-aware path: N_sat, congestion floor, physical ceiling and the
+// exploration cap all apply — only the file-size terms (N_tmin, MinChunk)
+// are skipped so MinSize stays 0.
+func TestCalculate_UnknownFileSize_BBRHistory(t *testing.T) {
+	setupTestConfig(t)
+
+	t.Run("KnownDomain_CompleteHistory", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		// V_thread_avg = 2MiB/s (8MiB/s @ 4 threads); domain and global peaks 8MiB/s.
+		speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "known.com", "wan", "testenv")
+
+		for _, size := range []int64{0, -1} {
+			params := Calculate(CalcParams{
+				FileSize:       size,
+				MaxConnections: 16,
+				Scope:          "wan",
+				EnvKey:         "testenv",
+				Domain:         "known.com",
+			})
+			// N_sat = ceil(8/2)+1 = 5 — the BBR answer, never maxConn=16.
+			if params.Split != 5 || params.NSat != 5 {
+				t.Fatalf("size=%d: Split=%d NSat=%d, want 5/5", size, params.Split, params.NSat)
+			}
+			if params.MinSize != 0 {
+				t.Fatalf("size=%d: MinSize=%d, want 0", size, params.MinSize)
+			}
+			if params.IsExploration {
+				t.Fatalf("size=%d: IsExploration=true, want false (known domain)", size)
+			}
+			if params.TargetBandwidth != 10*1024*1024 {
+				t.Fatalf("size=%d: TargetBandwidth=%d, want %d (2MiB/s * 5)", size, params.TargetBandwidth, 10*1024*1024)
+			}
+		}
+	})
+
+	t.Run("Exploration_CapsSplitButKeepsNSat", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		// other.com seeds the scope: p75 eff 2MiB/s, global peak 16MiB/s.
+		// new.com has no record → scope fallback halves efficiency to 1MiB/s.
+		speedstats.AddRecordV2(16*1024*1024, 8, 200*1024*1024, false, 100, "other.com", "wan", "testenv")
+
+		params := Calculate(CalcParams{
+			FileSize:       0,
+			MaxConnections: 16,
+			Scope:          "wan",
+			EnvKey:         "testenv",
+			Domain:         "new.com",
+		})
+		// N_sat = ceil(16/1)+1 = 17, clamped to explorationLimit(16)=4;
+		// NSat keeps the true value so Split < NSat marks keep-alive.
+		if !params.IsExploration {
+			t.Fatal("IsExploration=false, want true (no domain record)")
+		}
+		if params.Split != explorationLimit(16) {
+			t.Fatalf("Split=%d, want %d (exploration cap)", params.Split, explorationLimit(16))
+		}
+		if params.NSat != 17 {
+			t.Fatalf("NSat=%d, want 17 (true saturation concurrency)", params.NSat)
+		}
+		if params.MinSize != 0 {
+			t.Fatalf("MinSize=%d, want 0", params.MinSize)
+		}
+		if params.TargetBandwidth != 4*1024*1024 {
+			t.Fatalf("TargetBandwidth=%d, want %d (1MiB/s * 4)", params.TargetBandwidth, 4*1024*1024)
+		}
+	})
+
+	t.Run("Exploration_DoesNotRaiseSplit", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		// other.com 16MiB/s @ 1 thread → scope p75 16MiB/s → new.com halved 8MiB/s.
+		speedstats.AddRecordV2(16*1024*1024, 1, 200*1024*1024, false, 100, "other.com", "wan", "testenv")
+
+		params := Calculate(CalcParams{
+			FileSize:       0,
+			MaxConnections: 16,
+			Scope:          "wan",
+			EnvKey:         "testenv",
+			Domain:         "new.com",
+		})
+		// N_sat = ceil(16/8)+1 = 3 < explorationLimit(16)=4: the cap never
+		// raises the calculated split.
+		if !params.IsExploration || params.Split != 3 || params.NSat != 3 {
+			t.Fatalf("params=%+v, want Split=NSat=3 exploration=true", params)
+		}
+		if params.MinSize != 0 {
+			t.Fatalf("MinSize=%d, want 0", params.MinSize)
+		}
+	})
+
+	t.Run("DomainExhaustion_FloorOne", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		// a.com: 1MiB/s eff, 8MiB/s domain peak; big.com lifts global to 100MiB/s.
+		speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "a.com", "wan", "testenv")
+		speedstats.AddRecordV2(100*1024*1024, 1, 200*1024*1024, false, 100, "big.com", "wan", "testenv")
+
+		params := Calculate(CalcParams{
+			FileSize:                0,
+			MaxConnections:          16,
+			Scope:                   "wan",
+			EnvKey:                  "testenv",
+			Domain:                  "a.com",
+			ReservedBandwidth:       8 * 1024 * 1024,
+			ReservedDomainBandwidth: 8 * 1024 * 1024,
+		})
+		// vAvailable=92MiB healthy → floor 1; domain exhausted → vTarget=0 →
+		// nSat=1 → Split=1, Target=eff.
+		if params.Split != 1 || params.NSat != 1 {
+			t.Fatalf("Split=%d NSat=%d, want 1/1 (domain exhausted, floor 1)", params.Split, params.NSat)
+		}
+		if params.MinSize != 0 {
+			t.Fatalf("MinSize=%d, want 0", params.MinSize)
+		}
+		if params.TargetBandwidth != 1*1024*1024 {
+			t.Fatalf("TargetBandwidth=%d, want %d (1MiB/s * 1)", params.TargetBandwidth, 1*1024*1024)
+		}
+	})
+
+	t.Run("GlobalCongestion_FloorTwo", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		speedstats.AddRecordV2(8*1024*1024, 8, 200*1024*1024, false, 100, "a.com", "wan", "testenv")
+		speedstats.AddRecordV2(100*1024*1024, 1, 200*1024*1024, false, 100, "big.com", "wan", "testenv")
+
+		params := Calculate(CalcParams{
+			FileSize:          0,
+			MaxConnections:    16,
+			Scope:             "wan",
+			EnvKey:            "testenv",
+			Domain:            "a.com",
+			ReservedBandwidth: 100 * 1024 * 1024,
+		})
+		// vAvailable=0 → floor=congestionFloor; vTarget=0 → nSat=1 → Split=2.
+		if params.Split != congestionFloor {
+			t.Fatalf("Split=%d, want %d (global congestion floor)", params.Split, congestionFloor)
+		}
+		if params.NSat != 1 {
+			t.Fatalf("NSat=%d, want 1", params.NSat)
+		}
+		if params.MinSize != 0 {
+			t.Fatalf("MinSize=%d, want 0", params.MinSize)
+		}
+		if params.TargetBandwidth != 2*1024*1024 {
+			t.Fatalf("TargetBandwidth=%d, want %d (1MiB/s * 2)", params.TargetBandwidth, 2*1024*1024)
+		}
+	})
+
+	t.Run("PhysicalCeiling_Tightens", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		const mac = "aabbccddeeff"
+		hDirect := mockEnvKey("0", mac)
+		hProxy := mockEnvKey("1", mac)
+		const domain = "example.com"
+
+		// Own bucket: 12.5MiB/s eff, 100MiB/s domain+logical global peaks;
+		// the proxy bucket gives the same NIC a 100MiB/s physical peak.
+		speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, domain, "wan", hDirect)
+		speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "other.com", "wan", hDirect)
+		speedstats.AddRecordV2(100*physMB, 8, 1*1024*1024*1024, false, 50, "other.com", "wan", hProxy)
+
+		// Logical bucket sees only 10MiB reserved, but the proxy bucket pushes
+		// the NIC total to 150MiB → vPhysical = 0 → floor cascade.
+		ledger := &BandwidthLedger{reserved: map[string]int64{
+			"wan" + hDirect: 10 * physMB,
+			"wan" + hProxy:  140 * physMB,
+		}}
+		params := Calculate(CalcParams{
+			FileSize:          0,
+			MaxConnections:    16,
+			Scope:             "wan",
+			Domain:            domain,
+			EnvKey:            hDirect,
+			ReservedBandwidth: ledger.Reserved("wan", hDirect),
+			Ledger:            ledger,
+			ActiveMACsFunc:    func() []string { return []string{mac} },
+			ComputeEnvKeyFunc: mockEnvKey,
+		})
+		if params.Split != congestionFloor {
+			t.Fatalf("Split=%d, want %d (physical ceiling → congestion floor)", params.Split, congestionFloor)
+		}
+		if params.NSat != 1 || params.MinSize != 0 || params.IsExploration {
+			t.Fatalf("params=%+v, want NSat=1 MinSize=0 exploration=false", params)
+		}
+	})
+
+	t.Run("ColdStart_CrossEnv_Conservative", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		// History only lives in envA — envB is cold → conservative return,
+		// never calculateLegacy (which would pin Split=1, MinSize=1MiB).
+		speedstats.AddRecordV2(8*1024*1024, 4, 200*1024*1024, false, 100, "a.com", "wan", "envA")
+
+		params := Calculate(CalcParams{
+			FileSize:       0,
+			MaxConnections: 16,
+			Scope:          "wan",
+			EnvKey:         "envB",
+			Domain:         "a.com",
+		})
+		if params.Split != 4 {
+			t.Fatalf("Split=%d, want 4 (explorationLimit(16))", params.Split)
+		}
+		if !params.IsExploration {
+			t.Fatal("IsExploration=false, want true (no record in envB)")
+		}
+		if params.MinSize != 0 || params.TargetBandwidth != 0 || params.NSat != 16 {
+			t.Fatalf("conservative extras: %+v, want MinSize=0 Target=0 NSat=16", params)
+		}
+	})
+}
+
 func TestCalculate_ColdStart_LegacyFallback(t *testing.T) {
 	setupTestConfig(t)
 	speedstats.ResetRecordsForTest()
@@ -1054,6 +1270,11 @@ func TestAdmissionGate_ZeroRemaining(t *testing.T) {
 	if !d.Allowed {
 		t.Fatalf("unknown size rejected: %+v", d)
 	}
+	// Complete BBR history converges to N_sat = ceil(16/4)+1 = 5 — not the
+	// old blind Upper/maxConn suggestion that oversold the bandwidth ledger.
+	if d.Params.Split != 5 || d.Params.NSat != 5 {
+		t.Fatalf("unknown size Split/NSat = %d/%d, want 5/5", d.Params.Split, d.Params.NSat)
+	}
 	if d.Params.TargetBandwidth != saturatingMulPositive(4<<20, int64(d.Params.Split)) {
 		t.Fatalf("unknown target = %d split=%d", d.Params.TargetBandwidth, d.Params.Split)
 	}
@@ -1069,6 +1290,62 @@ func TestAdmissionGate_ZeroRemaining(t *testing.T) {
 	p.Calc.FileSize = -5
 	if d := EvaluateAdmission(p); d != (AdmissionDecision{}) {
 		t.Fatalf("negative known size: %+v", d)
+	}
+}
+
+// Two unknown-size candidates on different domains share one ledger: the
+// first must reserve its real N_sat bandwidth (not maxConn×efficiency), so
+// the second is not starved by AdmissionBlockScope inside the lease window.
+func TestAdmissionGate_UnknownSize_NoLedgerOversell(t *testing.T) {
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	// cdn-a.com: eff 2MiB/s, domain peak 8MiB/s.
+	// cdn-b.com: eff 4MiB/s, domain peak 24MiB/s — also the scope global peak.
+	seedEfficiency(t, 8<<20, 4, "cdn-a.com", "wan", "envA")
+	seedEfficiency(t, 24<<20, 6, "cdn-b.com", "wan", "envA")
+
+	ledger := NewBandwidthLedger(nil)
+
+	p := gateFixture()
+	p.Calc.Domain = "cdn-a.com"
+	p.Calc.FileSize = 0
+	p.Calc.Ledger = ledger
+	p.SizeKnown = false
+	p.Upper.Split = 16
+	d := EvaluateAdmission(p)
+	if !d.Allowed {
+		t.Fatalf("unknown-size candidate rejected: %+v", d)
+	}
+	// N_sat = ceil(8/2)+1 = 5 workers, 10MiB reserved — the old path claimed
+	// 16 workers / 32MiB, overselling even the 24MiB global peak.
+	if d.Params.Split != 5 || d.Params.NSat != 5 {
+		t.Fatalf("candidate params = %+v, want Split=NSat=5", d.Params)
+	}
+	if d.Params.TargetBandwidth != 10<<20 {
+		t.Fatalf("candidate target = %d, want 10MiB", d.Params.TargetBandwidth)
+	}
+
+	// Controller-style accounting: the reservation lands on the shared ledger.
+	ledger.Reserve("wan", "envA", d.Params.TargetBandwidth)
+	ledger.ReserveByDomain("wan", "cdn-a.com", d.Params.TargetBandwidth)
+	ledger.ReserveWorkers("wan", "cdn-a.com", d.Params.Split)
+
+	// Candidate 2 on cdn-b.com: scope still offers 24-10=14MiB ≥ 4MiB/thread.
+	p2 := gateFixture()
+	p2.Calc.Domain = "cdn-b.com"
+	p2.Calc.FileSize = 0
+	p2.Calc.Ledger = ledger
+	p2.SizeKnown = false
+	d2 := EvaluateAdmission(p2)
+	if !d2.Allowed || d2.Blocked != 0 {
+		t.Fatalf("peer starved by oversized reservation: %+v", d2)
+	}
+	// vTarget = min(24, 14) = 14MiB → N_sat = ceil(14/4)+1 = 5.
+	if d2.Params.Split != 5 || d2.Params.NSat != 5 {
+		t.Fatalf("peer params = %+v, want Split=NSat=5", d2.Params)
+	}
+	if d2.Params.TargetBandwidth != 20<<20 {
+		t.Fatalf("peer target = %d, want 20MiB", d2.Params.TargetBandwidth)
 	}
 }
 

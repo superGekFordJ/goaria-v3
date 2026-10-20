@@ -46,25 +46,6 @@ func Calculate(p CalcParams) ThreadParams {
 		maxConn = config.MaxConnectionsUpper
 	}
 
-	// 未知大小：保守策略，跳过 BDP/带宽约束
-	if p.FileSize <= 0 {
-		isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
-		split := maxConn
-		if isExploration {
-			limit := explorationLimit(maxConn)
-			if split > limit {
-				split = limit
-			}
-		}
-		return ThreadParams{
-			Split:           split,
-			MinSize:         0,
-			IsExploration:   isExploration,
-			TargetBandwidth: 0,
-			NSat:            maxConn,
-		}
-	}
-
 	// 获取 T_min：显式 MinThreadLife 覆盖全局配置，0 保持既有行为。
 	tMin := defaultMinThreadLife
 	if p.MinThreadLife > 0 {
@@ -79,9 +60,28 @@ func Calculate(p CalcParams) ThreadParams {
 	vSinglePeak, singlePeakOK := speedstats.GetDomainPeak(p.Domain, p.Scope, p.EnvKey)
 	vGlobalPeak, globalPeakOK := speedstats.GetGlobalPeak(p.Scope, p.EnvKey)
 
+	isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
+
 	// --- 冷启动 / 缺数据降级 ---
-	// V_thread_avg 或 V_global_peak 无 → 退化为 legacy 启发式
+	// V_thread_avg 或 V_global_peak 无 → 已知大小退化为 legacy 启发式；
+	// 未知大小走保守返回（calculateLegacy 依赖 fileSize > 0，不可落入）。
 	if !threadAvgOK || !globalPeakOK {
+		if p.FileSize <= 0 {
+			split := maxConn
+			if isExploration {
+				limit := explorationLimit(maxConn)
+				if split > limit {
+					split = limit
+				}
+			}
+			return ThreadParams{
+				Split:           split,
+				MinSize:         0,
+				IsExploration:   isExploration,
+				TargetBandwidth: 0,
+				NSat:            maxConn,
+			}
+		}
 		return calculateLegacy(p.FileSize, maxConn, p.Domain, p.Scope, p.EnvKey, tMin)
 	}
 
@@ -115,22 +115,24 @@ func Calculate(p CalcParams) ThreadParams {
 		nSat64 = ceilDivPositive(vTarget, vThreadAvg) + int64(gamma)
 	}
 
-	// N_tmin = ceil(fileSize / (V_thread_avg * T_min))
-	nTmin64 := ceilDivPositive(p.FileSize, saturatingMulPositive(vThreadAvg, int64(tMin)))
-
 	// floor: 拥塞时 1~2，其它 1
 	floor := 1
 	if vAvailable <= 0 || (globalPeakOK && vAvailable < vGlobalPeak/10) {
 		floor = congestionFloor
 	}
 
-	nFinal64 := min(nSat64, nTmin64)
+	// N_tmin = ceil(fileSize / (V_thread_avg * T_min))；未知大小跳过，
+	// N_sat 直接作为目标并发。
+	nFinal64 := nSat64
+	if p.FileSize > 0 {
+		nTmin64 := ceilDivPositive(p.FileSize, saturatingMulPositive(vThreadAvg, int64(tMin)))
+		nFinal64 = min(nSat64, nTmin64)
+	}
 	nFinal64 = clampToConn(nFinal64, floor, maxConn)
 
 	// --- 探索标记（重新引入冷启动保守防护） ---
 	// 初见新域名时缺乏 BBR 历史指纹，为获取纯净的单线程效率（V_thread_avg）样本，
 	// 强制限制初始线程数：最高不超过 min(max(W_max/4, 4), 8)。
-	isExploration := !speedstats.HasDomainScopeEnvRecord(p.Domain, p.Scope, p.EnvKey)
 	if isExploration {
 		limit := explorationLimit(maxConn)
 		if nFinal64 > int64(limit) {
@@ -140,14 +142,17 @@ func Calculate(p CalcParams) ThreadParams {
 	nFinal := int(nFinal64)
 	nSat := intFromNonNegative(nSat64)
 
-	// --- 初始切分（蓝图 §2.1） ---
-	// MinChunk = clamp(V_thread_avg * T_target_chunk, 1MB, 1GB)
-	minChunk := min(max(saturatingMulPositive(vThreadAvg, tTargetChunk), minChunkSize), maxChunkSize)
-	// MinChunk = min(MinChunk, fileSize / N_final)
-	if nFinal > 0 {
-		perWorker := p.FileSize / int64(nFinal)
-		if perWorker < minChunk {
-			minChunk = max(perWorker, minChunkSize)
+	// --- 初始切分（蓝图 §2.1；未知大小保持 MinSize = 0） ---
+	var minChunk int64
+	if p.FileSize > 0 {
+		// MinChunk = clamp(V_thread_avg * T_target_chunk, 1MB, 1GB)
+		minChunk = min(max(saturatingMulPositive(vThreadAvg, tTargetChunk), minChunkSize), maxChunkSize)
+		// MinChunk = min(MinChunk, fileSize / N_final)
+		if nFinal > 0 {
+			perWorker := p.FileSize / int64(nFinal)
+			if perWorker < minChunk {
+				minChunk = max(perWorker, minChunkSize)
+			}
 		}
 	}
 

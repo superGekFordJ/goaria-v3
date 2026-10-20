@@ -1528,3 +1528,43 @@ func TestAdmissionRuntime_ExplorationRetryRespectsNMax(t *testing.T) {
 		t.Fatalf("live ticket disturbed by stale release: %+v -> %+v", tk, tk2)
 	}
 }
+
+// Two unknown-size candidates (probe-fallback TotalSize=0 records) on known
+// domains share one round: A reserves its real N_sat bandwidth, so B still
+// fits the scope budget — the old maxConn claim (32MiB against a 24MiB peak)
+// would have starved B with AdmissionBlockScope.
+func TestAdmissionRuntime_UnknownSize_UsesBBRNSatWithoutStarvingPeers(t *testing.T) {
+	tr := admissionSwapTracker(t)
+	admissionTestConfigConns(t, true, "32", "16")
+	speedstats.ResetRecordsForTest()
+	t.Cleanup(speedstats.ResetRecordsForTest)
+	pool, _, ctl, _ := admissionTestPool(t, 4)
+	server := admissionBlockingServer(t, pool)
+
+	// cdn-a.test: eff 2MiB/s, domain peak 8MiB/s; cdn-b.test: eff 4MiB/s,
+	// domain peak 24MiB/s which is also the scope+env global peak.
+	speedstats.AddRecordV2(8<<20, 4, 200<<20, false, 100, "cdn-a.test", "wan", "env1")
+	speedstats.AddRecordV2(24<<20, 6, 200<<20, false, 100, "cdn-b.test", "wan", "env1")
+
+	keyA := queueManagedWaiting(t, pool, tr, "unka", server.URL+"/a", "wan", "cdn-a.test", "env1", 16)
+	keyB := queueManagedWaiting(t, pool, tr, "unkb", server.URL+"/b", "wan", "cdn-b.test", "env1", 16)
+
+	ctl.evaluate(time.Now())
+
+	// Both fit in one round: A claims 2MiB*5=10MiB of the 24MiB scope peak,
+	// leaving 14MiB — enough for B's 4MiB/s per-thread efficiency.
+	if snap := pool.AdmissionSnapshot(); snap.CommittedSlots != 2 {
+		t.Fatalf("committed = %d, want 2 (unknown-size peers must not starve)", snap.CommittedSlots)
+	}
+	ta := mustTracked(t, tr, "sg_"+keyA.ID)
+	if ta.ThreadCount != 5 || ta.TargetBandwidth != 10<<20 || ta.MinChunk != 0 {
+		t.Fatalf("A reservation = {threads:%d target:%d minChunk:%d}, want 5/10MiB/0",
+			ta.ThreadCount, ta.TargetBandwidth, ta.MinChunk)
+	}
+	// B sees vAvailable = 24-10 = 14MiB → N_sat = ceil(14/4)+1 = 5.
+	tb := mustTracked(t, tr, "sg_"+keyB.ID)
+	if tb.ThreadCount != 5 || tb.TargetBandwidth != 20<<20 || tb.MinChunk != 0 {
+		t.Fatalf("B reservation = {threads:%d target:%d minChunk:%d}, want 5/20MiB/0",
+			tb.ThreadCount, tb.TargetBandwidth, tb.MinChunk)
+	}
+}
