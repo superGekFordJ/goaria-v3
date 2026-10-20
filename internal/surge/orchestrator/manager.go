@@ -442,8 +442,10 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			// FORK-PATCH: the seeded checkpoint's VerifiedBytes is the only
 			// authoritative HLS progress — keep Downloaded consistent with it
 			// so the first lifecycle snapshot still validates as task-backed.
+			// A stray HLSResume on a non-HLS request must not leak VerifiedBytes
+			// into a byte-range seed.
 			var seedDownloaded int64
-			if cfg.HLSResume != nil {
+			if cfg.Strategy == types.StrategyHLS && cfg.HLSResume != nil {
 				seedDownloaded = cfg.HLSResume.VerifiedBytes
 			}
 			if err := store.SaveStateWithOptions(queuedEvent.URL, queuedEvent.DestPath, &types.DownloadRecord{

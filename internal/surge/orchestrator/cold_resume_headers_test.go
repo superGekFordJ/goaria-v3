@@ -646,6 +646,46 @@ func TestEnqueue_HLSWithoutHeaders_SeedsDetailAndSurvivesColdResume(t *testing.T
 	}
 }
 
+// A stray HLSResume on a non-HLS request still seeds the detail gob (the
+// checkpoint fields are caller data), but its VerifiedBytes must not leak
+// into the byte-range Downloaded counter.
+func TestEnqueue_NonHLSStrayResume_DoesNotSeedVerifiedBytes(t *testing.T) {
+	testutil.SetupStateDB(t)
+	ts, _ := newRangeProbeServer(t)
+	pool := scheduler.NewSchedulerForTesting(map[string]types.DownloadRecord{})
+	mgr := NewLifecycleManager(pool, nil, nil)
+	defer mgr.Shutdown()
+	destDir := t.TempDir()
+
+	url := ts.URL + "/stray.bin"
+	req := &DownloadRequest{
+		URL: url, Filename: "stray.bin", Path: destDir,
+		HLSResume: &types.HLSResumeState{
+			ManifestURL: url, TotalSegments: 2,
+			CompletedBitmap: []byte{0x01}, VerifiedBytes: 999,
+			Segments: []types.HLSSegmentState{{Index: 0}, {Index: 1}},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	id, finalName, err := mgr.Enqueue(ctx, req)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	saved, err := store.LoadState(url, filepath.Join(destDir, finalName))
+	if err != nil || saved == nil {
+		t.Fatalf("LoadState: %v (nil=%v)", err, saved == nil)
+	}
+	if saved.Downloaded != 0 {
+		t.Fatalf("detail Downloaded = %d, want 0 — stray checkpoint must not seed byte-range progress", saved.Downloaded)
+	}
+	if saved.Strategy != types.StrategyAuto {
+		t.Fatalf("detail Strategy = %q, want auto", saved.Strategy)
+	}
+	cancelEnqueue(t, mgr, id)
+}
+
 // buildResumeConfig resolves strategy detail-first then master, clones the
 // checkpoint, and forces probe/range normalization for HLS.
 func TestBuildResumeConfig_HLSStrategyPrecedenceAndClone(t *testing.T) {

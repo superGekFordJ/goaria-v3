@@ -160,9 +160,16 @@ func (ps *DownloadProgress) GetError() error {
 
 // SetPendingResumeState stashes a pause-grade DownloadRecord for the scheduler
 // to attach onto EventError. Nil-safe; overwrites any prior pending snapshot.
+// FORK-PATCH: the stashed HLS checkpoint is cloned — the producer keeps
+// ownership of its own checkpoint and may keep mutating it without tearing
+// the stashed snapshot. After this call the record itself is stashed:
+// callers must not keep writing through it.
 func (ps *DownloadProgress) SetPendingResumeState(s *types.DownloadRecord) {
 	if ps == nil {
 		return
+	}
+	if s != nil {
+		s.HLSResume = s.HLSResume.Clone()
 	}
 	ps.mu.Lock()
 	defer ps.mu.Unlock()

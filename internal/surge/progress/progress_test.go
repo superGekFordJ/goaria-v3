@@ -544,3 +544,50 @@ func TestPendingResumeState_SetTakeClear(t *testing.T) {
 		t.Fatalf("second Take = %+v, want nil", second)
 	}
 }
+
+// The stash detaches the HLS checkpoint — a producer mutating its own resume
+// object after Set must not tear the snapshot the scheduler later attaches
+// to EventError.
+func TestPendingResumeState_HLSCheckpointCloned(t *testing.T) {
+	ps := New("pending-hls", 1000)
+	resume := &types.HLSResumeState{
+		ManifestURL:     "https://hls.example.com/i.m3u8",
+		TotalSegments:   2,
+		CompletedBitmap: []byte{0x01},
+		VerifiedBytes:   64,
+		Segments:        []types.HLSSegmentState{{Index: 0, URI: "s0.ts"}, {Index: 1, URI: "s1.ts"}},
+	}
+	rec := &types.DownloadRecord{
+		ID: "pending-hls", Strategy: types.StrategyHLS,
+		Downloaded: 64, HLSResume: resume,
+	}
+	ps.SetPendingResumeState(rec)
+
+	// Producer keeps writing its own checkpoint after the stash.
+	resume.Segments[0].URI = "mutated.ts"
+	resume.CompletedBitmap[0] = 0x00
+	resume.VerifiedBytes = 999
+
+	got := ps.TakePendingResumeState()
+	if got == nil || got.HLSResume == nil {
+		t.Fatal("Take returned no HLS checkpoint")
+	}
+	if got.HLSResume == resume {
+		t.Fatal("stashed checkpoint aliases the producer's object")
+	}
+	if got.HLSResume.Segments[0].URI != "s0.ts" ||
+		got.HLSResume.CompletedBitmap[0] != 0x01 ||
+		got.HLSResume.VerifiedBytes != 64 {
+		t.Fatalf("stashed checkpoint torn by post-Set mutation: %+v", got.HLSResume)
+	}
+
+	// Nil resume and nil record stay safe.
+	ps.SetPendingResumeState(&types.DownloadRecord{ID: "bare"})
+	if bare := ps.TakePendingResumeState(); bare == nil || bare.HLSResume != nil {
+		t.Fatalf("bare record Take = %+v, want non-nil record with nil resume", bare)
+	}
+	ps.SetPendingResumeState(nil)
+	if got := ps.TakePendingResumeState(); got != nil {
+		t.Fatalf("nil record Take = %+v, want nil", got)
+	}
+}

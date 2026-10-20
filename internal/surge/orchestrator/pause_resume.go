@@ -552,6 +552,7 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 	if savedState != nil && savedState.HLSResume != nil {
 		hlsResume = savedState.HLSResume.Clone()
 	} else if entry != nil && entry.HLSResume != nil {
+		// defensive: AddToMasterList always scrubs HLSResume from master rows.
 		hlsResume = entry.HLSResume.Clone()
 	}
 	if strategy == types.StrategyHLS {
