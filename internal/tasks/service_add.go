@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	neturl "net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,7 +19,9 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/surge/strategy/hls"
 	surgetypes "goaria-v3/internal/surge/types"
+	surgeutils "goaria-v3/internal/surge/utils"
 )
 
 // Compile-time check: *Service satisfies the extension.TaskAdder interface.
@@ -26,6 +29,17 @@ var _ extension.TaskAdder = (*Service)(nil)
 
 // scopeClassifier is a package-level scope classifier with host caching.
 var scopeClassifier = speedstats.NewScopeClassifier()
+
+// ErrHLSEngineUnsupported rejects an HLS add when the active engine cannot
+// run the Surge strategy; it is a terminal refusal, never a fallback.
+var ErrHLSEngineUnsupported = errors.New("hls download requires surge engine")
+
+// Injectable seams for tests: the manifest preflight and the free-space
+// lookup are the only network/platform touches inside the HLS add path.
+var (
+	hlsPreflightManifest = hls.PreflightHLSManifest
+	tasksFreeDiskBytes   = surgeutils.FreeDiskBytes
+)
 
 // collectActiveTaskInfos builds a TrackedTaskInfo slice from the current tracker state
 // for BandwidthLedger pre-scan seeding.
@@ -104,6 +118,7 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 	if req.FileSize > 0 {
 		candidate.sizeBytes = req.FileSize
 	}
+	normalizeHLSCandidate(&candidate)
 
 	authState := s.newAddTaskAuthBatchState()
 	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
@@ -480,8 +495,139 @@ func isDuplicateAddCandidate(candidate addTaskCandidate, existingURLs map[string
 	return history.ContainsSource(candidate.url)
 }
 
+// isHLSManifestURL reports whether rawURL is an HTTP(S) URL whose path ends
+// in .m3u8 (case-insensitive, query/fragment ignored). It deliberately does
+// not match .m3u or non-HTTP schemes.
+func isHLSManifestURL(rawURL string) bool {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		return false
+	}
+	u, err := neturl.Parse(trimmed)
+	if err != nil || u == nil || u.Host == "" {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https") {
+		return false
+	}
+	p := u.EscapedPath()
+	if p == "" {
+		p = u.Path
+	}
+	if unescaped, uerr := neturl.PathUnescape(p); uerr == nil {
+		p = unescaped
+	}
+	return strings.EqualFold(path.Ext(p), ".m3u8")
+}
+
+// normalizeHLSCandidate folds HLS intent into the candidate once: an explicit
+// StrategyHLS always wins, otherwise a .m3u8 url/finalURL is detected. HLS has
+// no byte-range semantics, so sizes are zeroed and the HEAD probe is skipped.
+// Idempotent — repeated calls re-assert the same fields.
+func normalizeHLSCandidate(candidate *addTaskCandidate) {
+	if candidate == nil || candidate.extracted {
+		return
+	}
+	if candidate.strategy == surgetypes.StrategyHLS ||
+		isHLSManifestURL(candidate.url) ||
+		isHLSManifestURL(candidate.finalURL) {
+		candidate.strategy = surgetypes.StrategyHLS
+		candidate.sizeBytes = 0
+		candidate.externalSizeBytes = 0
+		candidate.skipHeadProbe = true
+		candidate.hlsResume = candidate.hlsResume.Clone()
+	}
+}
+
+// supportsHLSStrategy reports whether the engine can actually run the Surge
+// HLS strategy. A wrapped-but-inactive Surge engine counts as unsupported.
+func supportsHLSStrategy(engine rpc.DownloadEngine) bool {
+	switch eng := engine.(type) {
+	case *rpc.HybridEngine:
+		return eng != nil && eng.IsSurgeActive()
+	case *rpc.SurgeEngine:
+		return eng != nil && eng.IsSurgeActive()
+	default:
+		return false
+	}
+}
+
+// surgeRuntimeConfigForPreflight borrows the engine's effective runtime config
+// so the manifest preflight shares proxy/DNS policy with the download itself.
+// The GoAria user agent always wins when configured.
+func (s *Service) surgeRuntimeConfigForPreflight() *surgetypes.RuntimeConfig {
+	var runCfg *surgetypes.RuntimeConfig
+	if s != nil {
+		switch eng := s.Engine.(type) {
+		case *rpc.SurgeEngine:
+			runCfg = eng.RuntimeConfig()
+		case *rpc.HybridEngine:
+			if se, ok := eng.SurgeEngineRef(); ok && se != nil {
+				runCfg = se.RuntimeConfig()
+			}
+		}
+	}
+	if runCfg == nil {
+		runCfg = surgetypes.DefaultRuntimeConfig()
+	}
+	if cfg := config.Get(); cfg != nil {
+		if ua := strings.TrimSpace(cfg.UserAgent); ua != "" {
+			cp := *runCfg
+			cp.UserAgent = ua
+			runCfg = &cp
+		}
+	}
+	return runCfg
+}
+
+// headerLinesToMap converts "Name: value" lines into the map form the HLS
+// preflight consumes; malformed lines are dropped, matching the engine side.
+func headerLinesToMap(lines []string) map[string]string {
+	if len(lines) == 0 {
+		return nil
+	}
+	m := make(map[string]string, len(lines))
+	for _, line := range lines {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k != "" {
+			m[k] = v
+		}
+	}
+	return m
+}
+
+// candidateClassificationURL picks the URL used for scope/domain/envKey
+// classification. For HLS the segment host — not the manifest host — is the
+// real traffic destination, so SegmentRefURL leads the fallback chain.
+func candidateClassificationURL(candidate addTaskCandidate) string {
+	if candidate.strategy == surgetypes.StrategyHLS {
+		if candidate.hlsResume != nil {
+			if ref := strings.TrimSpace(candidate.hlsResume.SegmentRefURL); ref != "" {
+				return ref
+			}
+		}
+		if final := strings.TrimSpace(candidate.finalURL); final != "" {
+			return final
+		}
+		if u := strings.TrimSpace(candidate.url); u != "" {
+			return u
+		}
+		return strings.TrimSpace(candidate.sourceURL)
+	}
+	if final := strings.TrimSpace(candidate.finalURL); final != "" {
+		return final
+	}
+	return strings.TrimSpace(candidate.url)
+}
+
 func shouldSkipEngineProbe(candidate addTaskCandidate, sanitizedOut string) bool {
-	return !candidate.extracted && !candidate.protected && sanitizedOut != "" && candidate.sizeBytes > 0
+	return candidate.strategy != surgetypes.StrategyHLS &&
+		!candidate.extracted && !candidate.protected && sanitizedOut != "" && candidate.sizeBytes > 0
 }
 
 func buildCandidateAddURIOptions(dir, out string, headers []string, split int, minSplitSize int64, beforeSave rpc.AddURIHook, candidate addTaskCandidate) rpc.AddURIOptions {
@@ -493,6 +639,17 @@ func buildCandidateAddURIOptions(dir, out string, headers []string, split int, m
 		MinSplitSize: minSplitSize,
 		BeforeSave:   beforeSave,
 	}
+	if candidate.strategy == surgetypes.StrategyHLS {
+		// HLS never enters the size-based engine probe or payload-first
+		// fallback; the resume checkpoint carries the plan.
+		opts.Strategy = surgetypes.StrategyHLS
+		opts.FileSize = 0
+		opts.SkipServerProbe = true
+		opts.RangeAcquisitionMode = surgetypes.RangeAcquireProbeAtEnqueue
+		opts.HLSResume = candidate.hlsResume.Clone()
+		opts.IsExplicitCategory = candidate.downloadGroup != nil
+		return opts
+	}
 	if shouldSkipEngineProbe(candidate, out) {
 		opts.FileSize = candidate.sizeBytes
 		opts.RangeAcquisitionMode = surgetypes.RangeAcquirePayloadFirstUnknown
@@ -502,13 +659,37 @@ func buildCandidateAddURIOptions(dir, out string, headers []string, split int, m
 }
 
 func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandidate, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	normalizeHLSCandidate(&candidate)
+	isHLS := candidate.strategy == surgetypes.StrategyHLS
+	if isHLS {
+		// Capability gate first: no manifest preflight, no group directory,
+		// and above all no Aria2 preparation or ledger reservation.
+		if !supportsHLSStrategy(s.Engine) {
+			return "", ErrHLSEngineUnsupported
+		}
+		// An explicit output name keeps the same safety contract as the
+		// byte-range path — traversal/separator/drive errors are hard fails.
+		if trimmedOut := strings.TrimSpace(candidate.out); trimmedOut != "" {
+			if _, err := SafeAria2OutFilename(trimmedOut); err != nil && !isRecoverableOutFilenameError(err) {
+				return "", err
+			}
+		}
+	}
+
 	rawURL := candidate.url
 	if rawURL == "" {
 		rawURL = candidate.sourceURL
 	}
-	out, err := resolveAria2OutFilename(candidate.out, rawURL)
-	if err != nil {
-		return "", err
+	var out string
+	var err error
+	if !isHLS {
+		out, err = resolveAria2OutFilename(candidate.out, rawURL)
+		if err != nil {
+			return "", err
+		}
 	}
 
 	if err := s.preflightCandidateAuth(ctx, candidate, authState); err != nil {
@@ -531,6 +712,46 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		return nil
 	}
 
+	var preflightTTFBMs int64
+	if isHLS {
+		if candidate.hlsResume == nil {
+			preflightRes, pErr := hlsPreflightManifest(ctx, nil, rawURL,
+				headerLinesToMap(headers), s.surgeRuntimeConfigForPreflight())
+			switch {
+			case pErr == nil && preflightRes != nil && preflightRes.ResumeState != nil:
+				candidate.hlsResume = preflightRes.ResumeState.Clone()
+				preflightTTFBMs = preflightRes.TTFBMs
+			case pErr == nil:
+				candidate.hlsResume = hls.NewFallbackHLSResumeState(rawURL, candidate.finalURL)
+			default:
+				// Caller-cancelled context wins outright; permanent HLS gates
+				// fail fast; everything else degrades to the fallback state.
+				if ctx.Err() != nil {
+					return "", ctx.Err()
+				}
+				if hls.ShouldFailFastPreflight(pErr) {
+					return "", pErr
+				}
+				candidate.hlsResume = hls.NewFallbackHLSResumeState(rawURL, candidate.finalURL)
+			}
+		}
+		// Naming prefers the URL that actually looks like a manifest — a
+		// redirected finalURL wins over a generic launcher page path.
+		namingURL := rawURL
+		if !isHLSManifestURL(rawURL) && isHLSManifestURL(candidate.finalURL) {
+			namingURL = candidate.finalURL
+		}
+		var containerFormat string
+		if candidate.hlsResume != nil {
+			containerFormat = candidate.hlsResume.ContainerFormat
+		}
+		out, err = SafeAria2OutFilename(hls.ResolveHLSOutputFilename(namingURL,
+			candidate.out, candidate.pageTitle, containerFormat, time.Now()))
+		if err != nil {
+			return "", err
+		}
+	}
+
 	dir := config.Get().DownloadDir
 	if candidate.downloadGroup != nil {
 		if err := candidate.downloadGroup.EnsureDir(); err != nil {
@@ -542,6 +763,15 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 	if candidate.downloadGroup != nil && !candidate.callerOwnsGroupCleanup {
 		defer candidate.downloadGroup.CleanupIfUnused()
 	}
+	// Host-side EstimatedBytes admission: fail before the engine can reserve
+	// a .surge artifact. Lookup failures fail open; unknown size skips.
+	if isHLS && candidate.hlsResume != nil && candidate.hlsResume.EstimatedBytes > 0 &&
+		strings.TrimSpace(dir) != "" {
+		if free, freeErr := tasksFreeDiskBytes(dir); freeErr == nil &&
+			!surgeutils.HasSufficientDiskSpace(candidate.hlsResume.EstimatedBytes, free) {
+			return "", surgetypes.ErrInsufficientDiskSpace
+		}
+	}
 
 	var gid string
 
@@ -550,34 +780,45 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		var ttfbMs int64
 		var remoteIP string
 
-		if !candidate.extracted && !candidate.protected && !candidate.skipHeadProbe && candidate.externalSizeBytes == 0 {
-			var probe rpc.HeadProbeResult
-			if len(headers) > 0 {
-				probe = rpc.HeadProbeWithHeaders(candidate.url, 3*time.Second, headers)
-			} else {
-				probe = rpc.HeadProbe(candidate.url, 3*time.Second)
-			}
-			fileSize = probe.ContentLength
-			ttfbMs = probe.TTFBMs
-			remoteIP = probe.RemoteIP
-		}
-
-		var scope, domain string
-		if remoteIP != "" {
-			scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, remoteIP)
+		var scope, domain, envKey string
+		if isHLS {
+			// HLS classifies on the segment host (the real traffic
+			// destination), never the manifest host.
+			fileSize = 0
+			ttfbMs = preflightTTFBMs
+			classifyURL := candidateClassificationURL(candidate)
+			remoteIP = resolveHostIP(classifyURL)
+			scope, domain = scopeClassifier.ClassifyByURLAndIP(classifyURL, remoteIP)
+			envKey = monitor.ComputeEnvKeyForDownload(classifyURL, remoteIP)
 		} else {
-			// Extension path: skipHeadProbe=true → remoteIP="".
-			// Resolve CDN IP from finalURL (post-redirect); fall back to original URL.
-			classificationURL := candidate.finalURL
-			if classificationURL == "" {
-				classificationURL = candidate.url
+			if !candidate.extracted && !candidate.protected && !candidate.skipHeadProbe && candidate.externalSizeBytes == 0 {
+				var probe rpc.HeadProbeResult
+				if len(headers) > 0 {
+					probe = rpc.HeadProbeWithHeaders(candidate.url, 3*time.Second, headers)
+				} else {
+					probe = rpc.HeadProbe(candidate.url, 3*time.Second)
+				}
+				fileSize = probe.ContentLength
+				ttfbMs = probe.TTFBMs
+				remoteIP = probe.RemoteIP
 			}
-			finalIP := resolveHostIP(classificationURL)
-			scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, finalIP)
-			remoteIP = finalIP
-		}
 
-		envKey := monitor.ComputeEnvKeyForDownload(candidate.url, remoteIP)
+			if remoteIP != "" {
+				scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, remoteIP)
+			} else {
+				// Extension path: skipHeadProbe=true → remoteIP="".
+				// Resolve CDN IP from finalURL (post-redirect); fall back to original URL.
+				classificationURL := candidate.finalURL
+				if classificationURL == "" {
+					classificationURL = candidate.url
+				}
+				finalIP := resolveHostIP(classificationURL)
+				scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, finalIP)
+				remoteIP = finalIP
+			}
+
+			envKey = monitor.ComputeEnvKeyForDownload(candidate.url, remoteIP)
+		}
 
 		maxConn, _ := strconv.Atoi(config.Get().MaxConnections)
 		if maxConn <= 0 {
@@ -636,6 +877,12 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 		case *rpc.SurgeEngine:
 			gid, err = eng.AddUri(candidate.url, surgeOpts)
 		default:
+			if isHLS {
+				// Defense in depth: the top-level gate already rejected
+				// unsupported engines — never let an unrecognized engine
+				// reach prepareAria2 for HLS.
+				return "", ErrHLSEngineUnsupported
+			}
 			gid, err = s.Engine.AddUri(candidate.url, prepareAria2())
 		}
 		if err != nil {
@@ -671,6 +918,9 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 			kickAdmissionIfSurge(gid)
 		}
 	} else {
+		if isHLS && !supportsHLSStrategy(s.Engine) {
+			return "", ErrHLSEngineUnsupported
+		}
 		maxConn, _ := strconv.Atoi(config.Get().MaxConnections)
 		if maxConn <= 0 {
 			maxConn = 8
@@ -690,13 +940,21 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 					tracker.SetThreadInfo(gid, maxConn, false)
 				}
 			}
-			classificationURL := candidate.finalURL
-			if classificationURL == "" {
-				classificationURL = candidate.url
+			var scope, domain, envKey string
+			if isHLS {
+				classifyURL := candidateClassificationURL(candidate)
+				finalIP := resolveHostIP(classifyURL)
+				scope, domain = scopeClassifier.ClassifyByURLAndIP(classifyURL, finalIP)
+				envKey = monitor.ComputeEnvKeyForDownload(classifyURL, finalIP)
+			} else {
+				classificationURL := candidate.finalURL
+				if classificationURL == "" {
+					classificationURL = candidate.url
+				}
+				finalIP := resolveHostIP(classificationURL)
+				scope, domain = scopeClassifier.ClassifyByURLAndIP(candidate.url, finalIP)
+				envKey = monitor.ComputeEnvKeyForDownload(candidate.url, finalIP)
 			}
-			finalIP := resolveHostIP(classificationURL)
-			scope, domain := scopeClassifier.ClassifyByURLAndIP(candidate.url, finalIP)
-			envKey := monitor.ComputeEnvKeyForDownload(candidate.url, finalIP)
 			if tracker != nil {
 				tracker.SetScopeAndEnv(gid, scope, 0, domain, envKey)
 			}
@@ -1072,12 +1330,42 @@ func firstErrorString(errors map[string]string) string {
 	return ""
 }
 
+// canonicalHLSPermanentError unwraps a (possibly annotated) error to its bare
+// HLS sentinel so manifest URLs, query parameters, or credentials embedded in
+// the original message can never reach the frontend or logs.
+func canonicalHLSPermanentError(err error) (error, bool) {
+	switch {
+	case errors.Is(err, surgetypes.ErrHLSLiveNotSupported):
+		return surgetypes.ErrHLSLiveNotSupported, true
+	case errors.Is(err, surgetypes.ErrHLSDRMNotSupported):
+		return surgetypes.ErrHLSDRMNotSupported, true
+	case errors.Is(err, surgetypes.ErrHLSDemuxedAudioNotSupported):
+		return surgetypes.ErrHLSDemuxedAudioNotSupported, true
+	case errors.Is(err, surgetypes.ErrHLSDiscontinuityMapNotSupported):
+		return surgetypes.ErrHLSDiscontinuityMapNotSupported, true
+	case errors.Is(err, surgetypes.ErrHLSIFramesOnlyNotSupported):
+		return surgetypes.ErrHLSIFramesOnlyNotSupported, true
+	case errors.Is(err, surgetypes.ErrHLSInvalidManifest):
+		return surgetypes.ErrHLSInvalidManifest, true
+	case errors.Is(err, surgetypes.ErrHLSInvalidSegmentResponse):
+		return surgetypes.ErrHLSInvalidSegmentResponse, true
+	case errors.Is(err, surgetypes.ErrHLSNotImplemented):
+		return surgetypes.ErrHLSNotImplemented, true
+	case errors.Is(err, ErrHLSEngineUnsupported):
+		return ErrHLSEngineUnsupported, true
+	}
+	return nil, false
+}
+
 func (s *Service) redactAddTaskError(err error) string {
 	if err == nil {
 		return ""
 	}
 	if surgetypes.IsInsufficientDiskSpace(err) {
 		return surgetypes.ErrInsufficientDiskSpace.Error()
+	}
+	if sentinel, ok := canonicalHLSPermanentError(err); ok {
+		return sentinel.Error()
 	}
 	if s != nil && s.Adapter != nil {
 		return redactAssignmentValues(s.Adapter.RedactError(err))

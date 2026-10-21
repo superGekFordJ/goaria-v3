@@ -348,9 +348,14 @@ func mergeSurgeTerminalMaster(surgeEng *rpc.SurgeEngine, ev types.DownloadEvent,
 		}
 	case "error":
 		// Error is minimal; merge onto existing to preserve URL/Mirrors/etc.
+		// An early error may be the first event carrying ev.State — keep the
+		// strategy/range metadata it transports instead of dropping it.
 		if existing, ok := surgeEng.GetMasterCacheEntry(ev.DownloadID); ok {
 			merged := existing
 			merged.Status = "error"
+			if ev.State != nil {
+				keepRangeAcquisition(&merged, *ev.State)
+			}
 			if ev.DestPath != "" {
 				merged.DestPath = ev.DestPath
 			}
@@ -359,13 +364,17 @@ func mergeSurgeTerminalMaster(surgeEng *rpc.SurgeEngine, ev types.DownloadEvent,
 			}
 			surgeEng.UpsertMasterCacheEntry(merged)
 		} else {
-			surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
+			rec := types.DownloadRecord{
 				ID:       ev.DownloadID,
 				Filename: ev.Filename,
 				DestPath: ev.DestPath,
 				Status:   "error",
 				Error:    errorMessage,
-			})
+			}
+			if ev.State != nil {
+				keepRangeAcquisition(&rec, *ev.State)
+			}
+			surgeEng.UpsertMasterCacheEntry(rec)
 		}
 	}
 }
@@ -561,6 +570,9 @@ func keepRangeAcquisition(dst *types.DownloadRecord, src types.DownloadRecord) {
 	}
 	if !dst.SkipServerProbe {
 		dst.SkipServerProbe = src.SkipServerProbe
+	}
+	if dst.Strategy == "" {
+		dst.Strategy = src.Strategy
 	}
 }
 

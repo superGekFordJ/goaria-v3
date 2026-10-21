@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -11,8 +12,12 @@ import (
 	"testing"
 	"time"
 
+	surgeconfig "goaria-v3/internal/surge/config"
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/store"
+	"goaria-v3/internal/surge/strategy/hls"
+	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
 )
 
@@ -1043,4 +1048,287 @@ func TestSurgeEngine_AdmissionSurfaceNilSafe(t *testing.T) {
 		t.Fatalf("nil-pool Admit = %v, want Unavailable", res)
 	}
 	engine.SetAdmissionWake(func() { t.Error("wake fired on nil pool") })
+}
+
+// HLS enqueue wiring: the resume checkpoint is cloned at the request boundary
+// so a caller mutating its slices can never reach the queued record or the
+// persisted detail gob; a nil resume degrades to the fallback state. With
+// category management enabled the host routes ".ts"/".mp4" output into the
+// "Videos" category itself, then pins IsExplicitCategory so the vendored
+// filename router cannot rematch it elsewhere.
+func TestSurgeEngine_AddUri_HLSCarriesClonedResumeStateAndVideosCategory(t *testing.T) {
+	testutil.SetupStateDB(t)
+	defaultDir := t.TempDir()
+	videosDir := t.TempDir()
+
+	newEngine := func(categoriesEnabled bool) *SurgeEngine {
+		engine := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+		t.Cleanup(engine.Close)
+		settings := surgeconfig.DefaultSettings()
+		settings.Categories.CategoryEnabled.Value = categoriesEnabled
+		settings.Categories.Categories = []surgeconfig.Category{
+			{Name: "Videos", Path: videosDir},
+		}
+		engine.manager.ApplySettings(settings)
+		return engine
+	}
+
+	newResume := func() *types.HLSResumeState {
+		return &types.HLSResumeState{
+			ManifestURL:      "https://hls.fixture.invalid/master.m3u8",
+			MediaPlaylistURL: "https://hls.fixture.invalid/media.m3u8",
+			SegmentRefURL:    "https://seg.fixture.invalid/seg0.m4s",
+			ContainerFormat:  hls.ContainerFMP4,
+			EstimatedBytes:   4 << 20,
+			RecordEligible:   true,
+			TotalSegments:    2,
+			CompletedBitmap:  []byte{0x02},
+			VerifiedBytes:    128 << 10,
+			Keys:             []types.HLSKeyInfo{{Method: "AES-128", URI: "https://hls.fixture.invalid/key.bin"}},
+			Segments: []types.HLSSegmentState{
+				{Index: 0, Sequence: 7, URI: "https://seg.fixture.invalid/seg0.m4s", ByteLength: 64 << 10},
+				{Index: 1, Sequence: 8, URI: "https://seg.fixture.invalid/seg1.m4s", ByteLength: 64 << 10},
+			},
+		}
+	}
+
+	t.Run("strategy and cloned resume reach the queued record and detail gob", func(t *testing.T) {
+		engine := newEngine(true)
+		resume := newResume()
+		gid, err := engine.AddUri("https://hls.fixture.invalid/master.m3u8", AddURIOptions{
+			Dir:       defaultDir,
+			Out:       "movie.mp4",
+			Strategy:  types.StrategyHLS,
+			HLSResume: resume,
+		})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		cfg := findSurgeConfigByID(engine, gid)
+		if cfg == nil {
+			t.Fatal("queued record missing")
+		}
+		if cfg.Strategy != types.StrategyHLS {
+			t.Fatalf("cfg.Strategy = %q, want hls", cfg.Strategy)
+		}
+		if cfg.HLSResume == nil {
+			t.Fatal("cfg.HLSResume = nil, want cloned checkpoint")
+		}
+		if cfg.HLSResume == resume {
+			t.Fatal("engine must not alias the caller-owned resume")
+		}
+		if cfg.HLSResume.ContainerFormat != hls.ContainerFMP4 ||
+			cfg.HLSResume.VerifiedBytes != 128<<10 ||
+			cfg.HLSResume.SegmentRefURL != "https://seg.fixture.invalid/seg0.m4s" ||
+			len(cfg.HLSResume.Segments) != 2 || len(cfg.HLSResume.CompletedBitmap) != 1 {
+			t.Fatalf("cfg.HLSResume lost fields: %+v", cfg.HLSResume)
+		}
+		// HLS requests never stamp a byte-range policy onto the record.
+		if cfg.RangeAcquisitionMode != types.RangeAcquireProbeAtEnqueue || !cfg.SkipServerProbe {
+			t.Fatalf("range fields = mode %q skip %v, want at-enqueue/true",
+				cfg.RangeAcquisitionMode, cfg.SkipServerProbe)
+		}
+
+		// Mutating the caller's slices after enqueue must not reach the
+		// queued record or the persisted detail gob.
+		resume.CompletedBitmap[0] = 0xff
+		resume.Segments[0].URI = "https://seg.fixture.invalid/mutated.m4s"
+		resume.Keys[0].URI = "https://hls.fixture.invalid/mutated.key"
+		if cfg.HLSResume.CompletedBitmap[0] != 0x02 ||
+			cfg.HLSResume.Segments[0].URI != "https://seg.fixture.invalid/seg0.m4s" ||
+			cfg.HLSResume.Keys[0].URI != "https://hls.fixture.invalid/key.bin" {
+			t.Fatal("caller mutation leaked into the queued record")
+		}
+		states, lerr := store.LoadStates([]string{gid})
+		if lerr != nil {
+			t.Fatalf("LoadStates: %v", lerr)
+		}
+		detail := states[gid]
+		if detail == nil || detail.HLSResume == nil {
+			t.Fatalf("detail gob missing HLS resume: %#v", detail)
+		}
+		if detail.Strategy != types.StrategyHLS {
+			t.Fatalf("detail Strategy = %q, want hls", detail.Strategy)
+		}
+		if detail.HLSResume.CompletedBitmap[0] != 0x02 ||
+			detail.HLSResume.Segments[0].URI != "https://seg.fixture.invalid/seg0.m4s" {
+			t.Fatal("caller mutation leaked into the persisted detail gob")
+		}
+		// The seeded detail keeps Downloaded aligned with VerifiedBytes so a
+		// cold resume still validates as task-backed.
+		if detail.Downloaded != 128<<10 {
+			t.Fatalf("detail Downloaded = %d, want seeded VerifiedBytes %d", detail.Downloaded, 128<<10)
+		}
+	})
+
+	t.Run("videos category routes the .ts output dir", func(t *testing.T) {
+		engine := newEngine(true)
+		gid, err := engine.AddUri("https://hls.fixture.invalid/vod.m3u8", AddURIOptions{
+			Dir:      defaultDir,
+			Out:      "clip.ts",
+			Strategy: types.StrategyHLS,
+		})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		cfg := findSurgeConfigByID(engine, gid)
+		if cfg == nil {
+			t.Fatal("queued record missing")
+		}
+		if cfg.OutputPath != videosDir {
+			t.Fatalf("OutputPath = %q, want Videos dir %q", cfg.OutputPath, videosDir)
+		}
+		if !cfg.IsExplicitCategory {
+			t.Fatal("IsExplicitCategory = false, want pinned after host routing")
+		}
+	})
+
+	t.Run("explicit caller category keeps its own dir", func(t *testing.T) {
+		engine := newEngine(true)
+		gid, err := engine.AddUri("https://hls.fixture.invalid/group.m3u8", AddURIOptions{
+			Dir:                defaultDir,
+			Out:                "member.ts",
+			Strategy:           types.StrategyHLS,
+			IsExplicitCategory: true,
+		})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		cfg := findSurgeConfigByID(engine, gid)
+		if cfg == nil {
+			t.Fatal("queued record missing")
+		}
+		if cfg.OutputPath != defaultDir {
+			t.Fatalf("OutputPath = %q, want explicit dir %q", cfg.OutputPath, defaultDir)
+		}
+	})
+
+	t.Run("category disabled keeps the default dir", func(t *testing.T) {
+		engine := newEngine(false)
+		gid, err := engine.AddUri("https://hls.fixture.invalid/plain.m3u8", AddURIOptions{
+			Dir:      defaultDir,
+			Out:      "plain.ts",
+			Strategy: types.StrategyHLS,
+		})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		cfg := findSurgeConfigByID(engine, gid)
+		if cfg == nil {
+			t.Fatal("queued record missing")
+		}
+		if cfg.OutputPath != defaultDir {
+			t.Fatalf("OutputPath = %q, want default dir %q", cfg.OutputPath, defaultDir)
+		}
+	})
+
+	t.Run("nil resume degrades to the fallback checkpoint", func(t *testing.T) {
+		engine := newEngine(false)
+		const u = "https://hls.fixture.invalid/fallback.m3u8"
+		gid, err := engine.AddUri(u, AddURIOptions{
+			Dir:      defaultDir,
+			Strategy: types.StrategyHLS,
+		})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		cfg := findSurgeConfigByID(engine, gid)
+		if cfg == nil || cfg.HLSResume == nil {
+			t.Fatal("queued record missing fallback resume")
+		}
+		rs := cfg.HLSResume
+		if rs.ContainerFormat != hls.ContainerTS || rs.EstimatedBytes != 0 || !rs.RecordEligible {
+			t.Fatalf("fallback resume = %+v, want ts/0/eligible", rs)
+		}
+		if rs.SegmentRefURL != u || rs.ManifestURL != u {
+			t.Fatalf("fallback anchors = seg %q manifest %q, want %q", rs.SegmentRefURL, rs.ManifestURL, u)
+		}
+	})
+}
+
+// The EstimatedBytes precheck runs before Enqueue so a refusal leaves no
+// .surge reservation and no pool record behind. Zero/negative estimates are
+// never intercepted, and a failed free-space lookup fails open.
+func TestSurgeEngine_AddUri_HLSEstimatedBytesDiskPrecheck(t *testing.T) {
+	testutil.SetupStateDB(t)
+	dir := t.TempDir()
+
+	orig := surgeFreeDiskBytes
+	t.Cleanup(func() { surgeFreeDiskBytes = orig })
+	surgeFreeDiskBytes = func(string) (int64, error) { return 1 << 10, nil }
+
+	engine := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	t.Cleanup(engine.Close)
+
+	surgeFiles := func() []string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("ReadDir: %v", err)
+		}
+		var names []string
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), types.IncompleteSuffix) {
+				names = append(names, e.Name())
+			}
+		}
+		return names
+	}
+
+	t.Run("insufficient space rejects before reservation", func(t *testing.T) {
+		_, err := engine.AddUri("https://hls.fixture.invalid/big.m3u8", AddURIOptions{
+			Dir:      dir,
+			Out:      "big.ts",
+			Strategy: types.StrategyHLS,
+			HLSResume: &types.HLSResumeState{
+				EstimatedBytes: 8 << 20,
+				RecordEligible: true,
+			},
+		})
+		if !errors.Is(err, types.ErrInsufficientDiskSpace) {
+			t.Fatalf("AddUri err = %v, want ErrInsufficientDiskSpace", err)
+		}
+		if files := surgeFiles(); len(files) != 0 {
+			t.Fatalf("rejected add left .surge residue: %v", files)
+		}
+	})
+
+	t.Run("zero estimate is never intercepted", func(t *testing.T) {
+		gid, err := engine.AddUri("https://hls.fixture.invalid/unknown.m3u8", AddURIOptions{
+			Dir:      dir,
+			Out:      "unknown.ts",
+			Strategy: types.StrategyHLS,
+			HLSResume: &types.HLSResumeState{
+				EstimatedBytes: 0,
+				RecordEligible: true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		if findSurgeConfigByID(engine, gid) == nil {
+			t.Fatal("queued record missing")
+		}
+	})
+
+	t.Run("free-space lookup failure fails open", func(t *testing.T) {
+		surgeFreeDiskBytes = func(string) (int64, error) { return 0, errors.New("statfs failed") }
+		t.Cleanup(func() {
+			surgeFreeDiskBytes = func(string) (int64, error) { return 1 << 10, nil }
+		})
+		gid, err := engine.AddUri("https://hls.fixture.invalid/failopen.m3u8", AddURIOptions{
+			Dir:      dir,
+			Out:      "failopen.ts",
+			Strategy: types.StrategyHLS,
+			HLSResume: &types.HLSResumeState{
+				EstimatedBytes: 8 << 20,
+				RecordEligible: true,
+			},
+		})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		if findSurgeConfigByID(engine, gid) == nil {
+			t.Fatal("queued record missing")
+		}
+	})
 }

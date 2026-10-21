@@ -17,9 +17,14 @@ import (
 	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/service"
 	"goaria-v3/internal/surge/store"
+	"goaria-v3/internal/surge/strategy/hls"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 )
+
+// surgeFreeDiskBytes is the injectable free-space lookup used by the HLS
+// EstimatedBytes precheck; tests swap it to simulate constrained volumes.
+var surgeFreeDiskBytes = utils.FreeDiskBytes
 
 type SurgeEngine struct {
 	service   *service.LocalDownloadService
@@ -507,6 +512,7 @@ func (e *SurgeEngine) MasterCacheForTesting() []types.DownloadRecord {
 		if out[i].Mirrors != nil {
 			out[i].Mirrors = append([]string(nil), out[i].Mirrors...)
 		}
+		out[i].HLSResume = out[i].HLSResume.Clone()
 	}
 	return out
 }
@@ -551,6 +557,7 @@ func (e *SurgeEngine) GetMasterCacheEntry(id string) (types.DownloadRecord, bool
 			if existing.Mirrors != nil {
 				existing.Mirrors = append([]string(nil), existing.Mirrors...)
 			}
+			existing.HLSResume = existing.HLSResume.Clone()
 			return existing, true
 		}
 	}
@@ -686,6 +693,43 @@ func convertTask(status types.DownloadStatus) Task {
 	}
 }
 
+// RuntimeConfig reports the effective runtime config the manager stamps onto
+// new downloads (settings snapshot → RuntimeConfig). Host-side HLS preflight
+// reuses it so probes share proxy/DNS/UA policy with the engine.
+func (e *SurgeEngine) RuntimeConfig() *types.RuntimeConfig {
+	if e == nil || e.manager == nil {
+		return types.DefaultRuntimeConfig()
+	}
+	if settings := e.manager.GetSettings(); settings != nil {
+		return settings.ToRuntimeConfig()
+	}
+	return types.DefaultRuntimeConfig()
+}
+
+// resolveHLSDestinationDir routes HLS output into the "Videos" category when
+// category management is enabled and the caller did not pin a directory.
+// The last case-insensitive name match wins so user overrides apply; a missing
+// category keeps the caller's default directory.
+func resolveHLSDestinationDir(defaultDir string, isExplicitCategory bool, settings *surgeconfig.Settings) string {
+	if isExplicitCategory || settings == nil || !surgeconfig.Resolve[bool](settings.Categories.CategoryEnabled) {
+		return defaultDir
+	}
+	var matched *surgeconfig.Category
+	for i := range settings.Categories.Categories {
+		cat := &settings.Categories.Categories[i]
+		if strings.EqualFold(strings.TrimSpace(cat.Name), "Videos") {
+			matched = cat
+		}
+	}
+	if matched == nil {
+		return defaultDir
+	}
+	if catPath := surgeconfig.ResolveCategoryPath(matched, defaultDir); catPath != "" {
+		return utils.EnsureAbsPath(catPath)
+	}
+	return defaultDir
+}
+
 func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) {
 	headersMap := make(map[string]string)
 	for _, h := range options.Headers {
@@ -694,17 +738,51 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 			headersMap[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
 		}
 	}
+
+	targetDir := options.Dir
+	isExplicitCategory := options.IsExplicitCategory
+	var hlsResume *types.HLSResumeState
+	if options.Strategy == types.StrategyHLS {
+		var settings *surgeconfig.Settings
+		if e.manager != nil {
+			settings = e.manager.GetSettings()
+		}
+		targetDir = resolveHLSDestinationDir(options.Dir, options.IsExplicitCategory, settings)
+		// The request is already host-classified; never let the vendored
+		// filename router rematch a .ts output into another category.
+		isExplicitCategory = true
+		hlsResume = options.HLSResume.Clone()
+		if hlsResume == nil {
+			hlsResume = hls.NewFallbackHLSResumeState(url, url)
+		}
+		// EstimatedBytes precheck runs before Enqueue so a reject leaves no
+		// .surge reservation behind. Free-space lookup failures fail open.
+		if hlsResume.EstimatedBytes > 0 && strings.TrimSpace(targetDir) != "" {
+			free, freeErr := surgeFreeDiskBytes(targetDir)
+			if freeErr != nil {
+				utils.Debug("SurgeEngine: free-space query failed for %s: %v (fail-open)\n", targetDir, freeErr)
+			} else if !utils.HasSufficientDiskSpace(hlsResume.EstimatedBytes, free) {
+				return "", types.ErrInsufficientDiskSpace
+			}
+		}
+	} else if options.HLSResume != nil {
+		hlsResume = options.HLSResume.Clone()
+	}
+
 	req := &orchestrator.DownloadRequest{
 		URL:                  url,
-		Path:                 options.Dir,
+		Path:                 targetDir,
 		Filename:             options.Out,
 		Headers:              headersMap,
+		IsExplicitCategory:   isExplicitCategory,
 		Workers:              options.Split,
 		MinChunkSize:         options.MinSplitSize,
 		FileSize:             options.FileSize,
 		SupportsRange:        options.SupportsRange,
 		RangeAcquisitionMode: options.RangeAcquisitionMode,
 		SkipServerProbe:      options.SkipServerProbe,
+		Strategy:             options.Strategy,
+		HLSResume:            hlsResume,
 	}
 	gid, _, err := e.manager.Enqueue(context.Background(), req)
 	return gid, err

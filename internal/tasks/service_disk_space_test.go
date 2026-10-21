@@ -162,3 +162,42 @@ func TestAddUri_InsufficientDiskSpaceMessage(t *testing.T) {
 		t.Fatalf("AddUri() = %q, want sentinel", got)
 	}
 }
+
+// HLS sentinel errors must redact to the bare sentinel string whether they
+// arrive bare or wrapped in manifest/URL context — the frontend key matches
+// on exact equality, and any URL residue would also leak signed params.
+func TestRedactAddTaskError_HLSSentinels(t *testing.T) {
+	t.Parallel()
+	svc := &Service{}
+
+	sentinels := []error{
+		surgetypes.ErrHLSLiveNotSupported,
+		surgetypes.ErrHLSDRMNotSupported,
+		surgetypes.ErrHLSDemuxedAudioNotSupported,
+		surgetypes.ErrHLSDiscontinuityMapNotSupported,
+		surgetypes.ErrHLSIFramesOnlyNotSupported,
+		surgetypes.ErrHLSInvalidManifest,
+		surgetypes.ErrHLSInvalidSegmentResponse,
+		surgetypes.ErrHLSNotImplemented,
+		ErrHLSEngineUnsupported,
+	}
+	for _, sentinel := range sentinels {
+		bare := svc.redactAddTaskError(sentinel)
+		if bare != sentinel.Error() {
+			t.Fatalf("redactAddTaskError(%v) = %q, want bare sentinel", sentinel, bare)
+		}
+		wrapped := fmt.Errorf("preflight https://hls.example.invalid/master.m3u8?token=secret: %w", sentinel)
+		if got := svc.redactAddTaskError(wrapped); got != sentinel.Error() {
+			t.Fatalf("redactAddTaskError(wrapped %v) = %q, want bare sentinel", sentinel, got)
+		}
+	}
+}
+
+func TestRedactAddTaskError_HLSEngineUnsupportedThroughWrap(t *testing.T) {
+	t.Parallel()
+	svc := &Service{}
+	err := fmt.Errorf("add candidate: %w", ErrHLSEngineUnsupported)
+	if got := svc.redactAddTaskError(err); got != ErrHLSEngineUnsupported.Error() {
+		t.Fatalf("redactAddTaskError = %q, want %q", got, ErrHLSEngineUnsupported)
+	}
+}

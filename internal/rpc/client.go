@@ -126,6 +126,15 @@ type AddURIOptions struct {
 	SupportsRange        *bool
 	RangeAcquisitionMode types.RangeAcquisitionMode
 	SkipServerProbe      bool
+	// IsExplicitCategory marks Dir as caller-resolved (e.g. an explicit download
+	// group): the engine's category router must not rematch the filename.
+	IsExplicitCategory bool
+	// Strategy selects the download strategy. StrategyHLS is Surge-only —
+	// Aria2 has no playlist semantics and rejects it in buildAddURIOptions.
+	Strategy types.DownloadStrategy
+	// HLSResume carries the HLS resume checkpoint. Engines clone it on every
+	// handoff; the caller keeps ownership of the original.
+	HLSResume *types.HLSResumeState
 }
 
 type AddURIHook func(gid string) error
@@ -205,6 +214,9 @@ func AddUriWithAria2OptionsHook(url string, options AddURIOptions, beforeSave Ad
 }
 
 func buildAddURIOptions(options AddURIOptions) (map[string]any, error) {
+	if options.Strategy == types.StrategyHLS {
+		return nil, errors.New("aria2 does not support HLS downloads")
+	}
 	if err := validateAddURIHeaders(options.Headers); err != nil {
 		return nil, err
 	}

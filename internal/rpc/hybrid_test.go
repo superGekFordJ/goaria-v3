@@ -307,6 +307,150 @@ func TestHybridEngine_DiskSpaceNoFallback(t *testing.T) {
 	}
 }
 
+// HLS is Surge-only: every engine-side failure propagates verbatim — no
+// Aria2 fallback and no Aria2 preparation. The guard also fires before the
+// Surge call for non-HTTP URLs and a missing Surge engine.
+func TestHybridEngine_AddUri_HLSStrategy_NeverFallsBackToAria2(t *testing.T) {
+	const manifestURL = "https://cdn.fixture.invalid/master.m3u8"
+
+	surgeErrors := []struct {
+		name string
+		err  error
+	}{
+		{"generic network error", errors.New("connection reset")},
+		{"invalid manifest", types.ErrHLSInvalidManifest},
+		{"disk space", types.ErrInsufficientDiskSpace},
+		{"live unsupported", types.ErrHLSLiveNotSupported},
+	}
+	for _, tc := range surgeErrors {
+		t.Run("surge error propagates: "+tc.name, func(t *testing.T) {
+			for _, variant := range []string{"AddUri", "AddUriWithAria2Preparation"} {
+				aria2 := &mockEngine{addResultGid: "ar_never"}
+				surge := &mockEngine{addResultErr: tc.err}
+				hybrid := NewHybridEngine(aria2, surge)
+				prepareCalls := 0
+				prepare := func() AddURIOptions {
+					prepareCalls++
+					return AddURIOptions{Split: 4}
+				}
+
+				var gid string
+				var err error
+				if variant == "AddUri" {
+					gid, err = hybrid.AddUri(manifestURL, AddURIOptions{Strategy: types.StrategyHLS})
+				} else {
+					gid, err = hybrid.AddUriWithAria2Preparation(manifestURL,
+						AddURIOptions{Strategy: types.StrategyHLS}, prepare)
+				}
+				if gid != "" {
+					t.Fatalf("%s gid = %q, want empty", variant, gid)
+				}
+				if !errors.Is(err, tc.err) {
+					t.Fatalf("%s err = %v, want %v", variant, err, tc.err)
+				}
+				if len(surge.addedUrls) != 1 {
+					t.Fatalf("%s surge AddUri calls = %d, want 1", variant, len(surge.addedUrls))
+				}
+				if len(aria2.addedUrls) != 0 {
+					t.Fatalf("%s aria2 AddUri calls = %d, want 0", variant, len(aria2.addedUrls))
+				}
+				if prepareCalls != 0 {
+					t.Fatalf("%s prepare calls = %d, want 0", variant, prepareCalls)
+				}
+			}
+		})
+	}
+
+	t.Run("surge accept returns prefixed gid and fires BeforeSave", func(t *testing.T) {
+		aria2 := &mockEngine{addResultGid: "ar_never"}
+		surge := &mockEngine{addResultGid: "hls-raw-1"}
+		hybrid := NewHybridEngine(aria2, surge)
+
+		var hookGID string
+		resume := &types.HLSResumeState{ContainerFormat: "fmp4", SegmentRefURL: "https://seg.fixture.invalid/s0.m4s"}
+		gid, err := hybrid.AddUriWithAria2Preparation(manifestURL, AddURIOptions{
+			Strategy:  types.StrategyHLS,
+			HLSResume: resume,
+			BeforeSave: func(g string) error {
+				hookGID = g
+				return nil
+			},
+		}, func() AddURIOptions {
+			t.Fatal("prepare must not run for HLS")
+			return AddURIOptions{}
+		})
+		if err != nil {
+			t.Fatalf("AddUriWithAria2Preparation: %v", err)
+		}
+		if gid != "sg_hls-raw-1" || hookGID != "sg_hls-raw-1" {
+			t.Fatalf("gid = %q hookGID = %q, want sg_hls-raw-1", gid, hookGID)
+		}
+		if len(surge.addedOptions) != 1 {
+			t.Fatalf("surge AddUri calls = %d, want 1", len(surge.addedOptions))
+		}
+		if surge.addedOptions[0].BeforeSave != nil {
+			t.Fatal("BeforeSave leaked into the forwarded options")
+		}
+		if surge.addedOptions[0].Strategy != types.StrategyHLS {
+			t.Fatalf("forwarded Strategy = %q, want hls", surge.addedOptions[0].Strategy)
+		}
+		if len(aria2.addedUrls) != 0 {
+			t.Fatalf("aria2 AddUri calls = %d, want 0", len(aria2.addedUrls))
+		}
+	})
+
+	t.Run("non-HTTP URL rejected before touching either engine", func(t *testing.T) {
+		for _, u := range []string{
+			"magnet:?xt=urn:btih:abc",
+			"ftp://cdn.fixture.invalid/master.m3u8",
+			"file:///local/master.m3u8",
+		} {
+			aria2 := &mockEngine{}
+			surge := &mockEngine{}
+			hybrid := NewHybridEngine(aria2, surge)
+			_, err := hybrid.AddUriWithAria2Preparation(u, AddURIOptions{Strategy: types.StrategyHLS},
+				func() AddURIOptions {
+					t.Fatal("prepare must not run for HLS")
+					return AddURIOptions{}
+				})
+			if !errors.Is(err, types.ErrHLSInvalidManifest) {
+				t.Fatalf("url %q err = %v, want ErrHLSInvalidManifest", u, err)
+			}
+			if len(surge.addedUrls) != 0 || len(aria2.addedUrls) != 0 {
+				t.Fatalf("url %q touched an engine: surge=%v aria2=%v", u, surge.addedUrls, aria2.addedUrls)
+			}
+		}
+	})
+
+	t.Run("missing surge engine is terminal", func(t *testing.T) {
+		aria2 := &mockEngine{addResultGid: "ar_never"}
+		hybrid := NewHybridEngine(aria2, nil)
+		_, err := hybrid.AddUri(manifestURL, AddURIOptions{Strategy: types.StrategyHLS})
+		if !errors.Is(err, types.ErrServiceUnavailable) {
+			t.Fatalf("err = %v, want ErrServiceUnavailable", err)
+		}
+		if len(aria2.addedUrls) != 0 {
+			t.Fatalf("aria2 AddUri calls = %d, want 0", len(aria2.addedUrls))
+		}
+	})
+
+	t.Run("non-HLS still falls back to Aria2", func(t *testing.T) {
+		aria2 := &mockEngine{addResultGid: "ar_fallback"}
+		surge := &mockEngine{addResultErr: errors.New("surge unavailable")}
+		hybrid := NewHybridEngine(aria2, surge)
+		gid, err := hybrid.AddUri("https://cdn.fixture.invalid/file.bin", AddURIOptions{})
+		if err != nil {
+			t.Fatalf("AddUri: %v", err)
+		}
+		if gid != "ar_ar_fallback" {
+			t.Fatalf("gid = %q, want ar_ar_fallback", gid)
+		}
+		if len(aria2.addedUrls) != 1 {
+			t.Fatalf("aria2 AddUri calls = %d, want 1", len(aria2.addedUrls))
+		}
+	})
+}
+
 func TestHybridEngine_PrefixStripping(t *testing.T) {
 	aria2 := &mockEngine{}
 	surge := &mockEngine{}

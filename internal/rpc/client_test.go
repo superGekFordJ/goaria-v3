@@ -1283,6 +1283,23 @@ func TestPauseUnpauseMultiResults_EmptyInputShortCircuits(t *testing.T) {
 	}
 }
 
+// The Aria2 option layer is the last hard wall in front of the daemon: an
+// HLS-classified request must die here instead of producing a doomed
+// byte-range add. Other strategies keep building normally.
+func TestBuildAddURIOptions_RejectsHLSStrategy(t *testing.T) {
+	if _, err := buildAddURIOptions(AddURIOptions{Strategy: types.StrategyHLS}); err == nil {
+		t.Fatal("buildAddURIOptions(StrategyHLS) = nil error, want rejection")
+	}
+	if _, err := buildAddURIOptions(AddURIOptions{
+		Dir: "D:\\Downloads", Out: "file.bin", Split: 4,
+	}); err != nil {
+		t.Fatalf("buildAddURIOptions(byte-range) = %v, want nil", err)
+	}
+	if _, err := buildAddURIOptions(AddURIOptions{Strategy: types.StrategyAuto}); err != nil {
+		t.Fatalf("buildAddURIOptions(StrategyAuto) = %v, want nil", err)
+	}
+}
+
 func TestAria2RealSmallFile(t *testing.T) {
 	// This test requires a running Aria2 instance on port 6800 with secret "mysecret"
 	t.Skip("Skipping integration test that requires real Aria2 instance")

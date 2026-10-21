@@ -1314,3 +1314,127 @@ func TestHandleSurgeEvent_FirstByteMsg_BeforeStarted_SilentSkip(t *testing.T) {
 		t.Errorf("TTFBMs = %d, want 0 (FirstByteMsg before task creation should be skipped)", tracked.TTFBMs)
 	}
 }
+
+// keepRangeAcquisition carries the HLS strategy (alongside the legacy range
+// fields) into a master mirror that lacked them, and never overwrites facts
+// the destination already holds — including with an empty source strategy.
+func TestKeepRangeAcquisition_PreservesHLSStrategy(t *testing.T) {
+	dst := surgeEvents.DownloadRecord{}
+	keepRangeAcquisition(&dst, surgeEvents.DownloadRecord{
+		Strategy:             surgeEvents.StrategyHLS,
+		RangeAcquisitionMode: surgeEvents.RangeAcquireProbeAtEnqueue,
+		SkipServerProbe:      true,
+	})
+	if dst.Strategy != surgeEvents.StrategyHLS {
+		t.Fatalf("Strategy = %q, want hls", dst.Strategy)
+	}
+	if dst.RangeAcquisitionMode != surgeEvents.RangeAcquireProbeAtEnqueue || !dst.SkipServerProbe {
+		t.Fatalf("range fields lost: mode %q skip %v", dst.RangeAcquisitionMode, dst.SkipServerProbe)
+	}
+
+	// A populated destination strategy survives an empty source strategy.
+	dst = surgeEvents.DownloadRecord{Strategy: surgeEvents.StrategyHLS}
+	keepRangeAcquisition(&dst, surgeEvents.DownloadRecord{})
+	if dst.Strategy != surgeEvents.StrategyHLS {
+		t.Fatalf("Strategy = %q, want hls preserved", dst.Strategy)
+	}
+
+	// nil destination is a no-op, never a panic.
+	keepRangeAcquisition(nil, surgeEvents.DownloadRecord{Strategy: surgeEvents.StrategyHLS})
+}
+
+// A lifecycle event carrying the engine's resume snapshot keeps the HLS
+// strategy and skip-probe facts inside the master mirror it maintains.
+func TestEventDriven_LifecycleMerge_PreservesHLSStrategy(t *testing.T) {
+	hub := events.NewHub(nil)
+	pusher := NewPusher(hub)
+	tracker := NewTaskTracker()
+	surgeEng := &rpc.SurgeEngine{}
+	m := &Monitor{hub: hub, pusher: pusher, tracker: tracker, surgeEng: surgeEng}
+
+	prevWindow := State.HasWindow()
+	State.SetWindowExists(true)
+	defer State.SetWindowExists(prevWindow)
+	defer func() {
+		Cache.sgActive = nil
+		Cache.sgWaiting = nil
+		Cache.sgStopped = nil
+	}()
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{
+		Type:       surgeEvents.EventQueued,
+		DownloadID: "hls-queued",
+		URL:        "https://cdn.fixture.invalid/master.m3u8",
+		Filename:   "movie.ts",
+		State: &surgeEvents.DownloadRecord{
+			Strategy:        surgeEvents.StrategyHLS,
+			SkipServerProbe: true,
+		},
+	})
+
+	entry, ok := surgeEng.GetMasterCacheEntry("hls-queued")
+	if !ok {
+		t.Fatal("master cache entry missing after queued event")
+	}
+	if entry.Strategy != surgeEvents.StrategyHLS {
+		t.Fatalf("master Strategy = %q, want hls", entry.Strategy)
+	}
+	if !entry.SkipServerProbe {
+		t.Fatal("master SkipServerProbe = false, want true")
+	}
+	if entry.Status != "queued" {
+		t.Fatalf("master Status = %q, want queued", entry.Status)
+	}
+}
+
+// The terminal error merge folds ev.State into the master mirror: an early
+// failure may be the only event that ever carried the strategy/range facts,
+// both for an existing mirror row and a freshly minted error record.
+func TestMergeSurgeTerminalMaster_ErrorAppliesEventState(t *testing.T) {
+	surgeEng := &rpc.SurgeEngine{}
+	surgeEng.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{
+		ID:       "hls-existing",
+		URL:      "https://cdn.fixture.invalid/m.m3u8",
+		Filename: "a.ts",
+		Status:   "downloading",
+	})
+	mergeSurgeTerminalMaster(surgeEng, surgeEvents.DownloadEvent{
+		DownloadID: "hls-existing",
+		State:      &surgeEvents.DownloadRecord{Strategy: surgeEvents.StrategyHLS, SkipServerProbe: true},
+	}, "error", 0, 0, "boom")
+
+	merged, ok := surgeEng.GetMasterCacheEntry("hls-existing")
+	if !ok || merged.Status != "error" {
+		t.Fatalf("merged = %#v ok=%v, want error row", merged, ok)
+	}
+	if merged.Strategy != surgeEvents.StrategyHLS || !merged.SkipServerProbe {
+		t.Fatalf("existing merge dropped event state: %+v", merged)
+	}
+	if merged.Error != "boom" || merged.URL != "https://cdn.fixture.invalid/m.m3u8" {
+		t.Fatalf("merge lost identity fields: %+v", merged)
+	}
+
+	// No existing mirror: a fresh error record still picks up the state.
+	mergeSurgeTerminalMaster(surgeEng, surgeEvents.DownloadEvent{
+		DownloadID: "hls-fresh",
+		Filename:   "b.ts",
+		State:      &surgeEvents.DownloadRecord{Strategy: surgeEvents.StrategyHLS},
+	}, "error", 0, 0, "gone")
+	fresh, ok := surgeEng.GetMasterCacheEntry("hls-fresh")
+	if !ok || fresh.Strategy != surgeEvents.StrategyHLS || fresh.Status != "error" {
+		t.Fatalf("fresh error record = %#v ok=%v, want hls error", fresh, ok)
+	}
+
+	// A complete merge must not inherit the strategy either way when the
+	// event carries no state (guard against accidental state plumbing).
+	surgeEng.UpsertMasterCacheEntry(surgeEvents.DownloadRecord{
+		ID: "hls-done", Status: "downloading",
+	})
+	mergeSurgeTerminalMaster(surgeEng, surgeEvents.DownloadEvent{
+		DownloadID: "hls-done",
+	}, "complete", 100, 50, "")
+	done, ok := surgeEng.GetMasterCacheEntry("hls-done")
+	if !ok || done.Status != "completed" {
+		t.Fatalf("complete merge = %#v ok=%v, want completed", done, ok)
+	}
+}

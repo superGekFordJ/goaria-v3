@@ -1568,3 +1568,106 @@ func TestAdmissionRuntime_UnknownSize_UsesBBRNSatWithoutStarvingPeers(t *testing
 			tb.ThreadCount, tb.TargetBandwidth, tb.MinChunk)
 	}
 }
+
+// The host record-eligibility floor and the engine-side HLS threshold are one
+// policy; the compile-time const subtraction in admission_controller.go is
+// the hard guard, this test pins the numeric identity for readers.
+func TestRecordEligibleMinFileSize_MatchesSpeedstatsMinFileSize(t *testing.T) {
+	if speedstats.MinFileSize != types.RecordEligibleMinFileSize {
+		t.Fatalf("threshold drift: speedstats.MinFileSize=%d types.RecordEligibleMinFileSize=%d",
+			speedstats.MinFileSize, types.RecordEligibleMinFileSize)
+	}
+}
+
+// queueManagedWaitingHLS registers a queued HLS candidate: zero byte total,
+// engine-declared RecordEligible inside the resume checkpoint. The tracker
+// row is a monitor-accepted waiting row with settled scope/env metadata.
+func queueManagedWaitingHLS(t *testing.T, pool *scheduler.Scheduler, tr *monitor.TaskTracker,
+	id, url, scope, domain, envKey string, workers int, totalSize int64, recordEligible bool,
+) scheduler.AdmissionKey {
+	t.Helper()
+	gid := "sg_" + id
+	tr.EnsureTrackedFromEvent(gid, totalSize, url, workers, "waiting")
+	tr.SetScopeAndEnv(gid, scope, 0, domain, envKey)
+	if !pool.Add(types.DownloadRecord{
+		ID:            id,
+		URL:           url,
+		OutputPath:    t.TempDir(),
+		Filename:      id + ".ts",
+		TotalSize:     totalSize,
+		ProgressState: progress.New(id, totalSize),
+		Runtime:       &types.RuntimeConfig{Workers: workers},
+		Strategy:      types.StrategyHLS,
+		HLSResume:     &types.HLSResumeState{RecordEligible: recordEligible, EstimatedBytes: 5 << 20},
+	}) {
+		t.Fatalf("managed Add refused for %s", id)
+	}
+	for _, c := range pool.AdmissionSnapshot().Candidates {
+		if c.Key.ID == id {
+			return c.Key
+		}
+	}
+	t.Fatalf("candidate %s missing from snapshot", id)
+	return scheduler.AdmissionKey{}
+}
+
+// RecordEligible has exactly one authority for Surge candidates: the engine
+// snapshot flag. A byte total of zero — or a large TotalSize stamped on an
+// HLS row whose estimate stayed small — must never be re-derived by the
+// controller.
+func TestAdmissionController_HLSCandidateRecordEligibleSingleAuthority(t *testing.T) {
+	t.Run("eligible HLS holds the serial measurement lock across restarts", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		tr := admissionSwapTracker(t)
+		admissionTestConfigConns(t, true, "32", "32")
+		pool, _, ctl, _ := admissionTestPool(t, 32)
+		server := admissionBlockingServer(t, pool)
+
+		queueManagedWaitingHLS(t, pool, tr, "hlsa", server.URL+"/a.m3u8", "wan", "hls.test", "env1", 1, 0, true)
+		queueManagedWaitingHLS(t, pool, tr, "hlsb", server.URL+"/b.m3u8", "wan", "hls.test", "env1", 1, 0, true)
+
+		ctl.evaluate(time.Now())
+
+		if !admissionAdmitted(pool, "hlsa") {
+			t.Fatal("first record-eligible HLS candidate not admitted")
+		}
+		if admissionAdmitted(pool, "hlsb") {
+			t.Fatal("second record-eligible HLS bypassed the serial measurement lock")
+		}
+
+		// Simulate a controller restart: committed keys survive in the
+		// snapshot while the in-memory entry map is empty. The second round
+		// must still count the retained claim via cand/slot.RecordEligible —
+		// TotalSize is 0 so any size-derived fallback would miss it.
+		ctl.entries = make(map[scheduler.AdmissionKey]*admissionEntry)
+		ctl.evaluate(time.Now())
+		if admissionAdmitted(pool, "hlsb") {
+			t.Fatal("post-restart round let a record-eligible peer bypass the retained measurement")
+		}
+	})
+
+	t.Run("non-eligible HLS never claims the lock", func(t *testing.T) {
+		speedstats.ResetRecordsForTest()
+		t.Cleanup(speedstats.ResetRecordsForTest)
+		tr := admissionSwapTracker(t)
+		admissionTestConfigConns(t, true, "32", "32")
+		pool, _, ctl, _ := admissionTestPool(t, 32)
+		server := admissionBlockingServer(t, pool)
+
+		// A large stamped byte total with RecordEligible=false: under the old
+		// size-derived authority this would hold the measurement lock; the
+		// engine flag says it must not.
+		queueManagedWaitingHLS(t, pool, tr, "hlsc", server.URL+"/c.m3u8", "wan", "hls2.test", "env1", 1, recordLevelTotal, false)
+		queueManagedWaitingHLS(t, pool, tr, "hlsd", server.URL+"/d.m3u8", "wan", "hls2.test", "env1", 1, 0, true)
+
+		ctl.evaluate(time.Now())
+
+		if !admissionAdmitted(pool, "hlsc") {
+			t.Fatal("non-eligible HLS candidate was not admitted")
+		}
+		if !admissionAdmitted(pool, "hlsd") {
+			t.Fatal("peer behind a non-eligible HLS holder stayed gated — flag authority lost")
+		}
+	})
+}

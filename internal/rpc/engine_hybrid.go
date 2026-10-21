@@ -53,6 +53,28 @@ func (h *HybridEngine) addUri(url string, options AddURIOptions, prepare func() 
 	lowerURL := strings.ToLower(url)
 	isHTTP := strings.HasPrefix(lowerURL, "http://") || strings.HasPrefix(lowerURL, "https://")
 
+	if options.Strategy == types.StrategyHLS {
+		// HLS is Surge-only: no Aria2 fallback, no prepare() invocation, and
+		// every engine error propagates to the caller.
+		if !isHTTP {
+			return "", fmt.Errorf("%w: non-HTTP URL for HLS strategy", types.ErrHLSInvalidManifest)
+		}
+		if h.surgeEngine == nil {
+			return "", types.ErrServiceUnavailable
+		}
+		gid, err := h.surgeEngine.AddUri(url, subOpts)
+		if err != nil {
+			return "", err
+		}
+		prefixedGid := "sg_" + gid
+		if options.BeforeSave != nil {
+			if err := options.BeforeSave(prefixedGid); err != nil {
+				return "", err
+			}
+		}
+		return prefixedGid, nil
+	}
+
 	if isHTTP {
 		gid, err := h.surgeEngine.AddUri(url, subOpts)
 		if err == nil {

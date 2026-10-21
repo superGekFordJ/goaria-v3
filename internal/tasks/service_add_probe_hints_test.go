@@ -1,8 +1,12 @@
 package tasks
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -12,6 +16,8 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/surge/strategy/hls"
+	surgetypes "goaria-v3/internal/surge/types"
 )
 
 type capturingAddURIEngine struct {
@@ -420,4 +426,405 @@ func TestAddUri_Aria2UnknownSize_UsesBBRNSatAndReservesLedger(t *testing.T) {
 		t.Fatalf("task2 tracker = {threads:%d target:%d minChunk:%d}, want 1/2MiB/0",
 			tt2.ThreadCount, tt2.TargetBandwidth, tt2.MinChunk)
 	}
+}
+
+// --- HLS candidate + service-chain coverage ---
+
+// stubAddTaskHLSPreflight swaps the manifest preflight for one test so the
+// service path can be exercised without real HTTP.
+func stubAddTaskHLSPreflight(t *testing.T, fn func(ctx context.Context, client *http.Client, url string, headers map[string]string, runCfg *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error)) {
+	t.Helper()
+	orig := hlsPreflightManifest
+	hlsPreflightManifest = fn
+	t.Cleanup(func() { hlsPreflightManifest = orig })
+}
+
+// successfulHLSPreflight returns a preflight stub that resolves one segment on
+// a cross-site host — the classification-domain anchor for assertions.
+func successfulHLSPreflight(container, segURL string, estBytes int64) func(context.Context, *http.Client, string, map[string]string, *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error) {
+	return func(_ context.Context, _ *http.Client, manifestURL string, _ map[string]string, _ *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error) {
+		ext := ".ts"
+		if container == hls.ContainerFMP4 {
+			ext = ".mp4"
+		}
+		return &hls.HLSPreflightResult{
+			ResumeState: &surgetypes.HLSResumeState{
+				ManifestURL:      manifestURL,
+				MediaPlaylistURL: manifestURL,
+				SegmentRefURL:    segURL,
+				ContainerFormat:  container,
+				EstimatedBytes:   estBytes,
+				RecordEligible:   true,
+				TotalSegments:    1,
+				CompletedBitmap:  []byte{0},
+				Segments:         []surgetypes.HLSSegmentState{{Index: 0, URI: segURL}},
+			},
+			ContainerExt: ext,
+		}, nil
+	}
+}
+
+// The HLS branch of buildCandidateAddURIOptions is terminal: no size-based
+// probe hints, no payload-first fallback — the resume checkpoint is the plan.
+func TestBuildCandidateAddURIOptions_HLSBranchIsTerminal(t *testing.T) {
+	resume := &surgetypes.HLSResumeState{
+		ManifestURL:     "https://cdn.invalid/master.m3u8",
+		SegmentRefURL:   "https://seg.invalid/s0.ts",
+		ContainerFormat: hls.ContainerTS,
+		RecordEligible:  true,
+		CompletedBitmap: []byte{0x0f},
+		Segments:        []surgetypes.HLSSegmentState{{Index: 0, URI: "https://seg.invalid/s0.ts"}},
+	}
+	candidate := addTaskCandidate{
+		url:       "https://cdn.invalid/master.m3u8",
+		out:       "movie.ts",
+		sizeBytes: 4096,
+		strategy:  surgetypes.StrategyHLS,
+		hlsResume: resume,
+	}
+	opts := buildCandidateAddURIOptions(`D:\Downloads`, "movie.ts", nil, 8, 0, nil, candidate)
+
+	if opts.Strategy != surgetypes.StrategyHLS {
+		t.Fatalf("Strategy = %q, want hls", opts.Strategy)
+	}
+	if opts.FileSize != 0 {
+		t.Fatalf("FileSize = %d, want 0", opts.FileSize)
+	}
+	if !opts.SkipServerProbe {
+		t.Fatal("SkipServerProbe = false, want true")
+	}
+	if opts.RangeAcquisitionMode != surgetypes.RangeAcquireProbeAtEnqueue {
+		t.Fatalf("RangeAcquisitionMode = %q, want probe-at-enqueue (empty)", opts.RangeAcquisitionMode)
+	}
+	if opts.IsExplicitCategory {
+		t.Fatal("IsExplicitCategory = true without a download group")
+	}
+	if opts.HLSResume == nil {
+		t.Fatal("HLSResume not forwarded")
+	}
+	if opts.HLSResume == resume {
+		t.Fatal("HLSResume must be cloned, not aliased")
+	}
+	opts.HLSResume.CompletedBitmap[0] = 0
+	opts.HLSResume.Segments[0].URI = "mutated"
+	if resume.CompletedBitmap[0] != 0x0f || resume.Segments[0].URI == "mutated" {
+		t.Fatal("candidate resume state aliased into engine options")
+	}
+}
+
+func TestNormalizeHLSCandidate(t *testing.T) {
+	t.Run("nil is a no-op", func(t *testing.T) {
+		normalizeHLSCandidate(nil)
+	})
+
+	t.Run("extracted candidates are never reclassified", func(t *testing.T) {
+		c := &addTaskCandidate{url: "https://cdn.invalid/master.m3u8", extracted: true, sizeBytes: 99, externalSizeBytes: 88}
+		normalizeHLSCandidate(c)
+		if c.strategy == surgetypes.StrategyHLS {
+			t.Fatal("extracted candidate must not gain HLS strategy from a .m3u8 URL")
+		}
+		if c.sizeBytes != 99 || c.externalSizeBytes != 88 {
+			t.Fatal("extracted candidate sizes must stay untouched")
+		}
+	})
+
+	t.Run("explicit strategy wins on any URL", func(t *testing.T) {
+		c := &addTaskCandidate{
+			url: "https://cdn.invalid/page", strategy: surgetypes.StrategyHLS,
+			sizeBytes: 100, externalSizeBytes: 50, hlsResume: &surgetypes.HLSResumeState{SegmentRefURL: "https://seg.invalid/s.ts"},
+		}
+		resume := c.hlsResume
+		normalizeHLSCandidate(c)
+		if c.strategy != surgetypes.StrategyHLS || !c.skipHeadProbe {
+			t.Fatalf("strategy=%q skipHeadProbe=%v", c.strategy, c.skipHeadProbe)
+		}
+		if c.sizeBytes != 0 || c.externalSizeBytes != 0 {
+			t.Fatal("sizes must be zeroed for HLS")
+		}
+		if c.hlsResume == resume {
+			t.Fatal("resume state must be cloned on normalize")
+		}
+	})
+
+	t.Run("m3u8 detection on url and finalURL", func(t *testing.T) {
+		byURL := &addTaskCandidate{url: "https://cdn.invalid/master.m3u8?token=1", sizeBytes: 7}
+		normalizeHLSCandidate(byURL)
+		if byURL.strategy != surgetypes.StrategyHLS || !byURL.skipHeadProbe || byURL.sizeBytes != 0 {
+			t.Fatalf("url detection failed: %+v", byURL)
+		}
+		byFinal := &addTaskCandidate{url: "https://cdn.invalid/watch", finalURL: "https://cdn.invalid/play.m3u8", externalSizeBytes: 9}
+		normalizeHLSCandidate(byFinal)
+		if byFinal.strategy != surgetypes.StrategyHLS || byFinal.externalSizeBytes != 0 {
+			t.Fatalf("finalURL detection failed: %+v", byFinal)
+		}
+		plain := &addTaskCandidate{url: "https://cdn.invalid/file.bin", sizeBytes: 5}
+		normalizeHLSCandidate(plain)
+		if plain.strategy != "" || plain.sizeBytes != 5 {
+			t.Fatalf("non-HLS candidate mutated: %+v", plain)
+		}
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		src := &surgetypes.HLSResumeState{RecordEligible: true, SegmentRefURL: "https://seg.invalid/s0.ts"}
+		c := &addTaskCandidate{url: "https://cdn.invalid/master.m3u8", hlsResume: src}
+		normalizeHLSCandidate(c)
+		normalizeHLSCandidate(c)
+		if c.strategy != surgetypes.StrategyHLS || !c.skipHeadProbe {
+			t.Fatal("repeated normalize must keep HLS fields asserted")
+		}
+		if c.hlsResume == nil || c.hlsResume == src || !c.hlsResume.RecordEligible ||
+			c.hlsResume.SegmentRefURL != "https://seg.invalid/s0.ts" {
+			t.Fatalf("repeated normalize corrupted the resume state: %+v", c.hlsResume)
+		}
+	})
+}
+
+// A .m3u8 direct add flows Surge-only end to end: preflight result becomes the
+// resume checkpoint, the fMP4 container picks .mp4, the segment host owns
+// classification, and Aria2 is never touched.
+func TestAddUriFromExtension_HLSManifestURLRoutesSurgeOnly(t *testing.T) {
+	for _, smartThread := range []bool{false, true} {
+		name := "smart_off"
+		if smartThread {
+			name = "smart_on"
+		}
+		t.Run(name, func(t *testing.T) {
+			aria2Cap := &capturingAria2Engine{}
+			surgeCap := &capturingAddURIEngine{}
+			hybrid := rpc.NewHybridEngine(aria2Cap, surgeCap)
+			tr := admissionSwapTracker(t)
+			svc := setupProbeHintsAddService(t, hybrid, smartThread)
+
+			stubAddTaskHLSPreflight(t, successfulHLSPreflight(
+				hls.ContainerFMP4, "https://seg-cdn.example.invalid/seg0.m4s", 20<<20))
+
+			gid, err := svc.AddUriFromExtension(extension.DownloadRequest{
+				Type: extension.MsgTypeDownload,
+				URL:  fmt.Sprintf("https://media.example.invalid/master-%s.m3u8", name),
+			})
+			if err != nil {
+				t.Fatalf("AddUriFromExtension: %v", err)
+			}
+			if !strings.HasPrefix(gid, "sg_") {
+				t.Fatalf("gid = %q, want sg_ prefix", gid)
+			}
+			if got := len(aria2Cap.snapshotOptions()); got != 0 {
+				t.Fatalf("aria2 AddUri calls = %d, want 0", got)
+			}
+			opts := surgeCap.snapshotOptions()
+			if len(opts) != 1 {
+				t.Fatalf("surge AddUri calls = %d, want 1", len(opts))
+			}
+			got := opts[0]
+			if got.Strategy != surgetypes.StrategyHLS {
+				t.Fatalf("Strategy = %q, want hls", got.Strategy)
+			}
+			if got.FileSize != 0 || !got.SkipServerProbe {
+				t.Fatalf("probe hints leaked into HLS options: %+v", got)
+			}
+			if got.RangeAcquisitionMode != surgetypes.RangeAcquireProbeAtEnqueue {
+				t.Fatalf("RangeAcquisitionMode = %q, want empty", got.RangeAcquisitionMode)
+			}
+			if got.HLSResume == nil || got.HLSResume.ContainerFormat != hls.ContainerFMP4 {
+				t.Fatalf("HLSResume missing preflight result: %+v", got.HLSResume)
+			}
+			if !strings.HasSuffix(got.Out, ".mp4") {
+				t.Fatalf("Out = %q, want .mp4 for fMP4 container", got.Out)
+			}
+			if scope, domain, _, ok := tr.GetScopeAndEnv(gid); !ok || domain != "seg-cdn.example.invalid" {
+				t.Fatalf("classification = {scope:%q domain:%q ok:%v}, want segment host domain", scope, domain, ok)
+			}
+		})
+	}
+}
+
+// finalURL .m3u8 detection covers the redirect-to-manifest shape.
+func TestAddUriFromExtension_HLSFinalURLDetection(t *testing.T) {
+	surgeCap := &capturingAddURIEngine{}
+	hybrid := rpc.NewHybridEngine(&capturingAria2Engine{}, surgeCap)
+	svc := setupProbeHintsAddService(t, hybrid, false)
+	stubAddTaskHLSPreflight(t, successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 0))
+
+	gid, err := svc.AddUriFromExtension(extension.DownloadRequest{
+		Type:     extension.MsgTypeDownload,
+		URL:      "https://site.invalid/watch?v=1",
+		FinalURL: "https://site.invalid/hls/play.m3u8",
+	})
+	if err != nil {
+		t.Fatalf("AddUriFromExtension: %v", err)
+	}
+	if !strings.HasPrefix(gid, "sg_") {
+		t.Fatalf("gid = %q, want sg_", gid)
+	}
+	opts := surgeCap.snapshotOptions()
+	if len(opts) != 1 || opts[0].Strategy != surgetypes.StrategyHLS {
+		t.Fatalf("final_url m3u8 not routed as HLS: %+v", opts)
+	}
+	if !strings.HasSuffix(opts[0].Out, ".ts") {
+		t.Fatalf("Out = %q, want .ts", opts[0].Out)
+	}
+}
+
+// An engine that cannot run Surge must be rejected before preflight, before
+// group resolution and before any Aria2 preparation.
+func TestAddTaskCandidate_HLSUnsupportedEngineFailsFast(t *testing.T) {
+	for _, smartThread := range []bool{false, true} {
+		name := "smart_off"
+		if smartThread {
+			name = "smart_on"
+		}
+		t.Run(name, func(t *testing.T) {
+			stub := &capturingAria2Engine{} // plain engine: no Surge capability
+			svc := setupProbeHintsAddService(t, stub, smartThread)
+
+			var preflightCalls int
+			stubAddTaskHLSPreflight(t, func(context.Context, *http.Client, string, map[string]string, *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error) {
+				preflightCalls++
+				return nil, errors.New("must not be called")
+			})
+
+			_, err := svc.AddUriFromExtension(extension.DownloadRequest{
+				Type: extension.MsgTypeDownload,
+				URL:  fmt.Sprintf("https://cdn.example.invalid/v-%s.m3u8", name),
+			})
+			if !errors.Is(err, ErrHLSEngineUnsupported) {
+				t.Fatalf("err = %v, want ErrHLSEngineUnsupported", err)
+			}
+			if preflightCalls != 0 {
+				t.Fatalf("preflight ran %d times despite the capability gate", preflightCalls)
+			}
+			if got := len(stub.snapshotOptions()); got != 0 {
+				t.Fatalf("AddUri calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// Transient preflight failures degrade to the fallback resume state instead of
+// rejecting the add; permanent sentinels and caller cancellation fail fast.
+func TestAddTaskCandidate_HLSPreflightDegradeAndFailFast(t *testing.T) {
+	newSvc := func(t *testing.T) (*Service, *capturingAddURIEngine) {
+		surgeCap := &capturingAddURIEngine{}
+		hybrid := rpc.NewHybridEngine(&capturingAria2Engine{}, surgeCap)
+		return setupProbeHintsAddService(t, hybrid, false), surgeCap
+	}
+	const manifestURL = "https://cdn.example.invalid/degrade.m3u8"
+
+	t.Run("transient error degrades to fallback state", func(t *testing.T) {
+		svc, surgeCap := newSvc(t)
+		stubAddTaskHLSPreflight(t, func(context.Context, *http.Client, string, map[string]string, *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error) {
+			return nil, errors.New("connection refused")
+		})
+		gid, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: manifestURL})
+		if err != nil {
+			t.Fatalf("transient preflight failure must not reject the add: %v", err)
+		}
+		if !strings.HasPrefix(gid, "sg_") {
+			t.Fatalf("gid = %q, want sg_", gid)
+		}
+		opts := surgeCap.snapshotOptions()
+		if len(opts) != 1 || opts[0].HLSResume == nil {
+			t.Fatalf("missing fallback resume: %+v", opts)
+		}
+		res := opts[0].HLSResume
+		if res.ContainerFormat != hls.ContainerTS || !res.RecordEligible {
+			t.Fatalf("fallback resume = %+v, want ts + eligible", res)
+		}
+		if res.SegmentRefURL != manifestURL {
+			t.Fatalf("fallback SegmentRefURL = %q, want manifest URL", res.SegmentRefURL)
+		}
+		if !strings.HasSuffix(opts[0].Out, ".ts") {
+			t.Fatalf("Out = %q, want .ts", opts[0].Out)
+		}
+	})
+
+	t.Run("permanent sentinel fails fast", func(t *testing.T) {
+		svc, surgeCap := newSvc(t)
+		stubAddTaskHLSPreflight(t, func(context.Context, *http.Client, string, map[string]string, *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error) {
+			return nil, fmt.Errorf("manifest: %w", surgetypes.ErrHLSLiveNotSupported)
+		})
+		_, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: "https://cdn.example.invalid/live.m3u8"})
+		if !errors.Is(err, surgetypes.ErrHLSLiveNotSupported) {
+			t.Fatalf("err = %v, want ErrHLSLiveNotSupported", err)
+		}
+		if got := len(surgeCap.snapshotOptions()); got != 0 {
+			t.Fatalf("AddUri calls = %d, want 0", got)
+		}
+	})
+
+	t.Run("caller cancellation wins over transient error", func(t *testing.T) {
+		svc, surgeCap := newSvc(t)
+		stubAddTaskHLSPreflight(t, func(context.Context, *http.Client, string, map[string]string, *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error) {
+			return nil, errors.New("timeout")
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		candidate := directAddTaskCandidate("https://cdn.example.invalid/cancelled.m3u8")
+		_, err := svc.addTaskCandidate(ctx, candidate, svc.newAddTaskAuthBatchState(), smartthread.NewBandwidthLedger(nil))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+		if got := len(surgeCap.snapshotOptions()); got != 0 {
+			t.Fatalf("AddUri calls = %d, want 0", got)
+		}
+	})
+}
+
+// Host-side EstimatedBytes admission runs before the engine can reserve a
+// .surge artifact; free-space lookup errors fail open.
+func TestAddTaskCandidate_HLSEstimatedBytesDiskAdmission(t *testing.T) {
+	newSvc := func(t *testing.T) (*Service, *capturingAddURIEngine) {
+		surgeCap := &capturingAddURIEngine{}
+		hybrid := rpc.NewHybridEngine(&capturingAria2Engine{}, surgeCap)
+		return setupProbeHintsAddService(t, hybrid, false), surgeCap
+	}
+	const url = "https://cdn.example.invalid/big.m3u8"
+
+	t.Run("insufficient disk rejects before enqueue", func(t *testing.T) {
+		svc, surgeCap := newSvc(t)
+		stubAddTaskHLSPreflight(t, successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 100<<20))
+		orig := tasksFreeDiskBytes
+		t.Cleanup(func() { tasksFreeDiskBytes = orig })
+		tasksFreeDiskBytes = func(string) (int64, error) { return 1 << 10, nil }
+
+		_, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: url})
+		if !errors.Is(err, surgetypes.ErrInsufficientDiskSpace) {
+			t.Fatalf("err = %v, want ErrInsufficientDiskSpace", err)
+		}
+		if got := len(surgeCap.snapshotOptions()); got != 0 {
+			t.Fatalf("AddUri calls = %d, want 0 (no .surge reservation)", got)
+		}
+	})
+
+	t.Run("lookup failure fails open", func(t *testing.T) {
+		svc, surgeCap := newSvc(t)
+		stubAddTaskHLSPreflight(t, successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 100<<20))
+		orig := tasksFreeDiskBytes
+		t.Cleanup(func() { tasksFreeDiskBytes = orig })
+		tasksFreeDiskBytes = func(string) (int64, error) { return 0, errors.New("statfs failed") }
+
+		gid, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: url})
+		if err != nil {
+			t.Fatalf("free-space lookup error must fail open: %v", err)
+		}
+		if !strings.HasPrefix(gid, "sg_") || len(surgeCap.snapshotOptions()) != 1 {
+			t.Fatalf("enqueue blocked: gid=%q calls=%d", gid, len(surgeCap.snapshotOptions()))
+		}
+	})
+
+	t.Run("zero estimate skips the check", func(t *testing.T) {
+		svc, _ := newSvc(t)
+		stubAddTaskHLSPreflight(t, successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 0))
+		orig := tasksFreeDiskBytes
+		t.Cleanup(func() { tasksFreeDiskBytes = orig })
+		tasksFreeDiskBytes = func(string) (int64, error) { return 1, nil }
+
+		gid, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: url})
+		if err != nil {
+			t.Fatalf("zero-estimate HLS must not be disk-gated: %v", err)
+		}
+		if !strings.HasPrefix(gid, "sg_") {
+			t.Fatalf("gid = %q, want sg_", gid)
+		}
+	})
 }

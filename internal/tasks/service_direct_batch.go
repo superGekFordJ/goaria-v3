@@ -9,6 +9,7 @@ import (
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/smartthread"
+	surgetypes "goaria-v3/internal/surge/types"
 )
 
 type PreparedDirectAddItem struct {
@@ -21,6 +22,12 @@ type PreparedDirectAddItem struct {
 	SkipHeadProbe bool
 	Filename      string
 	DownloadPage  string
+	// Strategy forces the download strategy (e.g. StrategyHLS for callers
+	// that already classified the item); empty keeps URL-based detection.
+	Strategy surgetypes.DownloadStrategy
+	// PageTitle feeds HLS output naming when the item came from a page
+	// whose title is a better stem than the manifest basename.
+	PageTitle string
 }
 
 type PreparedDirectAddRequest struct {
@@ -128,10 +135,13 @@ func (s *Service) AddPreparedDirectItems(ctx context.Context, req PreparedDirect
 		if item.Filename != "" {
 			candidate.out = item.Filename
 		}
+		candidate.strategy = item.Strategy
+		candidate.pageTitle = item.PageTitle
 		if group != nil {
 			candidate.downloadGroup = group
 			candidate.callerOwnsGroupCleanup = true
 		}
+		normalizeHLSCandidate(&candidate)
 		candidates = append(candidates, candidate)
 	}
 

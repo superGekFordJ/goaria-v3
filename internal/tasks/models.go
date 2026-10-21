@@ -5,6 +5,7 @@ import (
 
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/rpc"
+	surgetypes "goaria-v3/internal/surge/types"
 )
 
 type BatchAddResult struct {
@@ -59,6 +60,16 @@ type addTaskCandidate struct {
 	externalDedupKey       string
 	finalURL               string
 	callerOwnsGroupCleanup bool
+	// strategy is the download strategy discriminator; empty means the legacy
+	// byte-range path. normalizeHLSCandidate sets StrategyHLS for explicit
+	// flags or .m3u8 URLs on non-extracted candidates.
+	strategy surgetypes.DownloadStrategy
+	// pageTitle feeds HLS output naming (third priority after explicit out
+	// and the manifest stem).
+	pageTitle string
+	// hlsResume carries the caller-owned resume checkpoint; cloned at every
+	// handoff boundary so the engine never aliases the input slices.
+	hlsResume *surgetypes.HLSResumeState
 }
 
 type addTaskSummary struct {

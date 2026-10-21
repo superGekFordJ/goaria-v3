@@ -202,15 +202,17 @@ func main() {
 
 			// Preserve existing scope to keep it consistent with PeakEnvKey;
 			// only classify on first-seen (restart recovery / external RPC).
+			// HLS resumes classify on their segment host, not the manifest.
+			classifyURL := tasks.ResumeClassificationURL(cfg)
 			if !ok {
 				if remoteIP != "" {
-					scope, domain = resumeScopeClassifier.ClassifyByURLAndIP(cfg.URL, remoteIP)
+					scope, domain = resumeScopeClassifier.ClassifyByURLAndIP(classifyURL, remoteIP)
 				} else {
-					scope, domain = resumeScopeClassifier.ClassifyByURL(cfg.URL)
+					scope, domain = resumeScopeClassifier.ClassifyByURL(classifyURL)
 				}
 			}
 
-			envKey := monitor.ComputeEnvKeyForDownload(cfg.URL, remoteIP)
+			envKey := monitor.ComputeEnvKeyForDownload(classifyURL, remoteIP)
 			// On probe skip/failure, keep the prior envKey instead of
 			// degrading to the proxy fallback — avoids cross-env pollution.
 			if remoteIP == "" && ok && prevEnvKey != "" {

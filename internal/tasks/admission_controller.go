@@ -11,6 +11,14 @@ import (
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/scheduler"
+	"goaria-v3/internal/surge/types"
+)
+
+// Compile-time drift guard: the host record-eligibility threshold and the
+// speedstats record floor are one policy — both must stay byte-identical.
+const (
+	_ = uint(speedstats.MinFileSize - types.RecordEligibleMinFileSize)
+	_ = uint(types.RecordEligibleMinFileSize - speedstats.MinFileSize)
 )
 
 // admissionTickInterval is the fallback scan period. Event-driven Kick edges
@@ -27,8 +35,9 @@ type admissionEntry struct {
 	domain    string
 	envKey    string
 	shortUsed bool
-	// recordEligible marks whether this opportunity's original total size is
-	// record-level (> speedstats.MinFileSize) — total, never remaining.
+	// recordEligible marks whether this opportunity is record-level. The
+	// engine snapshot flag is authoritative (> MinFileSize byte-range total,
+	// or an HLS resume checkpoint that declared itself eligible).
 	recordEligible bool
 }
 
@@ -294,7 +303,7 @@ func (c *AdmissionController) evaluate(now time.Time) {
 	domainCommitted := make(map[string]int)
 	domainMeasuring := make(map[string]int)
 	seenCommitted := make(map[scheduler.AdmissionKey]bool)
-	countCommitted := func(key scheduler.AdmissionKey) {
+	countCommitted := func(key scheduler.AdmissionKey, recordEligible bool) {
 		if seenCommitted[key] {
 			return
 		}
@@ -305,16 +314,18 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			// A restart drops in-memory entries while committed keys survive
 			// in the snapshot; resolve classification through the tracker row
 			// so a foreign-window claim never escapes the scope/domain caps.
+			// The snapshot flag is the eligibility authority — a size-derived
+			// fallback would misjudge HLS rows whose byte total is unknown.
 			if scope, domain, envKey, ok := tracker.GetScopeAndEnv(gid); ok {
 				scopeEnvCommitted[scopeEnvBucket(scope, envKey)]++
 				domainCommitted[scopeDomainBucket(scope, domain)]++
-				if info, ok := occByGID[gid]; ok && info.TotalLength > speedstats.MinFileSize &&
-					smartthread.IsMeasuringTaskOccupancy(info, now) {
+				if recordEligible && measuringOccupied(gid) {
 					domainMeasuring[scopeDomainBucket(scope, domain)]++
 				}
 			}
 			return
 		}
+		e.recordEligible = recordEligible
 		scopeEnvCommitted[scopeEnvBucket(e.scope, e.envKey)]++
 		domainCommitted[scopeDomainBucket(e.scope, e.domain)]++
 		if e.recordEligible && measuringOccupied(gid) {
@@ -323,11 +334,11 @@ func (c *AdmissionController) evaluate(now time.Time) {
 	}
 	for _, cand := range snap.Candidates {
 		if cand.Admitted && !cand.InFlight {
-			countCommitted(cand.Key)
+			countCommitted(cand.Key, cand.RecordEligible)
 		}
 	}
 	for _, slot := range snap.Busy {
-		countCommitted(slot.Key)
+		countCommitted(slot.Key, slot.RecordEligible)
 	}
 	// A live Aria2 row with a record-level total holds the same domain
 	// measurement identity for new Surge candidates; small Aria2 rows never
@@ -409,7 +420,7 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			c.entries[cand.Key] = entry
 		}
 		entry.scope, entry.domain, entry.envKey = scope, domain, envKey
-		entry.recordEligible = cand.TotalSize > speedstats.MinFileSize
+		entry.recordEligible = cand.RecordEligible
 
 		prep := admissionPrep{
 			cand:   cand,
@@ -432,7 +443,7 @@ func (c *AdmissionController) evaluate(now time.Time) {
 			// no phantom ticket.
 			entry.ticket = monitor.AdmissionTicket{}
 		}
-		if cand.TotalSize > 0 {
+		if cand.Strategy != types.StrategyHLS && cand.TotalSize > 0 {
 			prep.sizeKnown = true
 			prep.remaining = max(cand.TotalSize-cand.Downloaded, 0)
 		}
