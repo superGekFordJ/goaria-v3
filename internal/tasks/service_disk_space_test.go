@@ -2,8 +2,10 @@ package tasks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -199,5 +201,41 @@ func TestRedactAddTaskError_HLSEngineUnsupportedThroughWrap(t *testing.T) {
 	err := fmt.Errorf("add candidate: %w", ErrHLSEngineUnsupported)
 	if got := svc.redactAddTaskError(err); got != ErrHLSEngineUnsupported.Error() {
 		t.Fatalf("redactAddTaskError = %q, want %q", got, ErrHLSEngineUnsupported)
+	}
+}
+
+// Errors crossing the extension boundary keep sentinel identity for Go
+// callers — handleDownload stringifies into download_ack either way — while
+// anything else collapses to a redacted string so signed URLs inside
+// wrapped messages can never leak to the ack.
+func TestCanonicalizeExtensionAddError(t *testing.T) {
+	t.Parallel()
+	svc := &Service{}
+
+	if err := svc.canonicalizeExtensionAddError(nil); err != nil {
+		t.Fatalf("nil input = %v, want nil", err)
+	}
+
+	wrappedSentinel := fmt.Errorf("preflight https://hls.invalid/m.m3u8?token=sekrit: %w", surgetypes.ErrHLSInvalidManifest)
+	if err := svc.canonicalizeExtensionAddError(wrappedSentinel); !errors.Is(err, surgetypes.ErrHLSInvalidManifest) {
+		t.Fatalf("sentinel = %v, want ErrHLSInvalidManifest identity", err)
+	}
+	if err := svc.canonicalizeExtensionAddError(fmt.Errorf("enqueue: %w", surgetypes.ErrInsufficientDiskSpace)); !errors.Is(err, surgetypes.ErrInsufficientDiskSpace) {
+		t.Fatalf("disk sentinel = %v, want ErrInsufficientDiskSpace identity", err)
+	}
+	if err := svc.canonicalizeExtensionAddError(fmt.Errorf("wrap: %w", context.Canceled)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ctx = %v, want context.Canceled identity", err)
+	}
+
+	raw := errors.New("dial https://cdn.invalid/x?token=sekrit&sig=abc: boom")
+	got := svc.canonicalizeExtensionAddError(raw)
+	if got == nil {
+		t.Fatal("non-sentinel error = nil, want redacted error")
+	}
+	if strings.Contains(got.Error(), "sekrit") {
+		t.Fatalf("redacted error = %q, leaked token value", got)
+	}
+	if !strings.Contains(got.Error(), "[REDACTED]") {
+		t.Fatalf("redacted error = %q, want REDACTED marker", got)
 	}
 }

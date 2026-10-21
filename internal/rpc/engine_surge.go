@@ -534,7 +534,14 @@ func (e *SurgeEngine) SetMasterRefreshHookForTesting(hook func()) {
 }
 
 // UpsertMasterCacheEntry adds or replaces an entry in masterCache by ID.
+// The stored row gets private slice/resume copies — symmetric with the
+// read-side clones in GetMasterCacheEntry/MasterCacheForTesting — so a
+// caller mutating its own slices cannot rewrite cached state.
 func (e *SurgeEngine) UpsertMasterCacheEntry(entry types.DownloadRecord) {
+	if entry.Mirrors != nil {
+		entry.Mirrors = append([]string(nil), entry.Mirrors...)
+	}
+	entry.HLSResume = entry.HLSResume.Clone()
 	e.masterCacheMu.Lock()
 	defer e.masterCacheMu.Unlock()
 	for i, existing := range e.masterCache {
@@ -766,7 +773,11 @@ func (e *SurgeEngine) AddUri(url string, options AddURIOptions) (string, error) 
 			}
 		}
 	} else if options.HLSResume != nil {
-		hlsResume = options.HLSResume.Clone()
+		// A resume checkpoint without the HLS strategy is a contract
+		// violation: attaching it would seed meaningless detail-gob, and
+		// silently dropping it would fetch the playlist as a byte-range
+		// file. Fail fast instead.
+		return "", errors.New("surge: HLSResume requires the hls download strategy")
 	}
 
 	req := &orchestrator.DownloadRequest{

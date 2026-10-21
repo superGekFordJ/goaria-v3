@@ -61,6 +61,37 @@ func TestMasterCache_UpsertAndRemove(t *testing.T) {
 	}
 }
 
+// Write-side isolation is symmetric with the read-side clones: mutating the
+// caller's slices after Upsert must never reach the stored mirror row.
+func TestMasterCache_UpsertClonesWriteSide(t *testing.T) {
+	e := newCacheTestEngine(t)
+
+	entry := types.DownloadRecord{
+		ID:      "dl-w",
+		Status:  "queued",
+		Mirrors: []string{"http://m1"},
+		HLSResume: &types.HLSResumeState{
+			CompletedBitmap: []byte{0x0f},
+			Segments:        []types.HLSSegmentState{{Index: 0, URI: "http://seg/0"}},
+		},
+	}
+	e.UpsertMasterCacheEntry(entry)
+
+	entry.Mirrors[0] = "http://mutated"
+	entry.HLSResume.CompletedBitmap[0] = 0
+	entry.HLSResume.Segments[0].URI = "http://mutated"
+
+	got, ok := e.GetMasterCacheEntry("dl-w")
+	if !ok {
+		t.Fatal("entry missing after upsert")
+	}
+	if got.Mirrors[0] != "http://m1" ||
+		got.HLSResume.CompletedBitmap[0] != 0x0f ||
+		got.HLSResume.Segments[0].URI != "http://seg/0" {
+		t.Fatalf("caller mutation leaked into cache: %+v", got)
+	}
+}
+
 func TestMasterCache_ConcurrentReadWrite(t *testing.T) {
 	e := newCacheTestEngine(t)
 

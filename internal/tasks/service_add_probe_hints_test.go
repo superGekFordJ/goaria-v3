@@ -16,6 +16,7 @@ import (
 	"goaria-v3/internal/rpc"
 	"goaria-v3/internal/smartthread"
 	"goaria-v3/internal/speedstats"
+	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/strategy/hls"
 	surgetypes "goaria-v3/internal/surge/types"
 )
@@ -430,6 +431,32 @@ func TestAddUri_Aria2UnknownSize_UsesBBRNSatAndReservesLedger(t *testing.T) {
 
 // --- HLS candidate + service-chain coverage ---
 
+// The HLS capability gate trusts only the hybrid router: it is the sole
+// engine shape that mints the sg_ gid prefix and fires BeforeSave. A bare
+// SurgeEngine accepts the same add but breaks both contract points, so it
+// must fail closed even when its inner scheduler is fully active.
+func TestSupportsHLSStrategy(t *testing.T) {
+	bare := rpc.NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	if !bare.IsSurgeActive() {
+		t.Skip("surge engine not active — gate check would be vacuous")
+	}
+	if supportsHLSStrategy(bare) {
+		t.Fatal("bare *SurgeEngine must fail closed (no sg_ prefix, no BeforeSave)")
+	}
+	if !supportsHLSStrategy(rpc.NewHybridEngine(&capturingAria2Engine{}, bare)) {
+		t.Fatal("hybrid wrapping an active surge engine must pass the gate")
+	}
+	if supportsHLSStrategy(rpc.NewHybridEngine(&capturingAria2Engine{}, &rpc.Aria2Engine{})) {
+		t.Fatal("hybrid without an active surge engine must fail")
+	}
+	if supportsHLSStrategy(&capturingAria2Engine{}) {
+		t.Fatal("plain engine must fail")
+	}
+	if supportsHLSStrategy(nil) {
+		t.Fatal("nil engine must fail")
+	}
+}
+
 // stubAddTaskHLSPreflight swaps the manifest preflight for one test so the
 // service path can be exercised without real HTTP.
 func stubAddTaskHLSPreflight(t *testing.T, fn func(ctx context.Context, client *http.Client, url string, headers map[string]string, runCfg *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error)) {
@@ -502,13 +529,8 @@ func TestBuildCandidateAddURIOptions_HLSBranchIsTerminal(t *testing.T) {
 	if opts.HLSResume == nil {
 		t.Fatal("HLSResume not forwarded")
 	}
-	if opts.HLSResume == resume {
-		t.Fatal("HLSResume must be cloned, not aliased")
-	}
-	opts.HLSResume.CompletedBitmap[0] = 0
-	opts.HLSResume.Segments[0].URI = "mutated"
-	if resume.CompletedBitmap[0] != 0x0f || resume.Segments[0].URI == "mutated" {
-		t.Fatal("candidate resume state aliased into engine options")
+	if opts.HLSResume != resume {
+		t.Fatal("HLSResume must reach the options by reference; SurgeEngine.AddUri owns the isolation clone")
 	}
 }
 
@@ -525,6 +547,14 @@ func TestNormalizeHLSCandidate(t *testing.T) {
 		}
 		if c.sizeBytes != 99 || c.externalSizeBytes != 88 {
 			t.Fatal("extracted candidate sizes must stay untouched")
+		}
+		// A stray caller-set strategy is sealed as well: normalize is the
+		// single authority for the extracted exemption, so downstream
+		// readers never re-check extracted themselves.
+		c.strategy = surgetypes.StrategyHLS
+		normalizeHLSCandidate(c)
+		if c.strategy != "" {
+			t.Fatalf("extracted strategy = %q, want sealed empty", c.strategy)
 		}
 	})
 

@@ -67,8 +67,10 @@ type addTaskCandidate struct {
 	// pageTitle feeds HLS output naming (third priority after explicit out
 	// and the manifest stem).
 	pageTitle string
-	// hlsResume carries the caller-owned resume checkpoint; cloned at every
-	// handoff boundary so the engine never aliases the input slices.
+	// hlsResume is owned by the candidate and forwarded into AddURIOptions
+	// by reference; isolation clones happen at the caller input seal
+	// (inside normalizeHLSCandidate) and at the engine enqueue boundary
+	// (SurgeEngine.AddUri).
 	hlsResume *surgetypes.HLSResumeState
 }
 

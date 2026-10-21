@@ -120,7 +120,7 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 
 	gid, err := s.addTaskCandidate(context.Background(), candidate, authState, ledger)
 	if err != nil {
-		return "", err
+		return "", s.canonicalizeExtensionAddError(err)
 	}
 	return gid, nil
 }
@@ -520,7 +520,14 @@ func isHLSManifestURL(rawURL string) bool {
 // no byte-range semantics, so sizes are zeroed and the HEAD probe is skipped.
 // Idempotent — repeated calls re-assert the same fields.
 func normalizeHLSCandidate(candidate *addTaskCandidate) {
-	if candidate == nil || candidate.extracted {
+	if candidate == nil {
+		return
+	}
+	if candidate.extracted {
+		// Extracted items never carry a strategy. Seal the field here so
+		// this exemption is the single authority — downstream reads of
+		// candidate.strategy never need a second extracted check.
+		candidate.strategy = ""
 		return
 	}
 	if candidate.strategy == surgetypes.StrategyHLS ||
@@ -534,17 +541,15 @@ func normalizeHLSCandidate(candidate *addTaskCandidate) {
 	}
 }
 
-// supportsHLSStrategy reports whether the engine can actually run the Surge
-// HLS strategy. A wrapped-but-inactive Surge engine counts as unsupported.
+// supportsHLSStrategy reports whether the engine can run the Surge HLS
+// strategy through the service add path. Only the hybrid router qualifies:
+// it mints the sg_ gid prefix and fires BeforeSave — the two contract
+// points downstream consumers rely on. A bare *SurgeEngine would accept
+// the add but return an unprefixed gid and drop the hook, so it fails
+// closed. A wrapped-but-inactive Surge engine counts as unsupported.
 func supportsHLSStrategy(engine rpc.DownloadEngine) bool {
-	switch eng := engine.(type) {
-	case *rpc.HybridEngine:
-		return eng != nil && eng.IsSurgeActive()
-	case *rpc.SurgeEngine:
-		return eng != nil && eng.IsSurgeActive()
-	default:
-		return false
-	}
+	hybrid, ok := engine.(*rpc.HybridEngine)
+	return ok && hybrid != nil && hybrid.IsSurgeActive()
 }
 
 // surgeRuntimeConfigForPreflight borrows the engine's effective runtime config
@@ -641,7 +646,10 @@ func buildCandidateAddURIOptions(dir, out string, headers []string, split int, m
 		opts.FileSize = 0
 		opts.SkipServerProbe = true
 		opts.RangeAcquisitionMode = surgetypes.RangeAcquireProbeAtEnqueue
-		opts.HLSResume = candidate.hlsResume.Clone()
+		// Isolation lives at the callee: SurgeEngine.AddUri clones the
+		// checkpoint before first use, so this hands off by reference like
+		// the other AddURIOptions fields.
+		opts.HLSResume = candidate.hlsResume
 		opts.IsExplicitCategory = candidate.downloadGroup != nil
 		return opts
 	}
@@ -1341,6 +1349,30 @@ func canonicalHLSPermanentError(err error) (error, bool) {
 		return ErrHLSEngineUnsupported, true
 	}
 	return nil, false
+}
+
+// canonicalizeExtensionAddError normalizes an add failure crossing the
+// extension boundary: handleDownload stringifies it into download_ack, so
+// signed URLs or credentials wrapped inside the message must never leak.
+// Known sentinels return as themselves — the wire text is identical and
+// Go callers keep errors.Is; anything else collapses to a redacted string.
+func (s *Service) canonicalizeExtensionAddError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if surgetypes.IsInsufficientDiskSpace(err) {
+		return surgetypes.ErrInsufficientDiskSpace
+	}
+	if sentinel, ok := canonicalHLSPermanentError(err); ok {
+		return sentinel
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return errors.New(s.redactAddTaskError(err))
 }
 
 func (s *Service) redactAddTaskError(err error) string {

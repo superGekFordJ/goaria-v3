@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/downloadgroups"
 	"goaria-v3/internal/history"
+	surgetypes "goaria-v3/internal/surge/types"
 )
 
 func TestAddPreparedDirectItems_TwoIDsOneURLNoCollection(t *testing.T) {
@@ -155,6 +157,42 @@ func TestAddPreparedDirectItems_ReservedFilenameIsRenamed(t *testing.T) {
 	}
 	if opts[0].Out == "CON.txt" || downloadgroups.IsWindowsReservedName(opts[0].Out) {
 		t.Fatalf("Out = %q, want renamed non-reserved name", opts[0].Out)
+	}
+}
+
+// Strategy is a closed vocabulary at the prepared-add boundary: unknown
+// values reject the whole request while the "hls" pin passes validation
+// (an engine without Surge support still refuses per item, not here).
+func TestAddPreparedDirectItems_StrategyWhitelist(t *testing.T) {
+	service, counter := setupAppTaskBatchAddTest(t, batchAddRPCSnapshots{})
+	idA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	idB := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+	_, err := service.AddPreparedDirectItems(context.Background(), PreparedDirectAddRequest{
+		Items: []PreparedDirectAddItem{
+			{ClientItemID: idA, URL: "https://files.invalid/a.m3u8", Strategy: "torrent"},
+		},
+	})
+	if !errors.Is(err, ErrInvalidPreparedAdd) {
+		t.Fatalf("unknown strategy err = %v, want ErrInvalidPreparedAdd", err)
+	}
+	if got := counter.addURICount(); got != 0 {
+		t.Fatalf("addUri calls = %d, want 0", got)
+	}
+
+	result, err := service.AddPreparedDirectItems(context.Background(), PreparedDirectAddRequest{
+		Items: []PreparedDirectAddItem{
+			{ClientItemID: idB, URL: "https://files.invalid/b.m3u8", Strategy: surgetypes.StrategyHLS},
+		},
+	})
+	if err != nil {
+		t.Fatalf("hls strategy must pass validation, got %v", err)
+	}
+	if _, ok := result.Errors[idB]; !ok {
+		t.Fatalf("hls pin on a non-surge engine should record a per-item error, got %#v", result.Errors)
+	}
+	if got := counter.addURICount(); got != 0 {
+		t.Fatalf("addUri calls = %d, want 0 (HLS never reaches Aria2)", got)
 	}
 }
 

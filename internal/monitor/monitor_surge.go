@@ -333,7 +333,7 @@ func mergeSurgeTerminalMaster(surgeEng *rpc.SurgeEngine, ev types.DownloadEvent,
 			merged.RateLimitSet = ev.RateLimitSet
 			surgeEng.UpsertMasterCacheEntry(merged)
 		} else {
-			surgeEng.UpsertMasterCacheEntry(types.DownloadRecord{
+			rec := types.DownloadRecord{
 				ID:           ev.DownloadID,
 				Filename:     ev.Filename,
 				Status:       "completed",
@@ -344,7 +344,11 @@ func mergeSurgeTerminalMaster(surgeEng *rpc.SurgeEngine, ev types.DownloadEvent,
 				AvgSpeed:     completeAvgSpeed,
 				RateLimit:    ev.RateLimit,
 				RateLimitSet: ev.RateLimitSet,
-			})
+			}
+			if ev.State != nil {
+				keepRangeAcquisition(&rec, *ev.State)
+			}
+			surgeEng.UpsertMasterCacheEntry(rec)
 		}
 	case "error":
 		// Error is minimal; merge onto existing to preserve URL/Mirrors/etc.

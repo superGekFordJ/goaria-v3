@@ -1438,3 +1438,26 @@ func TestMergeSurgeTerminalMaster_ErrorAppliesEventState(t *testing.T) {
 		t.Fatalf("complete merge = %#v ok=%v, want completed", done, ok)
 	}
 }
+
+// A complete event that is the first mirror evidence still folds ev.State
+// into the freshly minted row — same contract as the error branch.
+func TestMergeSurgeTerminalMaster_CompleteFreshRowAppliesEventState(t *testing.T) {
+	surgeEng := &rpc.SurgeEngine{}
+
+	mergeSurgeTerminalMaster(surgeEng, surgeEvents.DownloadEvent{
+		DownloadID: "hls-fresh-complete",
+		Filename:   "c.ts",
+		State: &surgeEvents.DownloadRecord{
+			Strategy:        surgeEvents.StrategyHLS,
+			SkipServerProbe: true,
+		},
+	}, "complete", 100, 50, "")
+
+	fresh, ok := surgeEng.GetMasterCacheEntry("hls-fresh-complete")
+	if !ok || fresh.Status != "completed" {
+		t.Fatalf("fresh complete record = %#v ok=%v, want completed", fresh, ok)
+	}
+	if fresh.Strategy != surgeEvents.StrategyHLS || !fresh.SkipServerProbe {
+		t.Fatalf("fresh complete record dropped event state: %+v", fresh)
+	}
+}

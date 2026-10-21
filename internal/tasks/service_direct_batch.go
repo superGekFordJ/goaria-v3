@@ -62,6 +62,12 @@ func (s *Service) AddPreparedDirectItems(ctx context.Context, req PreparedDirect
 		if key == "" || url == "" {
 			return result, ErrInvalidPreparedAdd
 		}
+		// Strategy is a closed vocabulary — only the HLS pin is
+		// meaningful; anything else is a caller bug, not a hint to
+		// silently drop.
+		if item.Strategy != "" && item.Strategy != surgetypes.StrategyHLS {
+			return result, ErrInvalidPreparedAdd
+		}
 		if _, dup := seenKeys[key]; dup {
 			return result, ErrInvalidPreparedAdd
 		}

@@ -1246,6 +1246,28 @@ func TestSurgeEngine_AddUri_HLSCarriesClonedResumeStateAndVideosCategory(t *test
 	})
 }
 
+// A resume checkpoint without the hls strategy is a contract violation:
+// attaching it would seed meaningless detail-gob, and silently dropping it
+// would fetch the playlist as a byte-range file. AddUri refuses instead.
+func TestSurgeEngine_AddUri_StrayHLSResumeRejected(t *testing.T) {
+	testutil.SetupStateDB(t)
+	engine := NewSurgeEngineForTesting(scheduler.NewSchedulerForTesting(nil))
+	t.Cleanup(engine.Close)
+
+	dir := t.TempDir()
+	_, err := engine.AddUri("https://files.invalid/plain.bin", AddURIOptions{
+		Dir:       dir,
+		Out:       "plain.bin",
+		HLSResume: &types.HLSResumeState{RecordEligible: true, CompletedBitmap: []byte{0x01}},
+	})
+	if err == nil {
+		t.Fatal("AddUri accepted HLSResume without the hls strategy")
+	}
+	if !strings.Contains(err.Error(), "hls") {
+		t.Fatalf("err = %v, want a strategy-contract message", err)
+	}
+}
+
 // The EstimatedBytes precheck runs before Enqueue so a refusal leaves no
 // .surge reservation and no pool record behind. Zero/negative estimates are
 // never intercepted, and a failed free-space lookup fails open.
