@@ -60,6 +60,7 @@ var (
 	ErrHLSDRMNotSupported              = errors.New("hls DRM encrypted stream is not supported")
 	ErrHLSDemuxedAudioNotSupported     = errors.New("hls demuxed external audio stream is not supported")
 	ErrHLSDiscontinuityMapNotSupported = errors.New("hls fMP4 stream with multiple init maps across discontinuity is not supported")
+	ErrHLSIFramesOnlyNotSupported      = errors.New("hls i-frames-only trick-play playlist is not supported")
 	ErrHLSInvalidManifest              = errors.New("invalid hls manifest")
 	ErrHLSInvalidSegmentResponse       = errors.New("invalid hls segment response")
 	ErrHLSNotImplemented               = errors.New("hls downloader not implemented")
@@ -117,6 +118,7 @@ func IsPermanentHLSError(err error) bool {
 		errors.Is(err, ErrHLSDRMNotSupported) ||
 		errors.Is(err, ErrHLSDemuxedAudioNotSupported) ||
 		errors.Is(err, ErrHLSDiscontinuityMapNotSupported) ||
+		errors.Is(err, ErrHLSIFramesOnlyNotSupported) ||
 		errors.Is(err, ErrHLSInvalidManifest) ||
 		errors.Is(err, ErrHLSInvalidSegmentResponse) ||
 		errors.Is(err, ErrHLSNotImplemented)

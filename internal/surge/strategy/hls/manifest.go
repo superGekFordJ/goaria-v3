@@ -9,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"goaria-v3/internal/surge/types"
 )
@@ -25,6 +26,17 @@ const (
 const (
 	ContainerTS   = "ts"
 	ContainerFMP4 = "fmp4"
+)
+
+const (
+	// maxManifestKeys bounds the distinct AES-128 descriptors kept per
+	// playlist so an untrusted manifest cannot force unbounded key
+	// bookkeeping through thousands of unique EXT-X-KEY declarations.
+	maxManifestKeys = 4096
+	// maxManifestSegments bounds per-segment state allocated from an 8 MiB
+	// untrusted manifest (worst case ~30 MiB of expanded slice + resolved
+	// URI payloads) while still covering weeks of typical VOD playlists.
+	maxManifestSegments = 1 << 18
 )
 
 // AudioGroupInfo aggregates the tracks declared for one
@@ -45,7 +57,7 @@ type VariantStream struct {
 	Height           int
 	Codecs           string
 	AudioGroupID     string
-	DemuxedAudio     bool // referenced AUDIO group has external tracks only
+	DemuxedAudio     bool // AUDIO group missing, or has external tracks only
 	Order            int  // 0-based declaration order among kept variants
 }
 
@@ -85,6 +97,14 @@ type MediaPlaylist struct {
 var audioOnlyCodecPrefixes = map[string]bool{
 	"mp4a": true, "ac-3": true, "ec-3": true, "opus": true, "flac": true,
 	"vorbis": true, "aac": true, "mp3": true, "alac": true, "speex": true,
+}
+
+// hlsKeyIdentity deduplicates AES-128 EXT-X-KEY declarations: every stored
+// descriptor is AES-128, so (resolved URI, normalized IV) is a complete
+// identity for a map key.
+type hlsKeyIdentity struct {
+	uri   string
+	ivHex string
 }
 
 // ParsePlaylist parses an RFC 8216 playlist document into a master or media
@@ -169,7 +189,8 @@ func isMediaOnlyTag(ln string) bool {
 		strings.HasPrefix(ln, "#EXT-X-MAP:") ||
 		strings.HasPrefix(ln, "#EXT-X-KEY:") ||
 		strings.HasPrefix(ln, "#EXT-X-BYTERANGE:") ||
-		ln == "#EXT-X-ENDLIST"
+		ln == "#EXT-X-ENDLIST" ||
+		ln == "#EXT-X-I-FRAMES-ONLY"
 }
 
 // parseAttributeList parses an RFC 8216 attribute list "NAME=VALUE,...".
@@ -234,6 +255,9 @@ func resolveManifestURI(baseURL *url.URL, rawRef string) (string, error) {
 	rawRef = strings.TrimSpace(rawRef)
 	if rawRef == "" {
 		return "", fmt.Errorf("%w: empty URI", types.ErrHLSInvalidManifest)
+	}
+	if strings.IndexFunc(rawRef, unicode.IsSpace) >= 0 {
+		return "", fmt.Errorf("%w: whitespace inside URI %q", types.ErrHLSInvalidManifest, rawRef)
 	}
 	ref, err := url.Parse(rawRef)
 	if err != nil {
@@ -455,9 +479,10 @@ func parseMasterPlaylist(lines []string, baseURL *url.URL) (*MasterPlaylist, err
 		if v.AudioGroupID == "" {
 			continue
 		}
-		if g := master.AudioGroups[v.AudioGroupID]; g != nil && g.HasExternalTrack && !g.HasEmbeddedTrack {
-			v.DemuxedAudio = true
-		}
+		g := master.AudioGroups[v.AudioGroupID]
+		// A dangling AUDIO reference cannot supply a track either — keep it
+		// out of the muxed pool so it can never yield silent video.
+		v.DemuxedAudio = g == nil || (g.HasExternalTrack && !g.HasEmbeddedTrack)
 	}
 	if len(master.Variants) == 0 {
 		return nil, fmt.Errorf("%w: master playlist has no video variant", types.ErrHLSInvalidManifest)
@@ -476,9 +501,13 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 	var (
 		segments                 []types.HLSSegmentState
 		keys                     []types.HLSKeyInfo
+		keyIndexByID             = make(map[hlsKeyIdentity]int)
 		initMap                  *MediaInitMap
 		discontinuityAfterMap    bool
+		seenDiscontinuity        bool
 		endList                  bool
+		mediaSeqSeen             bool
+		discontSeqSeen           bool
 		currentKeyIndex          int
 		currentIVHex             string
 		hasPendingInf            bool
@@ -496,6 +525,12 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 		}
 		switch {
 		case strings.HasPrefix(ln, "#EXT-X-MEDIA-SEQUENCE:"):
+			// RFC 8216: a single declaration before the first Media Segment;
+			// a late or repeated tag would silently rebase Sequence numbers.
+			if mediaSeqSeen || len(segments) > 0 {
+				return nil, fmt.Errorf("%w: misplaced or repeated EXT-X-MEDIA-SEQUENCE", types.ErrHLSInvalidManifest)
+			}
+			mediaSeqSeen = true
 			v, err := strconv.ParseInt(strings.TrimSpace(ln[len("#EXT-X-MEDIA-SEQUENCE:"):]), 10, 64)
 			if err != nil || v < 0 {
 				return nil, fmt.Errorf("%w: bad media sequence %q", types.ErrHLSInvalidManifest, ln)
@@ -503,6 +538,12 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 			media.MediaSequenceBase = v
 
 		case strings.HasPrefix(ln, "#EXT-X-DISCONTINUITY-SEQUENCE:"):
+			// Same ordering class: redefining the discontinuity base after
+			// content started makes the recorded value meaningless.
+			if discontSeqSeen || seenDiscontinuity || len(segments) > 0 {
+				return nil, fmt.Errorf("%w: misplaced or repeated EXT-X-DISCONTINUITY-SEQUENCE", types.ErrHLSInvalidManifest)
+			}
+			discontSeqSeen = true
 			v, err := strconv.ParseInt(strings.TrimSpace(ln[len("#EXT-X-DISCONTINUITY-SEQUENCE:"):]), 10, 64)
 			if err != nil || v < 0 {
 				return nil, fmt.Errorf("%w: bad discontinuity sequence %q", types.ErrHLSInvalidManifest, ln)
@@ -523,9 +564,15 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 			endList = true
 
 		case ln == "#EXT-X-DISCONTINUITY":
+			seenDiscontinuity = true
 			if initMap != nil {
 				discontinuityAfterMap = true
 			}
+
+		case ln == "#EXT-X-I-FRAMES-ONLY":
+			// Trick-play renditions carry I-frames only; downloading one as
+			// a normal stream produces unusable output.
+			return nil, types.ErrHLSIFramesOnlyNotSupported
 
 		case strings.HasPrefix(ln, "#EXT-X-MAP:"):
 			attrs, err := parseAttributeList(ln[len("#EXT-X-MAP:"):])
@@ -594,18 +641,20 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 						return nil, err
 					}
 				}
-				// Dedup on (Method, ResolvedURI, NormalizedIVHex); reuse the
-				// existing 1-based index or append a new descriptor.
-				idx := 0
-				for k := range keys {
-					if keys[k].Method == "AES-128" && keys[k].URI == resolved && keys[k].IVHex == ivHex {
-						idx = k + 1
-						break
+				// Dedup on (ResolvedURI, NormalizedIVHex) via O(1) map
+				// lookup — every stored descriptor is AES-128 so the pair
+				// is a complete identity. A full slice rescan per KEY line
+				// would make hostile manifests quadratic.
+				id := hlsKeyIdentity{uri: resolved, ivHex: ivHex}
+				idx, found := keyIndexByID[id]
+				if !found {
+					if len(keys) >= maxManifestKeys {
+						return nil, fmt.Errorf("%w: more than %d distinct EXT-X-KEY descriptors",
+							types.ErrHLSInvalidManifest, maxManifestKeys)
 					}
-				}
-				if idx == 0 {
 					keys = append(keys, types.HLSKeyInfo{Method: "AES-128", URI: resolved, IVHex: ivHex})
 					idx = len(keys)
+					keyIndexByID[id] = idx
 				}
 				currentKeyIndex, currentIVHex = idx, ivHex
 			default:
@@ -613,6 +662,11 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 			}
 
 		case strings.HasPrefix(ln, "#EXT-X-BYTERANGE:"):
+			// One pending byte-range per segment; a second tag before any
+			// URI line is malformed, same as a dangling one at EOF.
+			if hasPendingByteRange {
+				return nil, fmt.Errorf("%w: consecutive EXT-X-BYTERANGE without a media segment", types.ErrHLSInvalidManifest)
+			}
 			bl, bo, hasOff, err := parseByteRangeValue(ln[len("#EXT-X-BYTERANGE:"):])
 			if err != nil {
 				return nil, err
@@ -620,6 +674,9 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 			pendingByteLen, pendingByteOff, pendingByteOffIsExplicit, hasPendingByteRange = bl, bo, hasOff, true
 
 		case strings.HasPrefix(ln, "#EXTINF:"):
+			if hasPendingInf {
+				return nil, fmt.Errorf("%w: consecutive EXTINF without a media segment", types.ErrHLSInvalidManifest)
+			}
 			durStr, _, _ := strings.Cut(ln[len("#EXTINF:"):], ",")
 			durSec, err := strconv.ParseFloat(strings.TrimSpace(durStr), 64)
 			if err != nil || math.IsNaN(durSec) || math.IsInf(durSec, 0) || durSec < 0 || durSec > 9e12 {
@@ -630,6 +687,9 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 		default:
 			if strings.HasPrefix(ln, "#") {
 				continue // unknown tag or comment
+			}
+			if endList {
+				return nil, fmt.Errorf("%w: media segment URI after EXT-X-ENDLIST %q", types.ErrHLSInvalidManifest, ln)
 			}
 			if !hasPendingInf {
 				return nil, fmt.Errorf("%w: media segment URI without preceding EXTINF %q", types.ErrHLSInvalidManifest, ln)
@@ -654,10 +714,19 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 					if prev == nil || prev.ByteLength <= 0 || prev.URI != segURI {
 						return nil, fmt.Errorf("%w: EXT-X-BYTERANGE without offset cannot chain %q", types.ErrHLSInvalidManifest, ln)
 					}
+					if prev.ByteOffset > math.MaxInt64-prev.ByteLength {
+						return nil, fmt.Errorf("%w: EXT-X-BYTERANGE offset overflow", types.ErrHLSInvalidManifest)
+					}
 					byteOff = prev.ByteOffset + prev.ByteLength
 				}
 			}
+			if len(segments) >= maxManifestSegments {
+				return nil, fmt.Errorf("%w: more than %d media segments", types.ErrHLSInvalidManifest, maxManifestSegments)
+			}
 			idx := len(segments)
+			if media.MediaSequenceBase > math.MaxInt64-int64(idx) {
+				return nil, fmt.Errorf("%w: media sequence base overflow", types.ErrHLSInvalidManifest)
+			}
 			segments = append(segments, types.HLSSegmentState{
 				Index:          idx,
 				Sequence:       media.MediaSequenceBase + int64(idx),
@@ -668,7 +737,11 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 				KeyIndex:       currentKeyIndex,
 				IVHex:          currentIVHex,
 			})
-			totalDurMicros += pendingDurMicros
+			if pendingDurMicros > math.MaxInt64-totalDurMicros {
+				totalDurMicros = math.MaxInt64
+			} else {
+				totalDurMicros += pendingDurMicros
+			}
 			hasPendingInf, hasPendingByteRange = false, false
 		}
 	}
@@ -739,9 +812,13 @@ func variantBetter(a, b *VariantStream) bool {
 func cleanURIPathForFingerprint(rawURI string) string {
 	var p string
 	if u, err := url.Parse(rawURI); err == nil {
-		// u.Path is the decoded form, so equivalent percent-encodings of the
-		// same resource still collapse to one fingerprint path.
-		p = u.Path
+		// EscapedPath keeps percent-encoded distinctions (%2F vs /) intact
+		// and never emits raw '|' or newline characters, so serialized
+		// records cannot be reframed by a crafted URI.
+		p = u.EscapedPath()
+		if p == "" {
+			p = u.Path
+		}
 	}
 	if p == "" {
 		p = rawURI
@@ -773,15 +850,15 @@ func ComputeManifestFingerprint(containerFormat string, mediaSequenceBase int64,
 		initLen = initMap.ByteLength
 	}
 	h := sha256.New()
-	fmt.Fprintf(h, "v1\n")
-	fmt.Fprintf(h, "container=%s|total=%d|seq_base=%d|init_path=%s|init_off=%d|init_len=%d\n",
+	fmt.Fprintf(h, "v2\n")
+	fmt.Fprintf(h, "container=%s|total=%d|seq_base=%d|init_path=%q|init_off=%d|init_len=%d\n",
 		containerFormat, len(segments), mediaSequenceBase, initPath, initOff, initLen)
 	for _, seg := range segments {
 		keyMethod := "NONE"
 		if seg.KeyIndex > 0 && seg.KeyIndex <= len(keys) {
 			keyMethod = keys[seg.KeyIndex-1].Method
 		}
-		fmt.Fprintf(h, "seg=%d|seq=%d|dur=%d|off=%d|len=%d|key=%s|path=%s\n",
+		fmt.Fprintf(h, "seg=%d|seq=%d|dur=%d|off=%d|len=%d|key=%s|path=%q\n",
 			seg.Index, seg.Sequence, seg.DurationMicros, seg.ByteOffset, seg.ByteLength,
 			keyMethod, cleanURIPathForFingerprint(seg.URI))
 	}
@@ -794,7 +871,14 @@ func ComputeEstimatedBytes(bandwidthBitsPerSec int64, totalDurationSec float64) 
 	if bandwidthBitsPerSec <= 0 || totalDurationSec <= 0 {
 		return 0
 	}
-	return int64(float64(bandwidthBitsPerSec) / 8.0 * totalDurationSec)
+	est := float64(bandwidthBitsPerSec) / 8.0 * totalDurationSec
+	if math.IsNaN(est) || est <= 0 {
+		return 0
+	}
+	if est >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(est)
 }
 
 // ComputeRecordEligible applies the speedstats eligibility rule: unknown size

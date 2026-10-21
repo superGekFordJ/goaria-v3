@@ -2,7 +2,10 @@ package hls_test
 
 import (
 	"errors"
+	"fmt"
+	"math"
 	"net/url"
+	"strings"
 	"testing"
 
 	"goaria-v3/internal/surge/strategy/hls"
@@ -188,6 +191,38 @@ second.m3u8
 		}
 		if best.URI != "https://cdn.example.com/hls/first.m3u8" {
 			t.Fatalf("best.URI = %q, want first-declared on full tie", best.URI)
+		}
+	})
+
+	t.Run("DanglingAudioGroupExcluded", func(t *testing.T) {
+		doc := `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=3840x2160,AUDIO="ghost"
+uhd.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+hd.m3u8
+`
+		master := parseMaster(t, doc, base)
+		best, err := hls.SelectBestVariant(master)
+		if err != nil {
+			t.Fatalf("SelectBestVariant() = %v", err)
+		}
+		// The variant whose AUDIO group is never declared is excluded like
+		// a demuxed one — selecting it would produce silent video.
+		if best.URI != "https://cdn.example.com/hls/hd.m3u8" {
+			t.Fatalf("best.URI = %q, want hd.m3u8 (dangling AUDIO group excluded)", best.URI)
+		}
+	})
+
+	t.Run("AllDanglingAudioReturnsSentinel", func(t *testing.T) {
+		doc := `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="ghost"
+v1.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720,AUDIO="ghost2"
+v2.m3u8
+`
+		master := parseMaster(t, doc, base)
+		if _, err := hls.SelectBestVariant(master); !errors.Is(err, types.ErrHLSDemuxedAudioNotSupported) {
+			t.Fatalf("SelectBestVariant() = %v, want ErrHLSDemuxedAudioNotSupported", err)
 		}
 	})
 }
@@ -656,5 +691,156 @@ func TestEstimatedBytesAndRecordEligible_Boundary(t *testing.T) {
 	}
 	if !hls.ComputeRecordEligible(types.RecordEligibleMinFileSize + 1) {
 		t.Fatal("RecordEligible(50MiB+1) = false, want true")
+	}
+}
+
+func TestParseMediaPlaylist_StrictStructureGates(t *testing.T) {
+	base := "https://cdn.example.com/v/index.m3u8"
+	cases := map[string]struct {
+		doc  string
+		want error
+	}{
+		"IFramesOnly": {
+			"#EXTM3U\n#EXT-X-I-FRAMES-ONLY\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSIFramesOnlyNotSupported,
+		},
+		"MediaSeqAfterFirstSegment": {
+			"#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-MEDIA-SEQUENCE:5\n#EXTINF:6.0,\nseg1.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"MediaSeqRepeated": {
+			"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"DiscontSeqAfterDiscontinuity": {
+			"#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-DISCONTINUITY\n#EXT-X-DISCONTINUITY-SEQUENCE:2\n#EXTINF:6.0,\nseg1.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"DiscontSeqRepeated": {
+			"#EXTM3U\n#EXT-X-DISCONTINUITY-SEQUENCE:0\n#EXT-X-DISCONTINUITY-SEQUENCE:1\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"ConsecutiveEXTINF": {
+			"#EXTM3U\n#EXTINF:6.0,\n#EXTINF:5.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"ConsecutiveByteRange": {
+			"#EXTM3U\n#EXTINF:6.0,\n#EXT-X-BYTERANGE:10@0\n#EXT-X-BYTERANGE:20@10\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"SegmentAfterEndlist": {
+			"#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n#EXTINF:6.0,\nseg1.ts\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"SpaceInSegmentURI": {
+			"#EXTM3U\n#EXTINF:6.0,\nseg 0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"SpaceInKeyURIAttr": {
+			"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k ey.bin\"\n#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"ByteRangeChainOffsetOverflow": {
+			"#EXTM3U\n#EXTINF:6.0,\n#EXT-X-BYTERANGE:10@9223372036854775800\na.ts\n#EXTINF:6.0,\n#EXT-X-BYTERANGE:5\na.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"MediaSequenceBaseOverflow": {
+			"#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:9223372036854775807\n#EXTINF:6.0,\na.ts\n#EXTINF:6.0,\nb.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+	}
+	for name, tc := range cases {
+		if err := parseErr(t, tc.doc, base); !errors.Is(err, tc.want) {
+			t.Fatalf("%s: err = %v, want %v", name, err, tc.want)
+		}
+	}
+}
+
+func TestParseMediaPlaylist_KeyDedupBounds(t *testing.T) {
+	base := "https://cdn.example.com/v/index.m3u8"
+
+	t.Run("UniqueKeyCapRejected", func(t *testing.T) {
+		var b strings.Builder
+		b.WriteString("#EXTM3U\n")
+		for i := range 4097 {
+			fmt.Fprintf(&b, "#EXT-X-KEY:METHOD=AES-128,URI=\"k%d.bin\"\n", i)
+		}
+		b.WriteString("#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n")
+		if err := parseErr(t, b.String(), base); !errors.Is(err, types.ErrHLSInvalidManifest) {
+			t.Fatalf("err = %v, want ErrHLSInvalidManifest", err)
+		}
+	})
+
+	t.Run("RotationDedupWithinCap", func(t *testing.T) {
+		// 3000 unique keys plus a re-declaration of the first one: the
+		// O(1) dedup map keeps this linear and the last segment reuses
+		// the 1-based index of k0.bin.
+		var b strings.Builder
+		b.WriteString("#EXTM3U\n")
+		for i := range 3000 {
+			fmt.Fprintf(&b, "#EXT-X-KEY:METHOD=AES-128,URI=\"k%d.bin\"\n#EXTINF:0.5,\ns%d.ts\n", i, i)
+		}
+		b.WriteString("#EXT-X-KEY:METHOD=AES-128,URI=\"k0.bin\"\n#EXTINF:0.5,\nlast.ts\n#EXT-X-ENDLIST\n")
+		media := parseMedia(t, b.String(), base)
+		if len(media.Keys) != 3000 {
+			t.Fatalf("len(Keys) = %d, want 3000", len(media.Keys))
+		}
+		if got := media.Segments[len(media.Segments)-1].KeyIndex; got != 1 {
+			t.Fatalf("last segment KeyIndex = %d, want 1 (deduped k0.bin)", got)
+		}
+	})
+}
+
+func TestParseMediaPlaylist_TotalDurationSaturates(t *testing.T) {
+	doc := "#EXTM3U\n#EXTINF:9e12,\na.ts\n#EXTINF:9e12,\nb.ts\n#EXT-X-ENDLIST\n"
+	media := parseMedia(t, doc, "https://cdn.example.com/v/index.m3u8")
+	if media.TotalDurationMicros != math.MaxInt64 {
+		t.Fatalf("TotalDurationMicros = %d, want saturated MaxInt64", media.TotalDurationMicros)
+	}
+	if media.TotalDurationSec <= 0 {
+		t.Fatalf("TotalDurationSec = %v, want positive", media.TotalDurationSec)
+	}
+}
+
+func TestComputeManifestFingerprint_EncodedPathBoundaries(t *testing.T) {
+	mk := func(uri string) []types.HLSSegmentState {
+		return []types.HLSSegmentState{{Index: 0, Sequence: 0, URI: uri, DurationMicros: 6000000}}
+	}
+	// %2F is a data character inside one path segment, not a separator:
+	// it must not collapse with a literal "/".
+	fpEncoded := hls.ComputeManifestFingerprint(hls.ContainerTS, 0, nil,
+		mk("https://cdn.example.com/v/a%2Fb.ts"), nil)
+	fpLiteral := hls.ComputeManifestFingerprint(hls.ContainerTS, 0, nil,
+		mk("https://cdn.example.com/v/a/b.ts"), nil)
+	if fpEncoded == fpLiteral {
+		t.Fatal("encoded %2F collapsed into a path separator — distinct URIs alias one fingerprint")
+	}
+	// A %0A payload inside a segment URI must not reframe serialization:
+	// the resulting path stays one quoted field and can never alias a
+	// multi-record document.
+	fpInjected := hls.ComputeManifestFingerprint(hls.ContainerTS, 0, nil,
+		mk("https://cdn.example.com/v/a%0Aseg%3D1%7Cseq%3D9%7Cdur%3D6000000%7Coff%3D0%7Clen%3D0%7Ckey%3DNONE%7Cpath%3D%2Fb.ts"), nil)
+	fpPlain := hls.ComputeManifestFingerprint(hls.ContainerTS, 0, nil,
+		mk("https://cdn.example.com/v/a"), nil)
+	if fpInjected == fpPlain {
+		t.Fatal("separator injection aliased the clean-path fingerprint")
+	}
+	if len(fpInjected) != 64 {
+		t.Fatalf("fingerprint len = %d, want 64", len(fpInjected))
+	}
+}
+
+func TestComputeEstimatedBytes_OverflowClamp(t *testing.T) {
+	if got := hls.ComputeEstimatedBytes(math.MaxInt64, 9e12); got != math.MaxInt64 {
+		t.Fatalf("overflow estimate = %d, want MaxInt64 clamp", got)
+	}
+	if got := hls.ComputeEstimatedBytes(math.MaxInt64, 1.0); got != 1<<60 {
+		t.Fatalf("in-range estimate = %d, want %d", got, int64(1<<60))
+	}
+	if got := hls.ComputeEstimatedBytes(1000, math.NaN()); got != 0 {
+		t.Fatalf("NaN-duration estimate = %d, want 0", got)
+	}
+	if got := hls.ComputeEstimatedBytes(math.MaxInt64, math.Inf(1)); got != math.MaxInt64 {
+		t.Fatalf("Inf-duration estimate = %d, want MaxInt64 clamp", got)
 	}
 }

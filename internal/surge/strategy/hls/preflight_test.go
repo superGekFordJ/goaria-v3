@@ -134,11 +134,13 @@ func (t rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 func TestPreflightHLSManifest_RedirectBaseURLAndCrossSiteCredentialStripping(t *testing.T) {
 	taskHeaders := map[string]string{
-		"Cookie":        "sid=secret",
-		"Authorization": "Bearer tok",
-		"Referer":       "https://page.example/",
-		"User-Agent":    "GoAria-Test-UA/1.0",
-		"Range":         "bytes=0-99",
+		"Cookie":              "sid=secret",
+		"Cookie2":             "c2=v2",
+		"Authorization":       "Bearer tok",
+		"Proxy-Authorization": "Basic pxy",
+		"Referer":             "https://page.example/",
+		"User-Agent":          "GoAria-Test-UA/1.0",
+		"Range":               "bytes=0-99",
 	}
 
 	t.Run("RedirectRelativeResolution", func(t *testing.T) {
@@ -170,7 +172,7 @@ func TestPreflightHLSManifest_RedirectBaseURLAndCrossSiteCredentialStripping(t *
 	})
 
 	t.Run("CrossSiteAndSameSiteCredentialGate", func(t *testing.T) {
-		var gotCookie, gotAuth, gotReferer, gotUA, gotRange atomic.Value
+		var gotCookie, gotCookie2, gotAuth, gotProxyAuth, gotReferer, gotUA, gotRange atomic.Value
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
 			case "/master-cross.m3u8":
@@ -179,7 +181,9 @@ func TestPreflightHLSManifest_RedirectBaseURLAndCrossSiteCredentialStripping(t *
 				fmt.Fprint(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\nhttp://hls.site-a.example.com/media.m3u8\n")
 			case "/media.m3u8":
 				gotCookie.Store(r.Header.Get("Cookie"))
+				gotCookie2.Store(r.Header.Get("Cookie2"))
 				gotAuth.Store(r.Header.Get("Authorization"))
+				gotProxyAuth.Store(r.Header.Get("Proxy-Authorization"))
 				gotReferer.Store(r.Header.Get("Referer"))
 				gotUA.Store(r.Header.Get("User-Agent"))
 				gotRange.Store(r.Header.Get("Range"))
@@ -204,8 +208,14 @@ func TestPreflightHLSManifest_RedirectBaseURLAndCrossSiteCredentialStripping(t *
 		if v := gotCookie.Load(); v != nil && v.(string) != "" {
 			t.Fatalf("cross-site Cookie leaked: %q", v)
 		}
+		if v := gotCookie2.Load(); v != nil && v.(string) != "" {
+			t.Fatalf("cross-site Cookie2 leaked: %q", v)
+		}
 		if v := gotAuth.Load(); v != nil && v.(string) != "" {
 			t.Fatalf("cross-site Authorization leaked: %q", v)
+		}
+		if v := gotProxyAuth.Load(); v != nil && v.(string) != "" {
+			t.Fatalf("cross-site Proxy-Authorization leaked: %q", v)
 		}
 		if v := gotReferer.Load(); v == nil || v.(string) != "https://page.example/" {
 			t.Fatalf("cross-site Referer = %v, want passthrough", v)
@@ -219,7 +229,9 @@ func TestPreflightHLSManifest_RedirectBaseURLAndCrossSiteCredentialStripping(t *
 
 		// Same-site (subdomain of the same eTLD+1): credentials pass through.
 		gotCookie.Store("")
+		gotCookie2.Store("")
 		gotAuth.Store("")
+		gotProxyAuth.Store("")
 		gotReferer.Store("")
 		gotUA.Store("")
 		gotRange.Store("")
@@ -231,8 +243,14 @@ func TestPreflightHLSManifest_RedirectBaseURLAndCrossSiteCredentialStripping(t *
 		if v := gotCookie.Load(); v == nil || v.(string) != "sid=secret" {
 			t.Fatalf("same-site Cookie = %v, want forwarded", v)
 		}
+		if v := gotCookie2.Load(); v == nil || v.(string) != "c2=v2" {
+			t.Fatalf("same-site Cookie2 = %v, want forwarded", v)
+		}
 		if v := gotAuth.Load(); v == nil || v.(string) != "Bearer tok" {
 			t.Fatalf("same-site Authorization = %v, want forwarded", v)
+		}
+		if v := gotProxyAuth.Load(); v == nil || v.(string) != "Basic pxy" {
+			t.Fatalf("same-site Proxy-Authorization = %v, want forwarded", v)
 		}
 	})
 }
@@ -354,6 +372,28 @@ func TestPreflightHLSManifest_TimeoutAndSentinelPropagation(t *testing.T) {
 		if !errors.Is(err, types.ErrPermanentHTTP) {
 			t.Fatalf("403 err = %v, want ErrPermanentHTTP", err)
 		}
+		// A 4xx manifest response stays degradable (transient for the
+		// enqueue path); only the HLS gate sentinels fail fast.
+		if hls.ShouldFailFastPreflight(err) {
+			t.Fatalf("ShouldFailFastPreflight(%v) = true, want false (degradable)", err)
+		}
+	})
+
+	t.Run("NestedMasterRejected", func(t *testing.T) {
+		var srv *httptest.Server
+		srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Every path serves another master playlist: the second hop
+			// must be refused instead of followed recursively.
+			fmt.Fprintf(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000\n%s/loop.m3u8\n", srv.URL)
+		}))
+		defer srv.Close()
+		_, err := hls.PreflightHLSManifest(context.Background(), srv.Client(), srv.URL+"/m.m3u8", nil, nil)
+		if !errors.Is(err, types.ErrHLSInvalidManifest) {
+			t.Fatalf("err = %v, want ErrHLSInvalidManifest", err)
+		}
+		if !hls.ShouldFailFastPreflight(err) {
+			t.Fatal("nested master must fail fast")
+		}
 	})
 }
 
@@ -380,4 +420,57 @@ func TestCanSendHLSCredentials(t *testing.T) {
 				tc.name, tc.target, tc.base, got, tc.want)
 		}
 	}
+}
+
+func TestApplyHLSRequestHeaders(t *testing.T) {
+	base := mustParseURL(t, "https://a.example.com/master.m3u8")
+	newReq := func(t *testing.T, raw string) *http.Request {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatalf("NewRequest(%q) = %v", raw, err)
+		}
+		return req
+	}
+
+	t.Run("HostHonoredSameSiteOnly", func(t *testing.T) {
+		same := newReq(t, "https://cdn.a.example.com/media.m3u8")
+		hls.ApplyHLSRequestHeaders(same,
+			map[string]string{"Host": "vhost.a.example.com"}, base, nil)
+		if same.Host != "vhost.a.example.com" {
+			t.Fatalf("same-site req.Host = %q, want honored", same.Host)
+		}
+		if h := same.Header.Get("Host"); h != "" {
+			t.Fatalf("Host leaked into header map: %q", h)
+		}
+
+		cross := newReq(t, "https://cdn-b.example.net/media.m3u8")
+		hls.ApplyHLSRequestHeaders(cross,
+			map[string]string{"Host": "vhost.a.example.com"}, base, nil)
+		// req.Host is pre-seeded with the URL host by NewRequest; the
+		// injected Host override must be dropped, leaving the default.
+		if cross.Host == "vhost.a.example.com" {
+			t.Fatalf("cross-site req.Host = %q, want the origin override stripped", cross.Host)
+		}
+		if cross.Host != "cdn-b.example.net" {
+			t.Fatalf("cross-site req.Host = %q, want URL host preserved", cross.Host)
+		}
+	})
+
+	t.Run("CaseVariantDuplicateDeterministic", func(t *testing.T) {
+		// "X-Tok" sorts before "x-tok": the lowercase entry is applied
+		// last and must win on every iteration, not map-order randomly.
+		for i := range 25 {
+			req := newReq(t, "https://a.example.com/media.m3u8")
+			hls.ApplyHLSRequestHeaders(req,
+				map[string]string{"X-Tok": "A", "x-tok": "b"}, base, nil)
+			if got := req.Header.Get("X-Tok"); got != "b" {
+				t.Fatalf("iter %d: X-Tok = %q, want deterministic %q", i, got, "b")
+			}
+		}
+	})
+
+	t.Run("NilReqSafe", func(t *testing.T) {
+		hls.ApplyHLSRequestHeaders(nil, map[string]string{"Cookie": "x"}, base, nil)
+	})
 }

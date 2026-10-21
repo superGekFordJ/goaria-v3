@@ -100,6 +100,20 @@ func TestResolveHLSOutputFilename(t *testing.T) {
 			want:    "sintel.ts",
 		},
 		{
+			name:    "ExactConInRejected",
+			rawURL:  "https://cdn.example.com/v/sintel.m3u8",
+			userOut: "CONIN$",
+			format:  "ts",
+			want:    "sintel.ts",
+		},
+		{
+			name:    "ExactConOutRejected",
+			rawURL:  "https://cdn.example.com/v/sintel.m3u8",
+			userOut: "CONOUT$.m3u8",
+			format:  "ts",
+			want:    "sintel.ts",
+		},
+		{
 			name:   "UserOutNonManifestGenericKept",
 			rawURL: "https://cdn.example.com/v/sintel.m3u8",
 			// An explicit bare name without .m3u8 is honored even when generic.

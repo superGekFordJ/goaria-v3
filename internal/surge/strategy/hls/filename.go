@@ -42,13 +42,17 @@ var windowsReservedStems = map[string]bool{
 }
 
 // isWindowsReservedStem reports whether s is a Windows reserved device name,
-// ignoring case and any extension following the first dot.
+// ignoring case and any extension following the first dot. CONIN$/CONOUT$
+// count only as exact whole names, mirroring the host-side reserved-name rule.
 func isWindowsReservedStem(s string) bool {
-	base := s
-	if i := strings.IndexByte(base, '.'); i >= 0 {
-		base = base[:i]
+	upper := strings.ToUpper(strings.TrimSpace(s))
+	if upper == "CONIN$" || upper == "CONOUT$" {
+		return true
 	}
-	return windowsReservedStems[strings.ToUpper(strings.TrimSpace(base))]
+	if i := strings.IndexByte(upper, '.'); i >= 0 {
+		upper = upper[:i]
+	}
+	return windowsReservedStems[upper]
 }
 
 // sanitizeHLSCandidate replaces path-illegal characters (ASCII plus the

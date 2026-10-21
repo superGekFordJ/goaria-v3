@@ -88,6 +88,7 @@ func TestIsPermanentHLSError(t *testing.T) {
 		ErrHLSDRMNotSupported,
 		ErrHLSDemuxedAudioNotSupported,
 		ErrHLSDiscontinuityMapNotSupported,
+		ErrHLSIFramesOnlyNotSupported,
 		ErrHLSInvalidManifest,
 		ErrHLSInvalidSegmentResponse,
 		ErrHLSNotImplemented,

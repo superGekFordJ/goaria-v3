@@ -7,6 +7,7 @@ package hls
 import (
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"goaria-v3/internal/surge/types"
@@ -60,12 +61,30 @@ func ApplyHLSRequestHeaders(
 		req.Header = make(http.Header)
 	}
 	allowCreds := CanSendHLSCredentials(req.URL, credentialBaseURL)
-	for k, v := range taskHeaders {
+	// Sorted iteration keeps the result deterministic when taskHeaders
+	// holds case-variant duplicates ("Cookie" + "cookie"): the entry that
+	// sorts last wins, instead of a random map order deciding.
+	keys := make([]string, 0, len(taskHeaders))
+	for k := range taskHeaders {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		v := taskHeaders[k]
 		key := strings.TrimSpace(k)
 		if key == "" || strings.EqualFold(key, "Range") {
 			continue
 		}
 		if IsSensitiveCredentialHeader(key) && !allowCreds {
+			continue
+		}
+		// Host is honored via req.Host (a Header-map write is ignored by
+		// net/http) and stays gated like credentials: a Host override bound
+		// to the origin must not be replayed to a foreign playlist host.
+		if strings.EqualFold(key, "Host") {
+			if allowCreds {
+				req.Host = v
+			}
 			continue
 		}
 		req.Header.Set(key, v)
