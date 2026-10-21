@@ -116,6 +116,23 @@ func TestPreflightHLSManifest_DirectMediaAndMasterTwoStep(t *testing.T) {
 			t.Fatalf("TotalSegments=%d bitmap=%d segs=%d", rs.TotalSegments, len(rs.CompletedBitmap), len(rs.Segments))
 		}
 	})
+
+	t.Run("NilClientUsesNetworkPool", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, tsMediaDoc)
+		}))
+		defer srv.Close()
+
+		// client == nil exercises the borrowed DefaultNetworkPool path;
+		// the transport is released inside the call.
+		res, err := hls.PreflightHLSManifest(context.Background(), nil, srv.URL+"/media.m3u8", nil, nil)
+		if err != nil {
+			t.Fatalf("PreflightHLSManifest(nil client) = %v", err)
+		}
+		if res.ResumeState == nil || res.ResumeState.TotalSegments != 2 {
+			t.Fatalf("ResumeState = %+v", res.ResumeState)
+		}
+	})
 }
 
 // rewriteHostTransport maps every request host onto the httptest listener so

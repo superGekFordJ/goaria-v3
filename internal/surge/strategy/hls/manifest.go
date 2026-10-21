@@ -80,7 +80,7 @@ type MediaPlaylist struct {
 	BaseURL             string
 	TargetDuration      int64
 	MediaSequenceBase   int64
-	DiscontinuitySeq    int64
+	DiscontinuitySeq    int64 // informational only; not consumed by the resume state
 	PlaylistType        string
 	EndList             bool
 	ContainerFormat     string // ContainerTS | ContainerFMP4
@@ -119,6 +119,14 @@ func ParsePlaylist(content string, baseURL *url.URL) (PlaylistKind, *MasterPlayl
 
 	hasMasterTag, hasMediaTag := false, false
 	for _, ln := range lines {
+		// EXT-X-DEFINE is legal in both playlist kinds (RFC 8216bis
+		// media-or-master tags) but requires {name} variable expansion,
+		// which this parser does not implement — a templated URI would
+		// resolve literally and fetch a bogus URL.
+		if playlistTagName(ln) == "#EXT-X-DEFINE" {
+			return PlaylistKindUnknown, nil, nil,
+				fmt.Errorf("%w: EXT-X-DEFINE variable expansion is not supported", types.ErrHLSInvalidManifest)
+		}
 		if isMasterOnlyTag(ln) {
 			hasMasterTag = true
 		}
@@ -181,7 +189,7 @@ func isMasterOnlyTag(ln string) bool {
 }
 
 // isMediaOnlyTag reports whether ln is a tag that may only appear in a media
-// playlist per RFC 8216.
+// playlist per RFC 8216/8216bis.
 func isMediaOnlyTag(ln string) bool {
 	return strings.HasPrefix(ln, "#EXTINF:") ||
 		strings.HasPrefix(ln, "#EXT-X-TARGETDURATION:") ||
@@ -189,8 +197,23 @@ func isMediaOnlyTag(ln string) bool {
 		strings.HasPrefix(ln, "#EXT-X-MAP:") ||
 		strings.HasPrefix(ln, "#EXT-X-KEY:") ||
 		strings.HasPrefix(ln, "#EXT-X-BYTERANGE:") ||
+		strings.HasPrefix(ln, "#EXT-X-SKIP:") ||
+		strings.HasPrefix(ln, "#EXT-X-PART:") ||
+		strings.HasPrefix(ln, "#EXT-X-PART-INF:") ||
+		strings.HasPrefix(ln, "#EXT-X-SERVER-CONTROL:") ||
+		strings.HasPrefix(ln, "#EXT-X-PRELOAD-HINT:") ||
+		strings.HasPrefix(ln, "#EXT-X-RENDITION-REPORT:") ||
 		ln == "#EXT-X-ENDLIST" ||
+		ln == "#EXT-X-GAP" ||
 		ln == "#EXT-X-I-FRAMES-ONLY"
+}
+
+// playlistTagName returns the name of a "#NAME[:value]" tag line including
+// its leading '#'. Non-tag lines are returned truncated-or-whole and simply
+// never match a "#EXT-X-..." comparison.
+func playlistTagName(ln string) string {
+	name, _, _ := strings.Cut(ln, ":")
+	return name
 }
 
 // parseAttributeList parses an RFC 8216 attribute list "NAME=VALUE,...".
@@ -345,6 +368,7 @@ func isAudioOnlyVariant(width, height int, codecs string) bool {
 	if codecs == "" {
 		return false
 	}
+	sawCodec := false
 	for c := range strings.SplitSeq(codecs, ",") {
 		prefix := strings.ToLower(strings.TrimSpace(c))
 		if i := strings.IndexByte(prefix, '.'); i >= 0 {
@@ -353,11 +377,12 @@ func isAudioOnlyVariant(width, height int, codecs string) bool {
 		if prefix == "" {
 			continue
 		}
+		sawCodec = true
 		if !audioOnlyCodecPrefixes[prefix] {
 			return false
 		}
 	}
-	return true
+	return sawCodec
 }
 
 // parseMasterPlaylist parses master-only tags into a MasterPlaylist.
@@ -523,6 +548,7 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 		if ln == "" || ln == "#EXTM3U" {
 			continue
 		}
+		tag := playlistTagName(ln)
 		switch {
 		case strings.HasPrefix(ln, "#EXT-X-MEDIA-SEQUENCE:"):
 			// RFC 8216: a single declaration before the first Media Segment;
@@ -574,6 +600,22 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 			// a normal stream produces unusable output.
 			return nil, types.ErrHLSIFramesOnlyNotSupported
 
+		case tag == "#EXT-X-SKIP" || tag == "#EXT-X-GAP":
+			// SKIP declares earlier media segments omitted while ENDLIST may
+			// still follow, and GAP marks a listed segment unavailable —
+			// HLSSegmentState cannot express either, so the downloaded file
+			// would silently miss bytes while reporting complete.
+			return nil, fmt.Errorf("%w: %s declares segment state the checkpoint cannot represent",
+				types.ErrHLSInvalidManifest, tag)
+
+		case tag == "#EXT-X-SERVER-CONTROL" || tag == "#EXT-X-PART-INF" ||
+			tag == "#EXT-X-PART" || tag == "#EXT-X-PRELOAD-HINT" ||
+			tag == "#EXT-X-RENDITION-REPORT":
+			// LL-HLS constructs: a playlist carrying them is a low-latency
+			// live stream even when it also bears ENDLIST.
+			return nil, fmt.Errorf("%w: %s marks a low-latency playlist",
+				types.ErrHLSLiveNotSupported, tag)
+
 		case strings.HasPrefix(ln, "#EXT-X-MAP:"):
 			attrs, err := parseAttributeList(ln[len("#EXT-X-MAP:"):])
 			if err != nil {
@@ -594,6 +636,14 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 					return nil, berr
 				}
 				length, off = bl, bo
+			}
+			if currentKeyIndex > 0 {
+				// RFC 8216 scopes EXT-X-KEY over later EXT-X-MAP
+				// declarations, but the resume state has no field for an
+				// encrypted init section — refuse instead of fetching
+				// ciphertext as plaintext.
+				return nil, fmt.Errorf("%w: EXT-X-MAP declared under active EXT-X-KEY",
+					types.ErrHLSInvalidManifest)
 			}
 			switch {
 			case initMap == nil:

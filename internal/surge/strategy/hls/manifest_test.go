@@ -213,6 +213,19 @@ hd.m3u8
 		}
 	})
 
+	t.Run("EmptyCodecPrefixesKeepVariant", func(t *testing.T) {
+		// CODECS="," yields only empty prefixes — nothing declares an
+		// audio-only profile, so the variant must not be excluded.
+		doc := `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,CODECS=","
+v.m3u8
+`
+		master := parseMaster(t, doc, base)
+		if len(master.Variants) != 1 {
+			t.Fatalf("len(Variants) = %d, want 1 (empty codec prefixes are not audio-only)", len(master.Variants))
+		}
+	})
+
 	t.Run("AllDanglingAudioReturnsSentinel", func(t *testing.T) {
 		doc := `#EXTM3U
 #EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,AUDIO="ghost"
@@ -575,8 +588,8 @@ seg2.ts
 func TestComputeManifestFingerprint_QueryStripAndDeterminism(t *testing.T) {
 	docA := `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:10
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXT-X-MAP:URI="https://edge1.cdn.com/v/init.mp4?sig=1"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXTINF:6.006,
 seg0.ts?token=a#frag1
 #EXTINF:5.5,
@@ -585,8 +598,8 @@ seg1.ts?token=a
 `
 	docB := `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:10
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge2.cdn.com/v/k.bin?t=b#y"
 #EXT-X-MAP:URI="https://edge2.cdn.com/v/init.mp4?sig=2#frag"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge2.cdn.com/v/k.bin?t=b#y"
 #EXTINF:6.006,
 seg0.ts?token=b#frag2
 #EXTINF:5.5,
@@ -603,8 +616,8 @@ seg1.ts?token=b&exp=9
 		mutations := map[string]string{
 			"DurationMicros": `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:10
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXT-X-MAP:URI="https://edge1.cdn.com/v/init.mp4?sig=1"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXTINF:7.006,
 seg0.ts?token=a#frag1
 #EXTINF:5.5,
@@ -613,8 +626,8 @@ seg1.ts?token=a
 `,
 			"MediaSequenceBase": `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:11
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXT-X-MAP:URI="https://edge1.cdn.com/v/init.mp4?sig=1"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXTINF:6.006,
 seg0.ts?token=a#frag1
 #EXTINF:5.5,
@@ -623,8 +636,8 @@ seg1.ts?token=a
 `,
 			"SegmentPath": `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:10
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXT-X-MAP:URI="https://edge1.cdn.com/v/init.mp4?sig=1"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXTINF:6.006,
 segX.ts?token=a#frag1
 #EXTINF:5.5,
@@ -633,8 +646,8 @@ seg1.ts?token=a
 `,
 			"InitByteRange": `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:10
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXT-X-MAP:URI="https://edge1.cdn.com/v/init.mp4?sig=1",BYTERANGE="99@0"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXTINF:6.006,
 seg0.ts?token=a#frag1
 #EXTINF:5.5,
@@ -643,8 +656,8 @@ seg1.ts?token=a
 `,
 			"KeyMethod": `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:10
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXT-X-MAP:URI="https://edge1.cdn.com/v/init.mp4?sig=1"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXTINF:6.006,
 seg0.ts?token=a#frag1
 #EXT-X-KEY:METHOD=NONE
@@ -654,8 +667,8 @@ seg1.ts?token=a
 `,
 			"ByteLength": `#EXTM3U
 #EXT-X-MEDIA-SEQUENCE:10
-#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXT-X-MAP:URI="https://edge1.cdn.com/v/init.mp4?sig=1"
+#EXT-X-KEY:METHOD=AES-128,URI="https://edge1.cdn.com/v/k.bin?t=a#x"
 #EXTINF:6.006,
 #EXT-X-BYTERANGE:50@0
 seg0.ts?token=a#frag1
@@ -753,6 +766,93 @@ func TestParseMediaPlaylist_StrictStructureGates(t *testing.T) {
 		if err := parseErr(t, tc.doc, base); !errors.Is(err, tc.want) {
 			t.Fatalf("%s: err = %v, want %v", name, err, tc.want)
 		}
+	}
+}
+
+func TestParseMediaPlaylist_UnsupportedExtensionTags(t *testing.T) {
+	base := "https://cdn.example.com/v/index.m3u8"
+	cases := map[string]struct {
+		doc  string
+		want error
+	}{
+		// SKIP+ENDLIST is the truncation trap: the playlist claims
+		// completeness while omitting earlier segments from the list.
+		"SkipOmitsEarlierSegments": {
+			"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-SKIP:SKIPPED-SEGMENTS=10\n" +
+				"#EXTINF:6.0,\nseg10.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"GapSegmentUnavailable": {
+			"#EXTM3U\n#EXTINF:6.0,\n#EXT-X-GAP\nseg0.ts\n#EXTINF:6.0,\nseg1.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"ServerControl": {
+			"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-SERVER-CONTROL:CAN-SKIP-UNTIL=36.0\n" +
+				"#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSLiveNotSupported,
+		},
+		"PartInf": {
+			"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-PART-INF:PART-TARGET=0.5\n" +
+				"#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSLiveNotSupported,
+		},
+		"PartialSegment": {
+			"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-PART:DURATION=0.5,URI=\"p0.mp4\"\n" +
+				"#EXTINF:6.0,\nseg0.mp4\n#EXT-X-ENDLIST\n",
+			types.ErrHLSLiveNotSupported,
+		},
+		"PreloadHint": {
+			"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg0.ts\n" +
+				"#EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"next.mp4\"\n#EXT-X-ENDLIST\n",
+			types.ErrHLSLiveNotSupported,
+		},
+		"RenditionReport": {
+			"#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-RENDITION-REPORT:URI=\"r.m3u8\"\n" +
+				"#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSLiveNotSupported,
+		},
+		// EXT-X-DEFINE is legal in both playlist kinds; either way the
+		// {name} expansion is unsupported and the document is refused.
+		"DefineVariableMedia": {
+			"#EXTM3U\n#EXT-X-DEFINE:NAME=\"ver\",VALUE=\"1\"\n" +
+				"#EXTINF:6.0,\nseg0.ts\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"DefineVariableMaster": {
+			"#EXTM3U\n#EXT-X-DEFINE:QUERYPARAM=\"token\"\n" +
+				"#EXT-X-STREAM-INF:BANDWIDTH=1000000\nv.m3u8\n",
+			types.ErrHLSInvalidManifest,
+		},
+		// An EXT-X-KEY in force when EXT-X-MAP is declared makes the init
+		// section encrypted — unrepresentable, so it is refused outright.
+		"KeyBeforeMapEncryptedInit": {
+			"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXT-X-MAP:URI=\"init.mp4\"\n" +
+				"#EXTINF:6.0,\nseg0.mp4\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+		"MapRedeclaredUnderKey": {
+			"#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6.0,\nseg0.mp4\n" +
+				"#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXT-X-MAP:URI=\"init.mp4\"\n" +
+				"#EXTINF:6.0,\nseg1.mp4\n#EXT-X-ENDLIST\n",
+			types.ErrHLSInvalidManifest,
+		},
+	}
+	for name, tc := range cases {
+		if err := parseErr(t, tc.doc, base); !errors.Is(err, tc.want) {
+			t.Fatalf("%s: err = %v, want %v", name, err, tc.want)
+		}
+	}
+}
+
+func TestParseMediaPlaylist_MapBeforeKeyStaysPlaintext(t *testing.T) {
+	doc := "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n" +
+		"#EXTINF:6.0,\nseg0.mp4\n#EXT-X-ENDLIST\n"
+	media := parseMedia(t, doc, "https://cdn.example.com/v/index.m3u8")
+	if media.InitMap == nil || media.ContainerFormat != hls.ContainerFMP4 {
+		t.Fatalf("InitMap=%v format=%q", media.InitMap, media.ContainerFormat)
+	}
+	if len(media.Keys) != 1 || media.Segments[0].KeyIndex != 1 {
+		t.Fatalf("Keys=%d seg.KeyIndex=%d", len(media.Keys), media.Segments[0].KeyIndex)
 	}
 }
 

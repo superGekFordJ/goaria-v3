@@ -25,8 +25,10 @@ const (
 
 // HLSPreflightResult is the successful output of PreflightHLSManifest.
 type HLSPreflightResult struct {
-	ResumeState       *types.HLSResumeState
-	ContainerExt      string // ".mp4" | ".ts"
+	ResumeState  *types.HLSResumeState
+	ContainerExt string // ".mp4" | ".ts"
+	// TTFBMs measures the first manifest hop only; a master playlist's
+	// second (media) hop shares the timeout budget but is not timed here.
 	TTFBMs            int64
 	SelectedBandwidth int64
 	TotalDurationSec  float64
