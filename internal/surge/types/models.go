@@ -145,26 +145,30 @@ type HLSSpillEntry struct {
 // HLSResumeState is the immutable resume snapshot of an HLS download,
 // persisted inside details/<id>.gob only (never master.gob).
 type HLSResumeState struct {
-	ManifestURL         string            `json:"manifest_url"`
-	MediaPlaylistURL    string            `json:"media_playlist_url"`
-	SegmentRefURL       string            `json:"segment_ref_url,omitempty"`
-	ManifestFingerprint string            `json:"manifest_fingerprint"`
-	ContainerFormat     string            `json:"container_format"`
-	EstimatedBytes      int64             `json:"estimated_bytes,omitempty"`
-	RecordEligible      bool              `json:"record_eligible"`
-	InitSegmentURI      string            `json:"init_segment_uri,omitempty"`
-	InitCompleted       bool              `json:"init_completed,omitempty"`
-	InitBytes           int64             `json:"init_bytes,omitempty"`
-	TotalSegments       int               `json:"total_segments"`
-	CompletedBitmap     []byte            `json:"completed_bitmap"`
-	MergedSegments      int               `json:"merged_segments"`
-	MergedBytes         int64             `json:"merged_bytes"`
-	VerifiedBytes       int64             `json:"verified_bytes"`
-	SpillPath           string            `json:"spill_path,omitempty"`
-	SpillFileSize       int64             `json:"spill_file_size,omitempty"`
-	SpillEntries        []HLSSpillEntry   `json:"spill_entries,omitempty"`
-	Keys                []HLSKeyInfo      `json:"keys,omitempty"`
-	Segments            []HLSSegmentState `json:"segments,omitempty"`
+	ManifestURL         string `json:"manifest_url"`
+	MediaPlaylistURL    string `json:"media_playlist_url"`
+	SegmentRefURL       string `json:"segment_ref_url,omitempty"`
+	ManifestFingerprint string `json:"manifest_fingerprint"`
+	ContainerFormat     string `json:"container_format"`
+	EstimatedBytes      int64  `json:"estimated_bytes,omitempty"`
+	RecordEligible      bool   `json:"record_eligible"`
+	InitSegmentURI      string `json:"init_segment_uri,omitempty"`
+	// FORK-PATCH: byte-range of the #EXT-X-MAP init segment within its URI
+	// (RFC 8216 BYTERANGE="<n>[@<o>]"). Both zero means "GET the whole URI".
+	InitByteOffset  int64             `json:"init_byte_offset,omitempty"`
+	InitByteLength  int64             `json:"init_byte_length,omitempty"`
+	InitCompleted   bool              `json:"init_completed,omitempty"`
+	InitBytes       int64             `json:"init_bytes,omitempty"`
+	TotalSegments   int               `json:"total_segments"`
+	CompletedBitmap []byte            `json:"completed_bitmap"`
+	MergedSegments  int               `json:"merged_segments"`
+	MergedBytes     int64             `json:"merged_bytes"`
+	VerifiedBytes   int64             `json:"verified_bytes"`
+	SpillPath       string            `json:"spill_path,omitempty"`
+	SpillFileSize   int64             `json:"spill_file_size,omitempty"`
+	SpillEntries    []HLSSpillEntry   `json:"spill_entries,omitempty"`
+	Keys            []HLSKeyInfo      `json:"keys,omitempty"`
+	Segments        []HLSSegmentState `json:"segments,omitempty"`
 }
 
 // Clone returns a physically isolated copy: scalar fields are copied by value

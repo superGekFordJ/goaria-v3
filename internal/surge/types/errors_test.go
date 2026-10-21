@@ -137,6 +137,8 @@ func TestHLSResumeState_CloneDeepCopy(t *testing.T) {
 		EstimatedBytes:      1 << 20,
 		RecordEligible:      true,
 		InitSegmentURI:      "init.mp4",
+		InitByteOffset:      128,
+		InitByteLength:      768,
 		InitCompleted:       true,
 		InitBytes:           700,
 		TotalSegments:       2,
@@ -171,6 +173,8 @@ func TestHLSResumeState_CloneDeepCopy(t *testing.T) {
 		cp.EstimatedBytes != src.EstimatedBytes ||
 		cp.RecordEligible != src.RecordEligible ||
 		cp.InitSegmentURI != src.InitSegmentURI ||
+		cp.InitByteOffset != src.InitByteOffset ||
+		cp.InitByteLength != src.InitByteLength ||
 		cp.InitCompleted != src.InitCompleted ||
 		cp.InitBytes != src.InitBytes ||
 		cp.TotalSegments != src.TotalSegments ||
