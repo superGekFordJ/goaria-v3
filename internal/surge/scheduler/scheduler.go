@@ -327,27 +327,18 @@ func (p *Scheduler) AdmissionSnapshot() AdmissionSnapshot {
 			continue
 		}
 		cand := AdmissionCandidate{
-			Key:       AdmissionKey{ID: id, Token: qt.token},
-			RetryAt:   qt.retryAt,
-			Admitted:  qt.admitted,
-			InFlight:  qt.inFlight,
-			TotalSize: qt.cfg.TotalSize,
-			Strategy:  qt.cfg.Strategy,
+			Key:      AdmissionKey{ID: id, Token: qt.token},
+			RetryAt:  qt.retryAt,
+			Admitted: qt.admitted,
+			InFlight: qt.inFlight,
+			Strategy: qt.cfg.Strategy,
 		}
 		if rt := qt.cfg.Runtime; rt != nil {
 			cand.RuntimeReady = rt.Workers > 0
 			cand.Workers = rt.Workers
 			cand.MinChunkSize = rt.MinChunkSize
 		}
-		if qt.cfg.ProgressState != nil {
-			d, total, _, _, _, _ := progress.CfgProgress(&qt.cfg).GetProgress()
-			cand.Downloaded = d
-			if total > 0 {
-				cand.TotalSize = total
-			}
-		} else {
-			cand.Downloaded = qt.cfg.Downloaded
-		}
+		cand.Downloaded, cand.TotalSize = cfgEffectiveProgress(&qt.cfg)
 		cand.RecordEligible = recordEligibleForConfig(&qt.cfg, cand.TotalSize)
 		snap.Candidates = append(snap.Candidates, cand)
 	}
@@ -464,19 +455,30 @@ func managedRuntimeCeiling(cfg types.DownloadRecord) *types.RuntimeConfig {
 	return &rt
 }
 
+// cfgEffectiveProgress resolves the best-known downloaded/total pair for a
+// config — progress state, when present, is more current than the persisted
+// hints.
+func cfgEffectiveProgress(cfg *types.DownloadRecord) (downloaded, effectiveTotal int64) {
+	if cfg == nil {
+		return 0, 0
+	}
+	downloaded = cfg.Downloaded
+	effectiveTotal = cfg.TotalSize
+	if cfg.ProgressState != nil {
+		d, total, _, _, _, _ := progress.CfgProgress(cfg).GetProgress()
+		downloaded = d
+		if total > 0 {
+			effectiveTotal = total
+		}
+	}
+	return downloaded, effectiveTotal
+}
+
 // effectiveConfigTotalSize resolves the best-known total for a config —
 // progress state, when present, is more current than the persisted hint.
 func effectiveConfigTotalSize(cfg *types.DownloadRecord) int64 {
-	if cfg == nil {
-		return 0
-	}
-	totalSize := cfg.TotalSize
-	if cfg.ProgressState != nil {
-		if _, total, _, _, _, _ := progress.CfgProgress(cfg).GetProgress(); total > 0 {
-			totalSize = total
-		}
-	}
-	return totalSize
+	_, total := cfgEffectiveProgress(cfg)
+	return total
 }
 
 // recordEligibleForConfig reports whether a config qualifies for host
