@@ -21,7 +21,6 @@ import (
 	"goaria-v3/internal/speedstats"
 	"goaria-v3/internal/surge/strategy/hls"
 	surgetypes "goaria-v3/internal/surge/types"
-	surgeutils "goaria-v3/internal/surge/utils"
 )
 
 // Compile-time check: *Service satisfies the extension.TaskAdder interface.
@@ -34,12 +33,9 @@ var scopeClassifier = speedstats.NewScopeClassifier()
 // run the Surge strategy; it is a terminal refusal, never a fallback.
 var ErrHLSEngineUnsupported = errors.New("hls download requires surge engine")
 
-// Injectable seams for tests: the manifest preflight and the free-space
-// lookup are the only network/platform touches inside the HLS add path.
-var (
-	hlsPreflightManifest = hls.PreflightHLSManifest
-	tasksFreeDiskBytes   = surgeutils.FreeDiskBytes
-)
+// Injectable seam for tests: the manifest preflight is the only network
+// touch inside the HLS add path.
+var hlsPreflightManifest = hls.PreflightHLSManifest
 
 // collectActiveTaskInfos builds a TrackedTaskInfo slice from the current tracker state
 // for BandwidthLedger pre-scan seeding.
@@ -118,7 +114,6 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 	if req.FileSize > 0 {
 		candidate.sizeBytes = req.FileSize
 	}
-	normalizeHLSCandidate(&candidate)
 
 	authState := s.newAddTaskAuthBatchState()
 	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
@@ -719,7 +714,7 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 				headerLinesToMap(headers), s.surgeRuntimeConfigForPreflight())
 			switch {
 			case pErr == nil && preflightRes != nil && preflightRes.ResumeState != nil:
-				candidate.hlsResume = preflightRes.ResumeState.Clone()
+				candidate.hlsResume = preflightRes.ResumeState
 				preflightTTFBMs = preflightRes.TTFBMs
 			case pErr == nil:
 				candidate.hlsResume = hls.NewFallbackHLSResumeState(rawURL, candidate.finalURL)
@@ -762,15 +757,6 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 	}
 	if candidate.downloadGroup != nil && !candidate.callerOwnsGroupCleanup {
 		defer candidate.downloadGroup.CleanupIfUnused()
-	}
-	// Host-side EstimatedBytes admission: fail before the engine can reserve
-	// a .surge artifact. Lookup failures fail open; unknown size skips.
-	if isHLS && candidate.hlsResume != nil && candidate.hlsResume.EstimatedBytes > 0 &&
-		strings.TrimSpace(dir) != "" {
-		if free, freeErr := tasksFreeDiskBytes(dir); freeErr == nil &&
-			!surgeutils.HasSufficientDiskSpace(candidate.hlsResume.EstimatedBytes, free) {
-			return "", surgetypes.ErrInsufficientDiskSpace
-		}
 	}
 
 	var gid string

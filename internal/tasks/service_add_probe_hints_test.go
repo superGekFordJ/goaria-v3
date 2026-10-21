@@ -770,61 +770,28 @@ func TestAddTaskCandidate_HLSPreflightDegradeAndFailFast(t *testing.T) {
 	})
 }
 
-// Host-side EstimatedBytes admission runs before the engine can reserve a
-// .surge artifact; free-space lookup errors fail open.
+// Engine-side disk admission is the single authority for EstimatedBytes:
+// when the Surge boundary refuses with ErrInsufficientDiskSpace the sentinel
+// must reach the caller verbatim and the HLS add must never fall back to
+// Aria2.
 func TestAddTaskCandidate_HLSEstimatedBytesDiskAdmission(t *testing.T) {
-	newSvc := func(t *testing.T) (*Service, *capturingAddURIEngine) {
-		surgeCap := &capturingAddURIEngine{}
-		hybrid := rpc.NewHybridEngine(&capturingAria2Engine{}, surgeCap)
-		return setupProbeHintsAddService(t, hybrid, false), surgeCap
-	}
 	const url = "https://cdn.example.invalid/big.m3u8"
 
 	t.Run("insufficient disk rejects before enqueue", func(t *testing.T) {
-		svc, surgeCap := newSvc(t)
+		aria2Stub := &diskSpaceStubEngine{}
+		surgeStub := &diskSpaceStubEngine{rejectURLs: map[string]struct{}{url: {}}}
+		svc := setupProbeHintsAddService(t, rpc.NewHybridEngine(aria2Stub, surgeStub), false)
 		stubAddTaskHLSPreflight(t, successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 100<<20))
-		orig := tasksFreeDiskBytes
-		t.Cleanup(func() { tasksFreeDiskBytes = orig })
-		tasksFreeDiskBytes = func(string) (int64, error) { return 1 << 10, nil }
 
 		_, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: url})
 		if !errors.Is(err, surgetypes.ErrInsufficientDiskSpace) {
 			t.Fatalf("err = %v, want ErrInsufficientDiskSpace", err)
 		}
-		if got := len(surgeCap.snapshotOptions()); got != 0 {
-			t.Fatalf("AddUri calls = %d, want 0 (no .surge reservation)", got)
+		if got := surgeStub.callCount(); got != 1 {
+			t.Fatalf("surge AddUri calls = %d, want 1 (engine boundary owns the refusal)", got)
 		}
-	})
-
-	t.Run("lookup failure fails open", func(t *testing.T) {
-		svc, surgeCap := newSvc(t)
-		stubAddTaskHLSPreflight(t, successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 100<<20))
-		orig := tasksFreeDiskBytes
-		t.Cleanup(func() { tasksFreeDiskBytes = orig })
-		tasksFreeDiskBytes = func(string) (int64, error) { return 0, errors.New("statfs failed") }
-
-		gid, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: url})
-		if err != nil {
-			t.Fatalf("free-space lookup error must fail open: %v", err)
-		}
-		if !strings.HasPrefix(gid, "sg_") || len(surgeCap.snapshotOptions()) != 1 {
-			t.Fatalf("enqueue blocked: gid=%q calls=%d", gid, len(surgeCap.snapshotOptions()))
-		}
-	})
-
-	t.Run("zero estimate skips the check", func(t *testing.T) {
-		svc, _ := newSvc(t)
-		stubAddTaskHLSPreflight(t, successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 0))
-		orig := tasksFreeDiskBytes
-		t.Cleanup(func() { tasksFreeDiskBytes = orig })
-		tasksFreeDiskBytes = func(string) (int64, error) { return 1, nil }
-
-		gid, err := svc.AddUriFromExtension(extension.DownloadRequest{Type: extension.MsgTypeDownload, URL: url})
-		if err != nil {
-			t.Fatalf("zero-estimate HLS must not be disk-gated: %v", err)
-		}
-		if !strings.HasPrefix(gid, "sg_") {
-			t.Fatalf("gid = %q, want sg_", gid)
+		if got := aria2Stub.callCount(); got != 0 {
+			t.Fatalf("aria2 AddUri calls = %d, want 0 (HLS never falls back)", got)
 		}
 	})
 }

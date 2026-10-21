@@ -141,7 +141,6 @@ func (s *Service) AddPreparedDirectItems(ctx context.Context, req PreparedDirect
 			candidate.downloadGroup = group
 			candidate.callerOwnsGroupCleanup = true
 		}
-		normalizeHLSCandidate(&candidate)
 		candidates = append(candidates, candidate)
 	}
 
