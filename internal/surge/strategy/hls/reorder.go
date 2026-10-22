@@ -232,10 +232,12 @@ func (w *ReorderWindow) Ingest(index int, payload []byte) (IngestResult, error) 
 		return res, w.storeErr
 	}
 	if index < 0 || index >= w.total {
+		// Caller contract violation — deliberately untyped: an index outside
+		// the manifest can never be resolved by re-fetching data.
 		return res, fmt.Errorf("hls: segment index %d out of range [0,%d)", index, w.total)
 	}
 	if len(payload) == 0 {
-		return res, fmt.Errorf("hls: empty payload for segment %d", index)
+		return res, newSegmentDataError(index, "empty payload")
 	}
 	if w.hasBit(index) {
 		res.Duplicate = true
@@ -295,7 +297,8 @@ func (w *ReorderWindow) Ingest(index int, payload []byte) (IngestResult, error) 
 // and the arena truncates to zero under the same lock once it is empty.
 func (w *ReorderWindow) drainLocked() error {
 	for {
-		if payload, ok := w.pending[w.mergedSegs]; ok {
+		k := w.mergedSegs
+		if payload, ok := w.pending[k]; ok {
 			l := int64(len(payload))
 			if l > math.MaxInt64-w.merged || l > math.MaxInt64-w.verified {
 				return fmt.Errorf("hls: %w growing counters by %d", errOffsetOverflow, l)
@@ -303,15 +306,15 @@ func (w *ReorderWindow) drainLocked() error {
 			if err := w.writeOut(payload); err != nil {
 				return err
 			}
-			w.setBit(w.mergedSegs)
+			w.setBit(k)
 			w.mergedSegs++
 			w.merged += l
 			w.verified += l
 			w.pendingBytes -= l
-			delete(w.pending, w.mergedSegs-1)
+			delete(w.pending, k)
 			continue
 		}
-		if e, ok := w.arena.entries[w.mergedSegs]; ok {
+		if e, ok := w.arena.entries[k]; ok {
 			if e.Length > math.MaxInt64-w.merged {
 				return fmt.Errorf("hls: %w growing merged by %d", errOffsetOverflow, e.Length)
 			}
@@ -377,17 +380,18 @@ func (w *ReorderWindow) Sync() error {
 	if w.closed {
 		return errWindowClosed
 	}
-	var first error
+	var errs []error
 	if err := w.ops.syncFn(w.out); err != nil {
-		first = newStorageError("output sync", w.outPath, err)
+		errs = append(errs, newStorageError("output sync", w.outPath, err))
 	}
-	if err := w.arena.sync(); err != nil && first == nil {
-		first = err
+	if err := w.arena.sync(); err != nil {
+		errs = append(errs, err)
 	}
-	if first != nil {
-		w.storeErr = first
+	err := errors.Join(errs...)
+	if err != nil && w.storeErr == nil {
+		w.storeErr = err
 	}
-	return first
+	return err
 }
 
 // Close is idempotent: it drops pending buffers and scratch and releases the

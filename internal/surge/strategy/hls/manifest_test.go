@@ -380,6 +380,20 @@ seg1.mp4
 		}
 	})
 
+	t.Run("FMP4FirstMapAfterSegmentsRejected", func(t *testing.T) {
+		doc := `#EXTM3U
+#EXTINF:6.0,
+seg0.mp4
+#EXT-X-MAP:URI="init.mp4"
+#EXTINF:6.0,
+seg1.mp4
+#EXT-X-ENDLIST
+`
+		if err := parseErr(t, doc, base); !errors.Is(err, types.ErrHLSDiscontinuityMapNotSupported) {
+			t.Fatalf("err = %v, want ErrHLSDiscontinuityMapNotSupported", err)
+		}
+	})
+
 	t.Run("FMP4IdenticalMapRedeclaredAllowed", func(t *testing.T) {
 		doc := `#EXTM3U
 #EXT-X-MAP:URI="init.mp4",BYTERANGE="720@64"

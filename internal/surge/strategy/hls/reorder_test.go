@@ -888,6 +888,8 @@ func TestReorderWindow_ReplayBarrierBlocksIngestAndSnapshot(t *testing.T) {
 	}
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
 	fx.ops.rangeCopy = func(dst, src *os.File, dstOff, srcOff, length int64) (int64, bool, error) {
 		close(entered)
 		<-release
@@ -898,7 +900,11 @@ func TestReorderWindow_ReplayBarrierBlocksIngestAndSnapshot(t *testing.T) {
 		_, err := fx.w.Ingest(0, segPayload('0', 4))
 		ingestDone <- err
 	}()
-	<-entered // drain is inside the lock, replay blocked mid-copy
+	select {
+	case <-entered: // drain is inside the lock, replay blocked mid-copy
+	case <-time.After(2 * time.Second):
+		t.Fatal("rangeCopy never entered")
+	}
 
 	snapDone := make(chan *types.HLSResumeState, 1)
 	go func() { snapDone <- fx.w.Snapshot() }()
@@ -915,7 +921,7 @@ func TestReorderWindow_ReplayBarrierBlocksIngestAndSnapshot(t *testing.T) {
 	case <-time.After(60 * time.Millisecond):
 	}
 
-	close(release)
+	once.Do(func() { close(release) })
 	if err := <-ingestDone; err != nil {
 		t.Fatalf("drain ingest: %v", err)
 	}
@@ -928,5 +934,72 @@ func TestReorderWindow_ReplayBarrierBlocksIngestAndSnapshot(t *testing.T) {
 	want := append(segPayload('0', 4), segPayload('1', 6)...)
 	if got := fx.readOut(t); !bytes.Equal(got, want) {
 		t.Fatalf("out = %v want %v", got, want)
+	}
+}
+
+// A merged-prefix projection captured mid-generation stays a conservative,
+// still-valid reseed even after the arena drains, truncates, and a later
+// spill generation reuses the same offsets.
+func TestReorderWindow_ABAProjectionReseed(t *testing.T) {
+	fx := newWindowFixture(t, 8, 0, 0, []int64{3, 3, 3, 3, 3, 3, 3, 3}, "test-dl")
+	if _, err := fx.w.Ingest(0, segPayload('a', 3)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.w.Ingest(1, segPayload('b', 3)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Generation 1: seg 3 spills at arena offset 0.
+	fx.w.pendingBytes = reorderPendingBytesMax
+	if _, err := fx.w.Ingest(3, segPayload('d', 3)); err != nil {
+		t.Fatal(err)
+	}
+	p1 := fx.w.SnapshotMergedPrefix()
+	if p1.MergedSegments != 2 || p1.MergedBytes != 6 || len(p1.SpillEntries) != 0 || p1.SpillFileSize != 0 {
+		t.Fatalf("projection = %+v", p1)
+	}
+
+	// Fill the hole: seg 2 merges, drain replays seg 3, arena truncates to 0.
+	if _, err := fx.w.Ingest(2, segPayload('c', 3)); err != nil {
+		t.Fatal(err)
+	}
+	if got := fx.w.Snapshot(); got.MergedSegments != 4 || len(got.SpillEntries) != 0 {
+		t.Fatalf("post-drain = %+v", got)
+	}
+
+	// Generation 2: seg 5 spills and reuses offset 0 (ABA on the arena file).
+	if _, err := fx.w.Ingest(5, segPayload('f', 3)); err != nil {
+		t.Fatal(err)
+	}
+	live := fx.w.Snapshot()
+	if len(live.SpillEntries) != 1 || live.SpillEntries[0].SegmentIndex != 5 || live.SpillEntries[0].Offset != 0 {
+		t.Fatalf("gen2 spill = %+v", live.SpillEntries)
+	}
+
+	// The old projection still claims no spill and its prefix bytes are intact.
+	if len(p1.SpillEntries) != 0 || p1.SpillFileSize != 0 || p1.MergedSegments != 2 {
+		t.Fatalf("stale projection mutated: %+v", p1)
+	}
+	wantPrefix := append(segPayload('a', 3), segPayload('b', 3)...)
+	if got := fx.readOut(t)[:p1.MergedBytes]; !bytes.Equal(got, wantPrefix) {
+		t.Fatalf("prefix bytes = %q", got)
+	}
+	if p1.CompletedBitmap[0] != 0b11 {
+		t.Fatalf("projection bitmap = %08b", p1.CompletedBitmap[0])
+	}
+
+	// A new window seeded from the projection re-accepts spilled segments —
+	// the projection never claimed them.
+	fx2 := newWindowFixture(t, 8, 2, 0, []int64{3, 3, 3, 3, 3, 3, 3, 3}, "test-dl2")
+	w2, err := newReorderWindow(fx2.out, fx2.path, "test-dl2", p1, defaultFileOps())
+	if err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+	t.Cleanup(func() { w2.Close() })
+	for _, idx := range []int{3, 5} {
+		res, err := w2.Ingest(idx, segPayload('x', 3))
+		if err != nil || !res.Accepted || res.Duplicate {
+			t.Fatalf("reseeded ingest(%d) = %+v err=%v", idx, res, err)
+		}
 	}
 }

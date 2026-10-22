@@ -623,6 +623,11 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 				types.ErrHLSLiveNotSupported, tag)
 
 		case strings.HasPrefix(ln, "#EXT-X-MAP:"):
+			if initMap == nil && len(segments) > 0 {
+				// A first MAP mid-playlist would retroactively rebase earlier
+				// bare segments under an init section we cannot represent.
+				return nil, fmt.Errorf("%w: first EXT-X-MAP after media segments", types.ErrHLSDiscontinuityMapNotSupported)
+			}
 			attrs, err := parseAttributeList(ln[len("#EXT-X-MAP:"):])
 			if err != nil {
 				return nil, err
