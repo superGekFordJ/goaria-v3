@@ -634,13 +634,22 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				activeTask.LastActivity.Store(time.Now().UnixNano())
 			}
 
+			// Disk writes can block for longer than the network stall timeout.
+			diskWriteStart := time.Now()
+			activeTask.WritingToDisk.Store(true)
+
 			_, writeErr := writeAtFn(file, buf[:readSoFar], offset)
 			if writeErr != nil {
+				activeTask.LastActivity.Store(time.Now().UnixNano())
+				activeTask.WritingToDisk.Store(false)
 				return fmt.Errorf("write error: %w", types.AnnotateInsufficientDiskSpace(writeErr))
 			}
 			d.notePayloadFirstWrite()
 
 			now := time.Now()
+			// The slow-worker comparison measures network throughput, so remove
+			// time spent on disk from its sample window.
+			activeTask.WindowStart = activeTask.WindowStart.Add(now.Sub(diskWriteStart))
 			rangeStart := offset // Start of this write
 			offset += int64(readSoFar)
 
@@ -700,6 +709,7 @@ func (d *ConcurrentDownloader) downloadTask(ctx context.Context, rawurl string, 
 				}
 			}
 			activeTask.LastActivity.Store(now.UnixNano())
+			activeTask.WritingToDisk.Store(false)
 
 			// Calculate effective contribution
 			if newlyWritten > 0 {

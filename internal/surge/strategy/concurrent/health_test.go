@@ -112,6 +112,33 @@ func TestHealth_MultipleWorkers(t *testing.T) {
 	}
 }
 
+func TestHealth_DiskWriteDoesNotDistortNetworkSpeedComparison(t *testing.T) {
+	runtime := &types.RuntimeConfig{SlowWorkerThreshold: 0.5}
+	d := NewConcurrentDownloader("test", nil, progress.New("test", 1000), runtime)
+	now := time.Now()
+
+	// A worker blocked on disk can retain a high speed from its last network read.
+	writing := &ActiveTask{StartTime: now.Add(-time.Second), Speed: 100 * 1024 * 1024}
+	writing.WritingToDisk.Store(true)
+	d.activeTasks[0] = writing
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.activeTasks[1] = &ActiveTask{
+		StartTime: now.Add(-time.Second),
+		Speed:     1 * 1024 * 1024,
+		Cancel:    cancel,
+	}
+	// FORK-PATCH: upstream has no volume grace; push the network worker past
+	// the 1MiB floor so the relative-speed check actually runs here.
+	d.activeTasks[1].CurrentOffset.Store(2 * 1024 * 1024) // >1MB, past volume grace
+
+	d.checkWorkerHealth()
+	if ctx.Err() != nil {
+		t.Error("network worker was compared with a worker blocked on disk")
+	}
+}
+
 func TestHealth_GracePeriod(t *testing.T) {
 	runtime := &types.RuntimeConfig{
 		SlowWorkerThreshold:   0.5,
