@@ -62,11 +62,9 @@ func assertDecDataErr(t *testing.T, plain []byte, padLen int, err error, ctx str
 	if err == nil {
 		t.Fatalf("%s: err = nil, want segment data error", ctx)
 	}
-	derr, ok := errors.AsType[*segmentDataError](err)
-	if !ok {
+	if _, ok := errors.AsType[*segmentDataError](err); !ok {
 		t.Fatalf("%s: err type %T not *segmentDataError", ctx, err)
 	}
-	_ = derr
 	if types.IsPermanentHLSError(err) {
 		t.Fatalf("%s: err must stay retryable, got permanent HLS: %v", ctx, err)
 	}

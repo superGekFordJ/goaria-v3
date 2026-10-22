@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"goaria-v3/internal/surge/types"
 )
@@ -750,8 +751,12 @@ func TestReorderWindow_ConcurrentIngestAndSnapshot(t *testing.T) {
 		t.Fatalf("accepted = %d", accepted)
 	}
 	got := fx.readOut(t)
-	if len(got) != total*64 {
-		t.Fatalf("out size %d", len(got))
+	var want []byte
+	for i := range total {
+		want = append(want, segPayload(byte(i%251+1), 64)...)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("ordered payload mismatch: got %d bytes", len(got))
 	}
 	snap := fx.w.Snapshot()
 	if snap.MergedSegments != total || snap.VerifiedBytes != snap.MergedBytes {
@@ -804,6 +809,10 @@ func TestReorderWindow_SyncAndClose(t *testing.T) {
 	}
 	if _, ok := errors.AsType[*storageError](fx.w.storeErr); !ok {
 		t.Fatal("sync failure not latched")
+	}
+	// A latched storage fault rejects subsequent input with the same error.
+	if res, err := fx.w.Ingest(0, segPayload('q', 4)); res.Accepted || !errors.Is(err, boom) {
+		t.Fatalf("ingest after latched sync = %+v %v", res, err)
 	}
 	fx.ops.syncFn = func(f *os.File) error { return nil }
 
@@ -864,5 +873,60 @@ func TestReorderWindow_IngestBoundsAndEmpty(t *testing.T) {
 	}
 	if fx.w.storeErr != nil {
 		t.Fatal("input errors latched storage fault")
+	}
+}
+
+// The single mutex makes replay atomic with respect to other callers; this
+// pins the interleave deterministically instead of hoping a scheduler lands
+// it — a blocked range copy must park Ingest and Snapshot alike until it
+// returns.
+func TestReorderWindow_ReplayBarrierBlocksIngestAndSnapshot(t *testing.T) {
+	fx := newWindowFixture(t, 2, 0, 0, []int64{4, 6}, "test-dl")
+	fx.w.pendingBytes = reorderPendingBytesMax
+	if _, err := fx.w.Ingest(1, segPayload('1', 6)); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fx.ops.rangeCopy = func(dst, src *os.File, dstOff, srcOff, length int64) (int64, bool, error) {
+		close(entered)
+		<-release
+		return 0, true, nil
+	}
+	ingestDone := make(chan error, 1)
+	go func() {
+		_, err := fx.w.Ingest(0, segPayload('0', 4))
+		ingestDone <- err
+	}()
+	<-entered // drain is inside the lock, replay blocked mid-copy
+
+	snapDone := make(chan *types.HLSResumeState, 1)
+	go func() { snapDone <- fx.w.Snapshot() }()
+	dupDone := make(chan IngestResult, 1)
+	go func() {
+		res, _ := fx.w.Ingest(0, segPayload('z', 4))
+		dupDone <- res
+	}()
+	select {
+	case s := <-snapDone:
+		t.Fatalf("snapshot returned merged=%d while replay blocked", s.MergedSegments)
+	case r := <-dupDone:
+		t.Fatalf("duplicate ingest returned %+v while replay blocked", r)
+	case <-time.After(60 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-ingestDone; err != nil {
+		t.Fatalf("drain ingest: %v", err)
+	}
+	if snap := <-snapDone; snap.MergedSegments != 2 || snap.MergedBytes != 10 {
+		t.Fatalf("post-release snap: %+v", snap)
+	}
+	if dup := <-dupDone; !dup.Duplicate || dup.Accepted {
+		t.Fatalf("post-release dup = %+v", dup)
+	}
+	want := append(segPayload('0', 4), segPayload('1', 6)...)
+	if got := fx.readOut(t); !bytes.Equal(got, want) {
+		t.Fatalf("out = %v want %v", got, want)
 	}
 }

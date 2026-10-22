@@ -27,12 +27,6 @@ var (
 	errDirtySeed = errors.New("hls: resume state is not a prepared prefix")
 )
 
-// pendingSegment is an owned copy of an out-of-order payload.
-type pendingSegment struct {
-	index   int
-	payload []byte // make+copy at ingest; exactly len bytes, never the caller's buffer
-}
-
 // IngestResult reports where this call's payload landed. Accepted means the
 // payload was newly admitted (prefix/pending/spill); a later drain step may
 // still fail, so Accepted=true can pair with a non-nil error — independent
@@ -65,7 +59,9 @@ type ReorderWindow struct {
 	merged     int64 // bytes committed to out, InitBytes included
 	verified   int64 // merged + live spill lengths
 
-	pending      map[int]pendingSegment
+	// pending holds owned copies of out-of-order payloads (make+copy at
+	// ingest; exactly len bytes, never the caller's buffer).
+	pending      map[int][]byte
 	pendingBytes int64
 
 	bitmap []byte // packed bits: merged-prefix ∪ spilled (never pending)
@@ -116,7 +112,7 @@ func newReorderWindow(out *os.File, destPath, downloadID string, seed *types.HLS
 		mergedSegs: seed.MergedSegments,
 		merged:     seed.MergedBytes,
 		verified:   seed.VerifiedBytes,
-		pending:    make(map[int]pendingSegment),
+		pending:    make(map[int][]byte),
 		bitmap:     slices.Clone(seed.CompletedBitmap),
 	}
 	return w, nil
@@ -273,7 +269,7 @@ func (w *ReorderWindow) Ingest(index int, payload []byte) (IngestResult, error) 
 	if l <= reorderPendingBytesMax-w.pendingBytes && len(w.pending) < reorderPendingSegmentMax {
 		cp := make([]byte, len(payload))
 		copy(cp, payload)
-		w.pending[index] = pendingSegment{index: index, payload: cp}
+		w.pending[index] = cp
 		w.pendingBytes += l
 		res.Accepted, res.Buffered = true, true
 		return res, nil
@@ -299,20 +295,20 @@ func (w *ReorderWindow) Ingest(index int, payload []byte) (IngestResult, error) 
 // and the arena truncates to zero under the same lock once it is empty.
 func (w *ReorderWindow) drainLocked() error {
 	for {
-		if p, ok := w.pending[w.mergedSegs]; ok {
-			l := int64(len(p.payload))
+		if payload, ok := w.pending[w.mergedSegs]; ok {
+			l := int64(len(payload))
 			if l > math.MaxInt64-w.merged || l > math.MaxInt64-w.verified {
 				return fmt.Errorf("hls: %w growing counters by %d", errOffsetOverflow, l)
 			}
-			if err := w.writeOut(p.payload); err != nil {
+			if err := w.writeOut(payload); err != nil {
 				return err
 			}
-			w.setBit(p.index)
+			w.setBit(w.mergedSegs)
 			w.mergedSegs++
 			w.merged += l
 			w.verified += l
 			w.pendingBytes -= l
-			delete(w.pending, p.index)
+			delete(w.pending, w.mergedSegs-1)
 			continue
 		}
 		if e, ok := w.arena.entries[w.mergedSegs]; ok {
@@ -410,5 +406,6 @@ func (w *ReorderWindow) Close() error {
 }
 
 // SpillPath exposes the deterministic arena path for tests and diagnostics;
-// the file may not exist (lazy creation).
+// the file may not exist (lazy creation). arena.path is set at construction
+// and never mutated, so it is safe to read without the lock.
 func (w *ReorderWindow) SpillPath() string { return w.arena.path }

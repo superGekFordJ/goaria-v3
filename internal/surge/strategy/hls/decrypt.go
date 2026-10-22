@@ -35,8 +35,9 @@ func newSegmentDataError(segIndex int, format string, args ...any) *segmentDataE
 // seg.KeyIndex is 1-based: 0 passes buf through untouched (any length,
 // including empty). For encrypted segments keyBytes must align with the
 // playlist Keys order so Keys[KeyIndex-1] resolves to a 16-byte AES-128 key.
-// An explicit IV accepts only the normalized 32-char lowercase-hex state
-// contract; an empty IV derives the RFC 8216 implicit IV from seg.Sequence
+// An explicit IV must hex-decode to exactly 16 bytes — the state contract is
+// normalized lowercase hex, but this gate accepts any decodable form; an
+// empty IV derives the RFC 8216 implicit IV from seg.Sequence
 // as a 128-bit big-endian value. PKCS#7 padding is verified only after
 // CryptBlocks — a padding failure leaves buf scrambled and callers must
 // discard it and re-fetch rather than decrypt the same buffer twice. A fresh

@@ -178,6 +178,7 @@ type spillArena struct {
 }
 
 func newSpillArena(path string, ops *fileOps) *spillArena {
+	ops.fill()
 	return &spillArena{path: path, entries: make(map[int]types.HLSSpillEntry), ops: ops}
 }
 
@@ -208,11 +209,6 @@ func spillPathFor(destPath, id string) string {
 	return filepath.Join(filepath.Dir(destPath), "."+id+".spill")
 }
 
-func (a *spillArena) has(index int) bool {
-	_, ok := a.entries[index]
-	return ok
-}
-
 // append lazily creates the arena (O_EXCL — an existing file is never taken
 // over or truncated) and writes the full payload at the confirmed tail. Only
 // a complete write registers the entry and advances tail; a partial write
@@ -227,14 +223,14 @@ func (a *spillArena) append(index int, payload []byte) (types.HLSSpillEntry, err
 		}
 		a.file = f
 	}
+	if int64(len(payload)) > math.MaxInt64-a.tail {
+		return entry, newStorageError("spill append", a.path, errOffsetOverflow)
+	}
 	if _, err := a.ops.seek(a.file, a.tail, io.SeekStart); err != nil {
 		return entry, newStorageError("spill seek", a.path, err)
 	}
 	if err := writeFull(a.ops, a.file, "spill append", a.path, payload); err != nil {
 		return entry, err
-	}
-	if int64(len(payload)) > math.MaxInt64-a.tail {
-		return entry, newStorageError("spill append", a.path, errOffsetOverflow)
 	}
 	entry.Offset, entry.Length = a.tail, int64(len(payload))
 	a.entries[index] = entry

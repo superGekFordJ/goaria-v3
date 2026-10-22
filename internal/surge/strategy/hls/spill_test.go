@@ -79,7 +79,7 @@ func TestSpillArena_AppendWriteFailureKeepsTail(t *testing.T) {
 	if err == nil || !errors.Is(err, boom) {
 		t.Fatalf("append err = %v", err)
 	}
-	if a.has(2) {
+	if _, ok := a.entries[2]; ok {
 		t.Fatal("partial write committed entry")
 	}
 	if a.tail != 4 {
