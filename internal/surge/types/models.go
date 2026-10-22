@@ -155,8 +155,14 @@ type HLSResumeState struct {
 	InitSegmentURI      string `json:"init_segment_uri,omitempty"`
 	// FORK-PATCH: byte-range of the #EXT-X-MAP init segment within its URI
 	// (RFC 8216 BYTERANGE="<n>[@<o>]"). Both zero means "GET the whole URI".
-	InitByteOffset  int64             `json:"init_byte_offset,omitempty"`
-	InitByteLength  int64             `json:"init_byte_length,omitempty"`
+	InitByteOffset int64 `json:"init_byte_offset,omitempty"`
+	InitByteLength int64 `json:"init_byte_length,omitempty"`
+	// FORK-PATCH: InitKeyIndex is the 1-based EXT-X-KEY binding captured at
+	// MAP parse time; 0 means the init section is plaintext. InitIVHex is the
+	// normalized 32-char lowercase hex IV — an encrypted init requires it
+	// (the media sequence is never borrowed for init decryption).
+	InitKeyIndex    int               `json:"init_key_index,omitempty"`
+	InitIVHex       string            `json:"init_iv_hex,omitempty"`
 	InitCompleted   bool              `json:"init_completed,omitempty"`
 	InitBytes       int64             `json:"init_bytes,omitempty"`
 	TotalSegments   int               `json:"total_segments"`

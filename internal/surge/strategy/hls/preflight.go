@@ -114,6 +114,8 @@ func PreflightHLSManifest(
 		resumeState.InitSegmentURI = mediaPl.InitMap.URI
 		resumeState.InitByteOffset = mediaPl.InitMap.ByteOffset
 		resumeState.InitByteLength = mediaPl.InitMap.ByteLength
+		resumeState.InitKeyIndex = mediaPl.InitMap.KeyIndex
+		resumeState.InitIVHex = mediaPl.InitMap.IVHex
 	}
 	return &HLSPreflightResult{
 		ResumeState:       resumeState,

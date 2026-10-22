@@ -823,8 +823,9 @@ func TestParseMediaPlaylist_UnsupportedExtensionTags(t *testing.T) {
 				"#EXT-X-STREAM-INF:BANDWIDTH=1000000\nv.m3u8\n",
 			types.ErrHLSInvalidManifest,
 		},
-		// An EXT-X-KEY in force when EXT-X-MAP is declared makes the init
-		// section encrypted — unrepresentable, so it is refused outright.
+		// An EXT-X-KEY in force when EXT-X-MAP is declared encrypts the init
+		// section; without an explicit IV on that key the init is
+		// undecryptable per RFC 8216 §4.3.2.5, so it is still refused.
 		"KeyBeforeMapEncryptedInit": {
 			"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXT-X-MAP:URI=\"init.mp4\"\n" +
 				"#EXTINF:6.0,\nseg0.mp4\n#EXT-X-ENDLIST\n",
@@ -851,9 +852,217 @@ func TestParseMediaPlaylist_MapBeforeKeyStaysPlaintext(t *testing.T) {
 	if media.InitMap == nil || media.ContainerFormat != hls.ContainerFMP4 {
 		t.Fatalf("InitMap=%v format=%q", media.InitMap, media.ContainerFormat)
 	}
+	// The MAP was declared before the key: its binding must stay
+	// plaintext — the later key must not retro-encrypt the init section.
+	if media.InitMap.KeyIndex != 0 || media.InitMap.IVHex != "" {
+		t.Fatalf("init binding = (%d,%q), want plaintext (0,\"\")",
+			media.InitMap.KeyIndex, media.InitMap.IVHex)
+	}
 	if len(media.Keys) != 1 || media.Segments[0].KeyIndex != 1 {
 		t.Fatalf("Keys=%d seg.KeyIndex=%d", len(media.Keys), media.Segments[0].KeyIndex)
 	}
+}
+
+func TestParseMediaPlaylist_EncryptedInitBinding(t *testing.T) {
+	base := "https://cdn.example.com/v/index.m3u8"
+	const ivA = "0x00000000000000000000000000ff00aa"
+
+	t.Run("BindsActiveKeyAndIV", func(t *testing.T) {
+		doc := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=" + ivA + "\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@64\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n#EXT-X-ENDLIST\n"
+		media := parseMedia(t, doc, base)
+		if media.InitMap == nil || media.InitMap.KeyIndex != 1 {
+			t.Fatalf("init binding = %+v, want KeyIndex 1", media.InitMap)
+		}
+		if media.InitMap.IVHex != "00000000000000000000000000ff00aa" {
+			t.Fatalf("init IVHex = %q, want normalized 32-char hex", media.InitMap.IVHex)
+		}
+	})
+
+	t.Run("MapBeforeKeyStaysPlaintextUnderLaterKey", func(t *testing.T) {
+		// MAP declared while plaintext stays (0,""), and a later
+		// re-declaration under an encrypted key that still lacks an IV is
+		// the missing-IV error — never a silent init rebind.
+		doc := "#EXTM3U\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXT-X-KEY:METHOD=NONE\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n#EXT-X-ENDLIST\n"
+		media := parseMedia(t, doc, base)
+		if media.InitMap.KeyIndex != 0 || media.InitMap.IVHex != "" {
+			t.Fatalf("init binding = (%d,%q) under METHOD=NONE, want (0,\"\")",
+				media.InitMap.KeyIndex, media.InitMap.IVHex)
+		}
+	})
+
+	t.Run("KeyRotationRejectsSecondInit", func(t *testing.T) {
+		// Same URI + range but a different active key/IV is a different
+		// init identity — the second MAP is rejected.
+		doc := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=" + ivA + "\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k2.bin\",IV=0x1\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg1.mp4\n#EXT-X-ENDLIST\n"
+		if err := parseErr(t, doc, base); !errors.Is(err, types.ErrHLSDiscontinuityMapNotSupported) {
+			t.Fatalf("err = %v, want ErrHLSDiscontinuityMapNotSupported", err)
+		}
+	})
+
+	t.Run("PlaintextThenEncryptedSameURIRejected", func(t *testing.T) {
+		// Plaintext-vs-encrypted flip on the identical init URI is a
+		// second init, not an idempotent re-declaration.
+		doc := "#EXTM3U\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=" + ivA + "\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg1.mp4\n#EXT-X-ENDLIST\n"
+		if err := parseErr(t, doc, base); !errors.Is(err, types.ErrHLSDiscontinuityMapNotSupported) {
+			t.Fatalf("err = %v, want ErrHLSDiscontinuityMapNotSupported", err)
+		}
+	})
+
+	t.Run("EncryptedThenPlaintextSameURIRejected", func(t *testing.T) {
+		doc := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=" + ivA + "\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n" +
+			"#EXT-X-KEY:METHOD=NONE\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg1.mp4\n#EXT-X-ENDLIST\n"
+		if err := parseErr(t, doc, base); !errors.Is(err, types.ErrHLSDiscontinuityMapNotSupported) {
+			t.Fatalf("err = %v, want ErrHLSDiscontinuityMapNotSupported", err)
+		}
+	})
+
+	t.Run("IdenticalEncryptedMapRedeclaredAllowed", func(t *testing.T) {
+		doc := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=" + ivA + "\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@64\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@64\"\n" +
+			"#EXTINF:6.0,\nseg1.mp4\n#EXT-X-ENDLIST\n"
+		media := parseMedia(t, doc, base)
+		if len(media.Segments) != 2 || media.InitMap.KeyIndex != 1 {
+			t.Fatalf("segments=%d init=%+v", len(media.Segments), media.InitMap)
+		}
+	})
+
+	t.Run("EncryptedMapUnderRotatedIVRejected", func(t *testing.T) {
+		// Same key URI, different IV: identity change -> second init.
+		doc := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=" + ivA + "\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=0x2\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg1.mp4\n#EXT-X-ENDLIST\n"
+		if err := parseErr(t, doc, base); !errors.Is(err, types.ErrHLSDiscontinuityMapNotSupported) {
+			t.Fatalf("err = %v, want ErrHLSDiscontinuityMapNotSupported", err)
+		}
+	})
+
+	t.Run("EncryptedInitAfterDiscontinuityRejected", func(t *testing.T) {
+		doc := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=" + ivA + "\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4\n" +
+			"#EXT-X-DISCONTINUITY\n" +
+			"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+			"#EXTINF:6.0,\nseg1.mp4\n#EXT-X-ENDLIST\n"
+		if err := parseErr(t, doc, base); !errors.Is(err, types.ErrHLSDiscontinuityMapNotSupported) {
+			t.Fatalf("err = %v, want ErrHLSDiscontinuityMapNotSupported", err)
+		}
+	})
+}
+
+func TestComputeManifestFingerprint_EncryptedInitIdentity(t *testing.T) {
+	base := "https://cdn.example.com/v/index.m3u8"
+
+	// Golden hash of the plaintext-init fixture computed before encrypted
+	// inits existed: the conditional identity record must leave it exact.
+	const plaintextInitGolden = "45ceaa98847a2a0184b44376b503f6e5fab7eb32c1eabf8e1aa7527c535b0421"
+	const noInitGolden = "caa213bd0142ccbd30897ffa68125249ad5ff6c3cde60a26f4383e6104f7dd9d"
+
+	t.Run("LegacyHashesUnchanged", func(t *testing.T) {
+		fmp4 := parseMedia(t, "#EXTM3U\n#EXT-X-TARGETDURATION:6\n"+
+			"#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@64\"\n"+
+			"#EXTINF:6.0,\nsegs/seg0.mp4\n#EXTINF:6.0,\nsegs/seg1.mp4\n#EXT-X-ENDLIST\n", base)
+		if fmp4.ManifestFingerprint != plaintextInitGolden {
+			t.Fatalf("plaintext-init fingerprint = %q, want golden %q",
+				fmp4.ManifestFingerprint, plaintextInitGolden)
+		}
+		ts := parseMedia(t, "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MEDIA-SEQUENCE:100\n"+
+			"#EXTINF:6.006,\nsegs/seg0.ts\n#EXTINF:6.0,\nsegs/seg1.ts\n#EXT-X-ENDLIST\n", base)
+		if ts.ManifestFingerprint != noInitGolden {
+			t.Fatalf("no-init fingerprint = %q, want golden %q",
+				ts.ManifestFingerprint, noInitGolden)
+		}
+	})
+
+	t.Run("EncryptedInitChangesHash", func(t *testing.T) {
+		enc := parseMedia(t, "#EXTM3U\n#EXT-X-TARGETDURATION:6\n"+
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=0xaabb\n"+
+			"#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@64\"\n"+
+			"#EXTINF:6.0,\nsegs/seg0.mp4\n#EXTINF:6.0,\nsegs/seg1.mp4\n#EXT-X-ENDLIST\n", base)
+		if enc.ManifestFingerprint == plaintextInitGolden {
+			t.Fatal("encrypted init kept plaintext-init fingerprint")
+		}
+	})
+
+	t.Run("InitKeyOrIVRotationChangesHash", func(t *testing.T) {
+		mk := func(keyURI, iv string) string {
+			doc := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n" +
+				"#EXT-X-KEY:METHOD=AES-128,URI=\"" + keyURI + "\",IV=" + iv + "\n" +
+				"#EXT-X-MAP:URI=\"init.mp4\"\n" +
+				"#EXTINF:6.0,\nsegs/seg0.mp4\n#EXT-X-ENDLIST\n"
+			return parseMedia(t, doc, base).ManifestFingerprint
+		}
+		baseFP := mk("k1.bin", "0x01")
+		if got := mk("k2.bin", "0x01"); got == baseFP {
+			t.Fatal("different init key URI kept fingerprint")
+		}
+		if got := mk("k1.bin", "0x02"); got == baseFP {
+			t.Fatal("different init IV kept fingerprint")
+		}
+		if got := mk("k1.bin", "0x01"); got != baseFP {
+			t.Fatal("identical encrypted init changed fingerprint")
+		}
+	})
+
+	t.Run("InitIdentityHostAndQueryInsensitive", func(t *testing.T) {
+		mk := func(doc, b string) string {
+			return parseMedia(t, doc, b).ManifestFingerprint
+		}
+		docA := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"https://edge1.example.com/v/k1.bin?sig=1#x\",IV=0x2a\n" +
+			"#EXT-X-MAP:URI=\"https://edge1.example.com/v/init.mp4?token=a\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4?token=a\n#EXT-X-ENDLIST\n"
+		docB := "#EXTM3U\n" +
+			"#EXT-X-KEY:METHOD=AES-128,URI=\"https://edge2.example.net/v/k1.bin?sig=2#y\",IV=0x2a\n" +
+			"#EXT-X-MAP:URI=\"https://edge2.example.net/v/init.mp4?token=b\"\n" +
+			"#EXTINF:6.0,\nseg0.mp4?token=b\n#EXT-X-ENDLIST\n"
+		fpA := mk(docA, "https://edge1.example.com/v/index.m3u8")
+		fpB := mk(docB, "https://edge2.example.net/v/index.m3u8")
+		if fpA != fpB {
+			t.Fatalf("host/query rotation changed encrypted-init fingerprint:\n%s\n%s", fpA, fpB)
+		}
+	})
+
+	t.Run("BadInitKeyIndexNoPanic", func(t *testing.T) {
+		// A hand-built init whose KeyIndex points outside keys must not
+		// panic and must still produce a deterministic 64-char hash.
+		initMap := &hls.MediaInitMap{URI: "https://x/init.mp4", KeyIndex: 7, IVHex: "00"}
+		segs := []types.HLSSegmentState{{Index: 0, URI: "https://x/s.mp4"}}
+		fp := hls.ComputeManifestFingerprint(hls.ContainerFMP4, 0, initMap, segs, nil)
+		if len(fp) != 64 {
+			t.Fatalf("fingerprint len = %d", len(fp))
+		}
+	})
 }
 
 func TestParseMediaPlaylist_KeyDedupBounds(t *testing.T) {

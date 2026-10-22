@@ -1,6 +1,9 @@
 package types
 
 import (
+	"bytes"
+	"encoding/gob"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -140,6 +143,8 @@ func TestHLSResumeState_CloneDeepCopy(t *testing.T) {
 		InitSegmentURI:      "init.mp4",
 		InitByteOffset:      128,
 		InitByteLength:      768,
+		InitKeyIndex:        2,
+		InitIVHex:           "0000000000000000000000000000000a",
 		InitCompleted:       true,
 		InitBytes:           700,
 		TotalSegments:       2,
@@ -176,6 +181,8 @@ func TestHLSResumeState_CloneDeepCopy(t *testing.T) {
 		cp.InitSegmentURI != src.InitSegmentURI ||
 		cp.InitByteOffset != src.InitByteOffset ||
 		cp.InitByteLength != src.InitByteLength ||
+		cp.InitKeyIndex != src.InitKeyIndex ||
+		cp.InitIVHex != src.InitIVHex ||
 		cp.InitCompleted != src.InitCompleted ||
 		cp.InitBytes != src.InitBytes ||
 		cp.TotalSegments != src.TotalSegments ||
@@ -229,4 +236,131 @@ func TestHLSResumeState_CloneNilSlices(t *testing.T) {
 	if cp.CompletedBitmap != nil || cp.SpillEntries != nil || cp.Keys != nil || cp.Segments != nil {
 		t.Fatal("Clone() materialized nil slices")
 	}
+}
+
+// hlsResumeStateV1 mirrors HLSResumeState before the InitKeyIndex/InitIVHex
+// addition: gob decoding fills absent fields with zero values, so a detail
+// gob written by an older build must stay decodable with plaintext-init
+// semantics.
+type hlsResumeStateV1 struct {
+	ManifestURL         string
+	MediaPlaylistURL    string
+	SegmentRefURL       string
+	ManifestFingerprint string
+	ContainerFormat     string
+	EstimatedBytes      int64
+	RecordEligible      bool
+	InitSegmentURI      string
+	InitByteOffset      int64
+	InitByteLength      int64
+	InitCompleted       bool
+	InitBytes           int64
+	TotalSegments       int
+	CompletedBitmap     []byte
+	MergedSegments      int
+	MergedBytes         int64
+	VerifiedBytes       int64
+	SpillPath           string
+	SpillFileSize       int64
+	SpillEntries        []HLSSpillEntry
+	Keys                []HLSKeyInfo
+	Segments            []HLSSegmentState
+}
+
+func TestHLSResumeState_GobJSONRoundTrip(t *testing.T) {
+	src := &HLSResumeState{
+		ManifestURL:         "https://cdn.example.com/master.m3u8",
+		MediaPlaylistURL:    "https://cdn.example.com/index.m3u8",
+		ManifestFingerprint: "fp",
+		ContainerFormat:     "fmp4",
+		RecordEligible:      true,
+		InitSegmentURI:      "init.mp4",
+		InitByteLength:      720,
+		InitKeyIndex:        1,
+		InitIVHex:           "0000000000000000000000000000000f",
+		InitCompleted:       true,
+		InitBytes:           720,
+		TotalSegments:       1,
+		CompletedBitmap:     []byte{0x01},
+		MergedSegments:      1,
+		MergedBytes:         720,
+		VerifiedBytes:       1440,
+		SpillEntries:        []HLSSpillEntry{{SegmentIndex: 0, Offset: 3, Length: 17}},
+		Keys:                []HLSKeyInfo{{Method: "AES-128", URI: "k.bin", IVHex: "0f"}},
+		Segments:            []HLSSegmentState{{Index: 0, URI: "s.ts", KeyIndex: 1}},
+	}
+
+	t.Run("GobRoundTrip", func(t *testing.T) {
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(src); err != nil {
+			t.Fatalf("gob encode: %v", err)
+		}
+		var dst HLSResumeState
+		if err := gob.NewDecoder(&buf).Decode(&dst); err != nil {
+			t.Fatalf("gob decode: %v", err)
+		}
+		if dst.InitKeyIndex != src.InitKeyIndex || dst.InitIVHex != src.InitIVHex {
+			t.Fatalf("init crypto fields lost: %+v", dst)
+		}
+		if dst.VerifiedBytes != src.VerifiedBytes || len(dst.Segments) != 1 ||
+			dst.Segments[0].KeyIndex != 1 || len(dst.SpillEntries) != 1 {
+			t.Fatalf("round-trip mismatch: %+v", dst)
+		}
+	})
+
+	t.Run("OldGobDecodesZeroCryptoFields", func(t *testing.T) {
+		old := &hlsResumeStateV1{
+			ManifestURL:     "m",
+			InitSegmentURI:  "init.mp4",
+			InitByteLength:  720,
+			InitCompleted:   true,
+			InitBytes:       720,
+			TotalSegments:   1,
+			CompletedBitmap: []byte{0x01},
+			MergedSegments:  1,
+			MergedBytes:     720,
+			VerifiedBytes:   720,
+		}
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(old); err != nil {
+			t.Fatalf("gob encode legacy: %v", err)
+		}
+		var dst HLSResumeState
+		if err := gob.NewDecoder(&buf).Decode(&dst); err != nil {
+			t.Fatalf("gob decode legacy: %v", err)
+		}
+		if dst.InitKeyIndex != 0 || dst.InitIVHex != "" {
+			t.Fatalf("legacy decode must zero-fill crypto fields: %+v", dst)
+		}
+		if dst.InitBytes != 720 || dst.TotalSegments != 1 {
+			t.Fatalf("legacy fields lost: %+v", dst)
+		}
+	})
+
+	t.Run("JSONSnakeCase", func(t *testing.T) {
+		data, err := json.Marshal(src)
+		if err != nil {
+			t.Fatalf("json marshal: %v", err)
+		}
+		var flat map[string]any
+		if err := json.Unmarshal(data, &flat); err != nil {
+			t.Fatalf("json unmarshal: %v", err)
+		}
+		if _, ok := flat["init_key_index"]; !ok {
+			t.Fatalf("missing init_key_index key in %s", data)
+		}
+		if _, ok := flat["init_iv_hex"]; !ok {
+			t.Fatalf("missing init_iv_hex key in %s", data)
+		}
+		if flat["init_key_index"].(float64) != 1 || flat["init_iv_hex"] != src.InitIVHex {
+			t.Fatalf("json values mismatch: %s", data)
+		}
+		var dst HLSResumeState
+		if err := json.Unmarshal(data, &dst); err != nil {
+			t.Fatalf("json round-trip: %v", err)
+		}
+		if dst.InitKeyIndex != src.InitKeyIndex || dst.InitIVHex != src.InitIVHex {
+			t.Fatalf("json round-trip lost crypto fields: %+v", dst)
+		}
+	})
 }

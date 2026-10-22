@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -412,6 +413,58 @@ func TestPreflightHLSManifest_TimeoutAndSentinelPropagation(t *testing.T) {
 			t.Fatal("nested master must fail fast")
 		}
 	})
+}
+
+func TestPreflightHLSManifest_EncryptedInitFields(t *testing.T) {
+	const ivNorm = "00000000000000000000000000ff00aa"
+	var requested []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requested = append(requested, r.URL.Path)
+		mu.Unlock()
+		if r.URL.Path == "/media.m3u8" {
+			fmt.Fprint(w, "#EXTM3U\n"+
+				"#EXT-X-KEY:METHOD=AES-128,URI=\"k1.bin\",IV=0x00000000000000000000000000ff00aa\n"+
+				"#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"720@64\"\n"+
+				"#EXTINF:6.0,\nsegs/seg0.mp4\n#EXTINF:6.0,\nsegs/seg1.mp4\n#EXT-X-ENDLIST\n")
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	res, err := hls.PreflightHLSManifest(context.Background(), srv.Client(), srv.URL+"/media.m3u8", nil, nil)
+	if err != nil {
+		t.Fatalf("PreflightHLSManifest() = %v", err)
+	}
+	rs := res.ResumeState
+	if rs == nil {
+		t.Fatal("ResumeState = nil")
+	}
+	if rs.InitKeyIndex != 1 || rs.InitIVHex != ivNorm {
+		t.Fatalf("init crypto fields = (%d,%q), want (1,%q)", rs.InitKeyIndex, rs.InitIVHex, ivNorm)
+	}
+	if rs.InitSegmentURI != srv.URL+"/init.mp4" || rs.InitByteOffset != 64 || rs.InitByteLength != 720 {
+		t.Fatalf("init descriptor = %q off=%d len=%d", rs.InitSegmentURI, rs.InitByteOffset, rs.InitByteLength)
+	}
+	if rs.InitCompleted || rs.InitBytes != 0 {
+		t.Fatalf("init completion flags must stay zero pre-download: %+v", rs)
+	}
+	// Preflight fetches the manifest only — keys, init sections and
+	// segments are never pulled during enqueue.
+	mu.Lock()
+	got := append([]string(nil), requested...)
+	mu.Unlock()
+	if len(got) != 1 || got[0] != "/media.m3u8" {
+		t.Fatalf("preflight fetched %v, want only [/media.m3u8]", got)
+	}
+
+	// The checkpoint keeps the fields through Clone + JSON + gob handoffs.
+	cp := rs.Clone()
+	if cp.InitKeyIndex != rs.InitKeyIndex || cp.InitIVHex != rs.InitIVHex {
+		t.Fatalf("Clone lost init crypto fields: %+v", cp)
+	}
 }
 
 func TestCanSendHLSCredentials(t *testing.T) {

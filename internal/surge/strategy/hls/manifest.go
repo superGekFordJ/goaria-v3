@@ -73,6 +73,12 @@ type MediaInitMap struct {
 	URI        string // resolved against the post-redirect media URL
 	ByteOffset int64
 	ByteLength int64
+	// KeyIndex is the 1-based EXT-X-KEY binding frozen at the point the MAP
+	// line was parsed: 0 means plaintext, 1..len(Keys) maps to
+	// Keys[KeyIndex-1]. IVHex carries the normalized 32-char lowercase hex
+	// IV declared on that key; an encrypted init always requires one.
+	KeyIndex int
+	IVHex    string
 }
 
 // MediaPlaylist is the parsed media playlist document.
@@ -637,22 +643,29 @@ func parseMediaPlaylist(lines []string, baseURL *url.URL) (*MediaPlaylist, error
 				}
 				length, off = bl, bo
 			}
-			if currentKeyIndex > 0 {
-				// RFC 8216 scopes EXT-X-KEY over later EXT-X-MAP
-				// declarations, but the resume state has no field for an
-				// encrypted init section — refuse instead of fetching
-				// ciphertext as plaintext.
-				return nil, fmt.Errorf("%w: EXT-X-MAP declared under active EXT-X-KEY",
+			// RFC 8216 §4.3.2.5: an EXT-X-KEY in force encrypts this MAP, and
+			// an AES-128-encrypted init section must carry an explicit IV —
+			// the media sequence can never stand in for it.
+			if currentKeyIndex > 0 && currentIVHex == "" {
+				return nil, fmt.Errorf("%w: EXT-X-MAP declared under active EXT-X-KEY without explicit IV",
 					types.ErrHLSInvalidManifest)
 			}
 			switch {
 			case initMap == nil:
-				initMap = &MediaInitMap{URI: resolved, ByteOffset: off, ByteLength: length}
+				initMap = &MediaInitMap{
+					URI:        resolved,
+					ByteOffset: off,
+					ByteLength: length,
+					KeyIndex:   currentKeyIndex,
+					IVHex:      currentIVHex,
+				}
 				media.ContainerFormat = ContainerFMP4
 			case discontinuityAfterMap ||
 				initMap.URI != resolved ||
 				initMap.ByteOffset != off ||
-				initMap.ByteLength != length:
+				initMap.ByteLength != length ||
+				initMap.KeyIndex != currentKeyIndex ||
+				initMap.IVHex != currentIVHex:
 				return nil, fmt.Errorf("%w: second EXT-X-MAP (%q,%d,%d) after discontinuity or mismatch",
 					types.ErrHLSDiscontinuityMapNotSupported, resolved, off, length)
 			}
@@ -903,6 +916,19 @@ func ComputeManifestFingerprint(containerFormat string, mediaSequenceBase int64,
 	fmt.Fprintf(h, "v2\n")
 	fmt.Fprintf(h, "container=%s|total=%d|seq_base=%d|init_path=%q|init_off=%d|init_len=%d\n",
 		containerFormat, len(segments), mediaSequenceBase, initPath, initOff, initLen)
+	if initMap != nil && initMap.KeyIndex > 0 {
+		// An encrypted init's decryption identity is part of the manifest:
+		// rotating key or IV under an identical init path must change the
+		// hash, while a plaintext or absent init keeps the exact v2 layout
+		// (and hash) of earlier checkpoints. A KeyIndex outside keys leaves
+		// the record fields empty rather than panicking.
+		method, keyPath := "", ""
+		if initMap.KeyIndex <= len(keys) {
+			k := keys[initMap.KeyIndex-1]
+			method, keyPath = k.Method, cleanURIPathForFingerprint(k.URI)
+		}
+		fmt.Fprintf(h, "init_key=%s|init_key_path=%q|init_iv=%q\n", method, keyPath, initMap.IVHex)
+	}
 	for _, seg := range segments {
 		keyMethod := "NONE"
 		if seg.KeyIndex > 0 && seg.KeyIndex <= len(keys) {
