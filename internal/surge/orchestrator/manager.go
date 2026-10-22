@@ -399,88 +399,93 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			Workers:      req.Workers,
 			MinChunkSize: req.MinChunkSize,
 		}
-		// Persist synchronously before publishing so the download survives a restart
-		// even if the event bus is full and Publish returns DeadlineExceeded.
-		// Doing this BEFORE pool.Add prevents EventStarted from racing with this
-		// persistence and corrupting the status to "queued" if it starts instantly.
-		// FORK-PATCH: CreatedAt is stamped here once; lifecycle rewrites carry it.
-		if err := store.AddToMasterList(types.DownloadRecord{
-			ID:                   queuedEvent.DownloadID,
-			URL:                  queuedEvent.URL,
-			URLHash:              store.URLHash(queuedEvent.URL),
-			DestPath:             queuedEvent.DestPath,
-			Filename:             queuedEvent.Filename,
-			Mirrors:              append([]string(nil), queuedEvent.Mirrors...),
-			Status:               "queued",
-			CreatedAt:            time.Now().Unix(),
-			TotalSize:            cfg.TotalSize,
-			RateLimit:            queuedEvent.RateLimit,
-			RateLimitSet:         queuedEvent.RateLimitSet,
-			Workers:              queuedEvent.Workers,
-			MinChunkSize:         queuedEvent.MinChunkSize,
-			RangeAcquisitionMode: cfg.RangeAcquisitionMode,
-			SkipServerProbe:      cfg.SkipServerProbe,
-			Strategy:             cfg.Strategy,
-			HLSResume:            cfg.HLSResume.Clone(),
-		}); err != nil {
-			utils.Debug("Lifecycle: Failed to persist queued download synchronously: %v", err)
-		}
-		// FORK-PATCH: seed a minimal detail gob when the request carries
-		// headers or mirrors — credentials must survive a kill before the
-		// first worker snapshot. SkipFileHash is required: hashing the
-		// precreated 0-byte .surge would plant a hash ValidateIntegrity
-		// later flags as tampering, deleting the file plus master/detail
-		// state. Best-effort: enqueue must not fail on it.
-		// FORK-PATCH: HLS requests must also seed the detail gob even without
-		// headers or mirrors — the checkpoint is authoritative detail data and
-		// cold resume reads it back before any worker snapshot exists.
-		if len(req.Headers) > 0 || len(req.Mirrors) > 0 || req.Strategy == types.StrategyHLS || req.HLSResume != nil {
-			mirrors := queuedEvent.Mirrors
-			if len(mirrors) == 0 {
-				mirrors = []string{req.URL}
-			}
-			// FORK-PATCH: the seeded checkpoint's VerifiedBytes is the only
-			// authoritative HLS progress — keep Downloaded consistent with it
-			// so the first lifecycle snapshot still validates as task-backed.
-			// A stray HLSResume on a non-HLS request must not leak VerifiedBytes
-			// into a byte-range seed.
-			var seedDownloaded int64
-			if cfg.Strategy == types.StrategyHLS && cfg.HLSResume != nil {
-				seedDownloaded = cfg.HLSResume.VerifiedBytes
-			}
-			if err := store.SaveStateWithOptions(queuedEvent.URL, queuedEvent.DestPath, &types.DownloadRecord{
-				ID:                   cfg.ID,
+		// Reject duplicates and shutdown before touching persistence or
+		// publishing. The scheduler keeps workers blocked until preparation
+		// completes, so EventStarted cannot race ahead of the queued record.
+		accepted, err := mgr.pool.AddWithPreparation(*cfg, func() error {
+			// Persist synchronously before publishing so the download survives
+			// a restart even if the event bus is full and Publish returns
+			// DeadlineExceeded.
+			// FORK-PATCH: CreatedAt is stamped here once; lifecycle rewrites carry it.
+			if err := store.AddToMasterList(types.DownloadRecord{
+				ID:                   queuedEvent.DownloadID,
 				URL:                  queuedEvent.URL,
 				URLHash:              store.URLHash(queuedEvent.URL),
 				DestPath:             queuedEvent.DestPath,
 				Filename:             queuedEvent.Filename,
+				Mirrors:              append([]string(nil), queuedEvent.Mirrors...),
 				Status:               "queued",
+				CreatedAt:            time.Now().Unix(),
 				TotalSize:            cfg.TotalSize,
-				Downloaded:           seedDownloaded,
-				Mirrors:              append([]string(nil), mirrors...),
 				RateLimit:            queuedEvent.RateLimit,
 				RateLimitSet:         queuedEvent.RateLimitSet,
 				Workers:              queuedEvent.Workers,
 				MinChunkSize:         queuedEvent.MinChunkSize,
 				RangeAcquisitionMode: cfg.RangeAcquisitionMode,
 				SkipServerProbe:      cfg.SkipServerProbe,
-				Headers:              maps.Clone(req.Headers),
 				Strategy:             cfg.Strategy,
 				HLSResume:            cfg.HLSResume.Clone(),
-			}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
-				utils.Debug("Lifecycle: failed to persist queued detail state: %v", err)
+			}); err != nil {
+				utils.Debug("Lifecycle: Failed to persist queued download synchronously: %v", err)
 			}
+			// FORK-PATCH: seed a minimal detail gob when the request carries
+			// headers or mirrors — credentials must survive a kill before the
+			// first worker snapshot. SkipFileHash is required: hashing the
+			// precreated 0-byte .surge would plant a hash ValidateIntegrity
+			// later flags as tampering, deleting the file plus master/detail
+			// state. Best-effort: enqueue must not fail on it.
+			// FORK-PATCH: HLS requests must also seed the detail gob even without
+			// headers or mirrors — the checkpoint is authoritative detail data and
+			// cold resume reads it back before any worker snapshot exists.
+			if len(req.Headers) > 0 || len(req.Mirrors) > 0 || req.Strategy == types.StrategyHLS || req.HLSResume != nil {
+				mirrors := queuedEvent.Mirrors
+				if len(mirrors) == 0 {
+					mirrors = []string{req.URL}
+				}
+				// FORK-PATCH: the seeded checkpoint's VerifiedBytes is the only
+				// authoritative HLS progress — keep Downloaded consistent with it
+				// so the first lifecycle snapshot still validates as task-backed.
+				// A stray HLSResume on a non-HLS request must not leak VerifiedBytes
+				// into a byte-range seed.
+				var seedDownloaded int64
+				if cfg.Strategy == types.StrategyHLS && cfg.HLSResume != nil {
+					seedDownloaded = cfg.HLSResume.VerifiedBytes
+				}
+				if err := store.SaveStateWithOptions(queuedEvent.URL, queuedEvent.DestPath, &types.DownloadRecord{
+					ID:                   cfg.ID,
+					URL:                  queuedEvent.URL,
+					URLHash:              store.URLHash(queuedEvent.URL),
+					DestPath:             queuedEvent.DestPath,
+					Filename:             queuedEvent.Filename,
+					Status:               "queued",
+					TotalSize:            cfg.TotalSize,
+					Downloaded:           seedDownloaded,
+					Mirrors:              append([]string(nil), mirrors...),
+					RateLimit:            queuedEvent.RateLimit,
+					RateLimitSet:         queuedEvent.RateLimitSet,
+					Workers:              queuedEvent.Workers,
+					MinChunkSize:         queuedEvent.MinChunkSize,
+					RangeAcquisitionMode: cfg.RangeAcquisitionMode,
+					SkipServerProbe:      cfg.SkipServerProbe,
+					Headers:              maps.Clone(req.Headers),
+					Strategy:             cfg.Strategy,
+					HLSResume:            cfg.HLSResume.Clone(),
+				}, store.SaveStateOptions{SkipFileHash: true}); err != nil {
+					utils.Debug("Lifecycle: failed to persist queued detail state: %v", err)
+				}
+			}
+			if mgr.eventBus != nil {
+				_ = mgr.eventBus.Publish(queuedEvent)
+			}
+			return nil
+		})
+		// The fork's seeding is deliberately best-effort: the closure never
+		// fails today, but err stays for a future fatal-preparation variant.
+		if err != nil {
+			_ = os.Remove(surgePath)
+			return "", "", err
 		}
-		if mgr.eventBus != nil {
-			_ = mgr.eventBus.Publish(queuedEvent)
-		}
-
-		// FORK-PATCH: first-writer-wins at the pool gate. A same-ID task that
-		// slipped past the GetStatus guard owns the ID now; release only this
-		// attempt's .surge reservation. The master row / EventQueued residue
-		// self-heals through the winner's own lifecycle events — deleting them
-		// here could clobber the winner's freshly restored state.
-		if !mgr.pool.Add(*cfg) {
+		if !accepted {
 			_ = os.Remove(surgePath)
 			return "", "", types.ErrIDExists
 		}

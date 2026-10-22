@@ -550,33 +550,46 @@ func resolveDestPath(cfg *types.DownloadRecord) string {
 // The caller (LifecycleManager) is responsible for emitting any lifecycle
 // events (e.g. DownloadQueuedMsg).
 func (p *Scheduler) Add(cfg types.DownloadRecord) bool {
+	accepted, _ := p.AddWithPreparation(cfg, nil)
+	return accepted
+}
+
+// AddWithPreparation checks admission before preparing persistence and events,
+// then makes the task runnable. prepare runs under the scheduler lock — it
+// must be bounded, it blocks all scheduler operations, and it must not call
+// scheduler methods. If it fails, no task is queued and no admission token is
+// minted.
+func (p *Scheduler) AddWithPreparation(cfg types.DownloadRecord, prepare func() error) (bool, error) {
 	if cfg.ProgressCh == nil {
 		cfg.ProgressCh = p.progressCh
 	}
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.isShuttingDown {
-		p.mu.Unlock()
 		utils.Debug("Scheduler: Add refused for %s: shutting down", cfg.ID)
-		return false
+		return false, nil
 	}
-	// FORK-PATCH: first-writer-wins. A queued entry already owns the ID even
-	// when inFlight — the claiming worker settles its wait-group count, so a
-	// refused add must not disturb it.
+	// A queued entry owns the ID even while inFlight — the claiming worker
+	// settles its wait-group count itself.
 	if _, exists := p.queued[cfg.ID]; exists {
-		p.mu.Unlock()
 		utils.Debug("Scheduler: Add refused for %s: ID already queued", cfg.ID)
-		return false
+		return false, nil
 	}
 	if _, exists := p.downloads[cfg.ID]; exists {
-		p.mu.Unlock()
 		utils.Debug("Scheduler: Add refused for %s: ID already active", cfg.ID)
-		return false
+		return false, nil
 	}
+	if prepare != nil {
+		if err := prepare(); err != nil {
+			return false, err
+		}
+	}
+	// prepare precedes token minting so a failed enqueue cannot burn a
+	// monotonic token; a refusal below may still follow its side effects.
 	token, ok := p.allocTokenLocked()
 	if !ok {
-		p.mu.Unlock()
 		utils.Debug("Scheduler: Add refused for %s: admission token space exhausted", cfg.ID)
-		return false
+		return false, nil
 	}
 	if p.managed {
 		cfg.Runtime = managedRuntimeCeiling(cfg)
@@ -590,8 +603,7 @@ func (p *Scheduler) Add(cfg types.DownloadRecord) bool {
 	p.queueOrder = append(p.queueOrder, cfg.ID)
 	p.wg.Add(1)
 	p.taskCond.Signal()
-	p.mu.Unlock()
-	return true
+	return true, nil
 }
 
 func (p *Scheduler) ensureLimiterForConfigLocked(cfg *types.DownloadRecord) {
@@ -1203,7 +1215,7 @@ func (p *Scheduler) worker() {
 			continue
 		}
 
-		// FORK-PATCH: last line of defense against two RunDownloads sharing one
+		// Last line of defense against two RunDownloads sharing one
 		// destination — a same-ID active entry registered during the claim
 		// window already owns the ID, so this claim is voided. The queued entry
 		// is ours; drop it so it cannot linger as a ghost, then settle the
@@ -1297,9 +1309,9 @@ func (p *Scheduler) worker() {
 				prog.Done.Store(true)
 			}
 			p.mu.Lock()
-			// FORK-PATCH: delete only the slot this worker still owns — a
-			// same-ID replacement registered after our claim keeps its own
-			// entry and its limiter.
+			// Delete only the slot this worker still owns — a same-ID
+			// replacement registered after our claim keeps its own entry and
+			// its limiter.
 			if p.downloads[localCfg.ID] == ad {
 				delete(p.downloads, localCfg.ID)
 				delete(p.downloadLimiters, localCfg.ID)
@@ -1337,14 +1349,14 @@ func (p *Scheduler) worker() {
 			}
 		} else {
 			p.mu.Lock()
-			// FORK-PATCH: delete the slot only when this worker still owns it;
-			// a same-ID replacement registered during the run keeps its entry.
+			// Delete the slot only when this worker still owns it; a same-ID
+			// replacement registered during the run keeps its entry.
 			ownedSlot := p.downloads[localCfg.ID] == ad
 			if ownedSlot {
 				delete(p.downloads, localCfg.ID)
 			}
-			// FORK-PATCH: any surviving same-ID entry belongs to a replacement
-			// that arrived while we were running — our stale task must neither
+			// Any surviving same-ID entry belongs to a replacement that
+			// arrived while we were running — our stale task must neither
 			// requeue over a queued replacement nor emit events for a foreign
 			// active owner.
 			_, slotTaken := p.queued[localCfg.ID]
