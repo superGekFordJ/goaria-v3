@@ -864,12 +864,20 @@ func TestReorderWindow_InitPrefixAccounting(t *testing.T) {
 func TestReorderWindow_IngestBoundsAndEmpty(t *testing.T) {
 	fx := newWindowFixture(t, 2, 0, 0, nil, "test-dl")
 	for _, i := range []int{-1, 2, math.MaxInt32} {
-		if res, err := fx.w.Ingest(i, segPayload('x', 1)); err == nil || res.Accepted {
+		res, err := fx.w.Ingest(i, segPayload('x', 1))
+		if err == nil || res.Accepted {
 			t.Fatalf("index %d: %+v %v", i, res, err)
 		}
+		if derr, ok := errors.AsType[*segmentDataError](err); ok || derr != nil {
+			t.Fatalf("index %d classified as segmentDataError", i)
+		}
 	}
-	if res, err := fx.w.Ingest(0, nil); err == nil || res.Accepted {
+	res, err := fx.w.Ingest(0, nil)
+	if err == nil || res.Accepted {
 		t.Fatalf("empty payload: %+v %v", res, err)
+	}
+	if _, ok := errors.AsType[*segmentDataError](err); !ok {
+		t.Fatalf("empty payload not segmentDataError: %v", err)
 	}
 	if fx.w.storeErr != nil {
 		t.Fatal("input errors latched storage fault")
