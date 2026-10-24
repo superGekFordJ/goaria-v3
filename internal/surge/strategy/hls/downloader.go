@@ -389,7 +389,13 @@ func (d *HlsDownloader) settleRun(ctx context.Context, mnt *hlsMount, prog *prog
 	if ctx.Err() != nil {
 		// Cancel path: keep only what was already durably synced.
 		d.realignProgress(prog)
-		if werr != nil && !errors.Is(werr, ctx.Err()) {
+		if werr != nil {
+			if errors.Is(werr, ctx.Err()) {
+				// werr already carries the cancel identity — return it
+				// whole so a concurrent fatal (e.g. a storage fault
+				// folded into the engine error) stays diagnosable.
+				return werr
+			}
 			return errors.Join(ctx.Err(), werr)
 		}
 		return ctx.Err()

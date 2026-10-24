@@ -80,14 +80,26 @@ func TestHLSUpdateURL_SchedulerMatrix(t *testing.T) {
 	oldURL := "http://a.test/media.m3u8"
 	newURL := "http://b.test/v2.m3u8"
 
-	// Queued HLS entries refuse — the queue owns the claim.
-	if !pool.Add(types.DownloadRecord{
-		ID: "hls-queued", URL: oldURL, OutputPath: t.TempDir(), Filename: "q.ts",
-		ProgressState: progress.New("hls-queued", 0), Runtime: &types.RuntimeConfig{},
-		Strategy: types.StrategyHLS,
-	}) {
-		t.Fatal("queued add refused")
+	// Queued HLS entries refuse — the queue owns the claim. The entry is
+	// injected straight into p.queued: no queueOrder seat and no Signal, so
+	// the parked worker can never claim it and nothing here touches the
+	// network. The wg.Add balances the entry GracefulShutdown releases.
+	pool.mu.Lock()
+	token, tokOK := pool.allocTokenLocked()
+	if !tokOK {
+		pool.mu.Unlock()
+		t.Fatal("token mint failed")
 	}
+	pool.queued["hls-queued"] = &queuedTask{
+		cfg: types.DownloadRecord{
+			ID: "hls-queued", URL: oldURL, OutputPath: t.TempDir(), Filename: "q.ts",
+			ProgressState: progress.New("hls-queued", 0), Runtime: &types.RuntimeConfig{},
+			Strategy: types.StrategyHLS,
+		},
+		token: token,
+	}
+	pool.wg.Add(1)
+	pool.mu.Unlock()
 	if err := pool.UpdateURL("hls-queued", newURL); !errors.Is(err, types.ErrQueuedUpdate) {
 		t.Fatalf("queued UpdateURL = %v, want ErrQueuedUpdate", err)
 	}

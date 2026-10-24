@@ -2708,9 +2708,11 @@ func TestSchedulerAdmission_Snapshot_StrategyAndRecordEligible(t *testing.T) {
 		Segments: make([]types.HLSSegmentState, 1),
 	}
 
-	// Holder occupies the single worker slot while candidates queue behind it.
+	// Holder occupies the single worker slot while candidates queue behind
+	// it. A literal loopback URL keeps RunDownload local — the refused port
+	// fails the manifest fetch immediately without any DNS resolve.
 	if !pool.Add(types.DownloadRecord{
-		ID: "holder", URL: "http://hls.example.com/holder.m3u8",
+		ID: "holder", URL: "http://127.0.0.1:1/holder.m3u8",
 		OutputPath: t.TempDir(), Filename: "holder.ts",
 		ProgressState: progress.New("holder", 0), Runtime: &types.RuntimeConfig{},
 		Strategy: types.StrategyHLS, HLSResume: hlsResumeEligible,
