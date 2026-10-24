@@ -16,12 +16,19 @@ import (
 
 // IsSensitiveCredentialHeader reports whether key is an authentication or
 // session credential header that must be gated by same-site + same-scheme
-// checks before it may leave the manifest origin.
+// checks before it may leave the manifest origin. The list covers the
+// classic cookie/auth headers plus the three most common API-key header
+// spellings; matching is case-insensitive. It is NOT exhaustive — custom
+// credential headers beyond this list still pass through the gate
+// unchecked, which is a documented ceiling of the whitelist approach.
 func IsSensitiveCredentialHeader(key string) bool {
 	return strings.EqualFold(key, "Cookie") ||
 		strings.EqualFold(key, "Cookie2") ||
 		strings.EqualFold(key, "Authorization") ||
-		strings.EqualFold(key, "Proxy-Authorization")
+		strings.EqualFold(key, "Proxy-Authorization") ||
+		strings.EqualFold(key, "X-Api-Key") ||
+		strings.EqualFold(key, "X-Auth-Token") ||
+		strings.EqualFold(key, "Api-Key")
 }
 
 // CanSendHLSCredentials reports whether credentials bound to credentialBaseURL
@@ -40,10 +47,10 @@ func CanSendHLSCredentials(targetURL, credentialBaseURL *url.URL) bool {
 }
 
 // ApplyHLSRequestHeaders copies taskHeaders onto req. Range is always dropped
-// (HLS sub-requests must not inherit a byte-range probe), and
-// Cookie/Cookie2/Authorization/Proxy-Authorization are only attached when the
-// request stays on the same scheme and site as credentialBaseURL. A default
-// User-Agent is injected when none survives the copy.
+// (HLS sub-requests must not inherit a byte-range probe), and the sensitive
+// credential headers (see IsSensitiveCredentialHeader) are only attached when
+// the request stays on the same scheme and site as credentialBaseURL. A
+// default User-Agent is injected when none survives the copy.
 //
 // FORK-PATCH: the credential gate is anchored to the caller-provided
 // credentialBaseURL (the original manifest URL), never the post-redirect URL,

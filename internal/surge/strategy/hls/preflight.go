@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"goaria-v3/internal/surge/transport"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 )
@@ -58,7 +57,7 @@ func PreflightHLSManifest(
 	preflightCtx, cancel := context.WithTimeout(ctx, PreflightTimeout)
 	defer cancel()
 
-	httpClient, release := buildPreflightClient(client, runCfg)
+	httpClient, release := newHLSClient(client, runCfg, originURL)
 	if release != nil {
 		defer release()
 	}
@@ -124,38 +123,6 @@ func PreflightHLSManifest(
 		SelectedBandwidth: selectedBandwidth,
 		TotalDurationSec:  mediaPl.TotalDurationSec,
 	}, nil
-}
-
-// buildPreflightClient returns the HTTP client for the preflight. A nil client
-// borrows the shared network pool (released by the returned func); a non-nil
-// client is shallow-copied (the caller's value is never mutated) and gains
-// the default redirect guard only when it has none.
-func buildPreflightClient(client *http.Client, runCfg *types.RuntimeConfig) (*http.Client, func()) {
-	checkRedirect := func(req *http.Request, via []*http.Request) error {
-		if len(via) >= 10 {
-			return types.ErrMaxRedirects
-		}
-		if len(via) > 0 {
-			utils.CopyRedirectHeaders(req, via[0])
-		}
-		return nil
-	}
-	if client != nil {
-		c := *client
-		if c.CheckRedirect == nil {
-			c.CheckRedirect = checkRedirect
-		}
-		return &c, nil
-	}
-	var proxyURL, customDNS string
-	if runCfg != nil {
-		proxyURL = runCfg.ProxyURL
-		customDNS = runCfg.CustomDNS
-	}
-	tr := transport.DefaultNetworkPool.AcquireTransport(proxyURL, customDNS, 0)
-	return &http.Client{Transport: tr, CheckRedirect: checkRedirect}, func() {
-		transport.DefaultNetworkPool.ReleaseTransport(tr)
-	}
 }
 
 // fetchManifestText GETs rawURL with the gated task headers, requires 200 OK,
