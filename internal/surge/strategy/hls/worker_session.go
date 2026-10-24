@@ -63,7 +63,6 @@ type hlsAttempt struct {
 	stopReason hlsStopReason   // under sess.pubMu
 	accepted   bool            // credit kept — owner writes, owner reads
 	duplicate  bool            // admitted elsewhere — settle without retry
-	commitDone bool            // entered the commit gate
 	ingestRes  IngestResult    // last Ingest outcome for the acceptance seam
 
 	credited int64 // published to both counters, not yet settled

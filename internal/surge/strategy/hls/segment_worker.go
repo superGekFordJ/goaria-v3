@@ -314,7 +314,6 @@ func (e *segmentEngine) execMediaAttempt(sess *hlsWorkerSession, at *hlsAttempt)
 	sess.speedMu.Unlock()
 	at.noteActivity()
 	at.ingestRes = res
-	at.commitDone = true
 
 	switch {
 	case res.Accepted:

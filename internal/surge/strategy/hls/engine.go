@@ -83,7 +83,7 @@ type segmentEngine struct {
 	sealed      bool
 	workers     int
 	workersDone chan struct{}
-	nextID      atomic.Int64
+	nextID      int64 // lifeMu only — monotonic worker IDs
 
 	sessMu   sync.Mutex
 	sessions map[int]*hlsWorkerSession
@@ -237,22 +237,16 @@ func (e *segmentEngine) start(initialWorkers int) error {
 		e.lifeMu.Unlock()
 		return newHLSContractError("engine already started")
 	}
+	if e.sealed {
+		e.lifeMu.Unlock()
+		return newHLSContractError("engine sealed by wait/stop")
+	}
 	e.running = true
 	e.lifeMu.Unlock()
-	spawned := 0
 	for i := 0; i < initialWorkers && i < e.maxWorkers; i++ {
 		if !e.spawn(true) {
 			break
 		}
-		spawned++
-	}
-	if spawned == 0 {
-		// Nothing to do: an empty prepared prefix completes vacuously.
-		e.lifeMu.Lock()
-		if e.workers == 0 {
-			close(e.workersDone)
-		}
-		e.lifeMu.Unlock()
 	}
 	return nil
 }
@@ -273,7 +267,8 @@ func (e *segmentEngine) spawn(initial bool) bool {
 		e.lifeMu.Unlock()
 		return false
 	}
-	id := int(e.nextID.Add(1)) - 1
+	id := int(e.nextID)
+	e.nextID++
 	e.workers++
 	if e.workers == 1 {
 		// Every zero-to-one transition arms a fresh epoch channel — the
@@ -429,6 +424,9 @@ func (e *segmentEngine) stop() {
 // fully accepted queue, and errEngineIncomplete when the engine stopped
 // with segments unaccepted — an empty ready list alone is never success.
 func (e *segmentEngine) wait() error {
+	// Terminal operation: no spawn may outlive the wait — a late respawn
+	// would resurrect a worker on the already-returned transport lease.
+	e.seal()
 	// The done channel is per-epoch: a drain-to-zero closes the current one,
 	// a respawn arms the next. Wait until workers hit zero and stay zero at
 	// observation time — never block on an unarmed pre-start channel.

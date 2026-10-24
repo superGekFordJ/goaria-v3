@@ -223,8 +223,11 @@ func TestHLSSegmentRetryRequestTimeoutRetries(t *testing.T) {
 	if err := e.wait(); err != nil {
 		t.Fatalf("wait = %v", err)
 	}
-	if calls.Load() != 2 || e.queue.tasks[0].genericAttempt != 1 {
-		t.Fatalf("requests = %d generic = %d", calls.Load(), e.queue.tasks[0].genericAttempt)
+	// The 408 burned one retry slot; the connection-attempt counter stays
+	// at zero because the response proves the connection was established.
+	if calls.Load() != 2 || e.queue.tasks[0].genericAttempt != 0 || e.queue.tasks[0].retries != 1 {
+		t.Fatalf("requests = %d generic = %d retries = %d",
+			calls.Load(), e.queue.tasks[0].genericAttempt, e.queue.tasks[0].retries)
 	}
 }
 

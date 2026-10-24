@@ -105,6 +105,13 @@ func (e *segmentEngine) settleOutcome(
 	err error,
 	attemptStart time.Time,
 ) attemptOutcome {
+	// Mirror the generic-attempt telemetry into the retained projection so
+	// a between-attempts snapshot never lags the bumps this settle made.
+	defer func() {
+		sess.pubMu.Lock()
+		sess.retained.retry = int32(task.genericAttempt)
+		sess.pubMu.Unlock()
+	}()
 	// 1. Accepted first — the precise settlement authority.
 	if at.accepted || at.duplicate {
 		e.queue.finish(task)
@@ -161,6 +168,15 @@ func (e *segmentEngine) settleOutcome(
 			return attemptOutcome{action: outcomeFatal, err: errAttemptStall}
 		}
 		return attemptOutcome{action: outcomeRetry, delay: hlsRetryDelay(task.retries)}
+	}
+
+	// 4b. Drain witness — markDraining kills sess.ctx before it can mark the
+	// attempt under pubMu, so a retire that won the race leaves a bare
+	// context.Canceled with stopReason None. At this point sess.ctx can only
+	// have died via markDraining (engine/parent death exits above and
+	// releaseWorker cancels after the loop) — requeue free, never budget.
+	if errors.Is(err, context.Canceled) && sess.ctx.Err() != nil {
+		return attemptOutcome{action: outcomeRequeue}
 	}
 
 	if err == nil {
@@ -277,7 +293,14 @@ func (e *segmentEngine) classifyStatus(task *segmentTask, se *hlsStatusError) at
 		return attemptOutcome{action: outcomeRetry, delay: hlsRetryDelay(task.retries)}
 
 	case se.status == http.StatusRequestTimeout:
-		return e.consumeRetry(task, true, se)
+		// 408 means the connection was established and a response arrived —
+		// it burns a retry slot but is not a connection-class failure.
+		return e.consumeRetry(task, false, se)
+
+	case se.status == http.StatusRequestedRangeNotSatisfiable:
+		// 416 is a response-contract violation, not a resource/permanent
+		// denial — routed with the invalid-response sentinel, zero retries.
+		return attemptOutcome{action: outcomeFatal, err: errors.Join(se, types.ErrHLSInvalidSegmentResponse)}
 
 	case se.status >= 500:
 		// 5xx retries on RA when valid, else the exponential ladder —
@@ -338,8 +361,10 @@ func (e *segmentEngine) waitHostPenalty(sess *hlsWorkerSession, at *hlsAttempt, 
 		return nil
 	}
 	at.noteActivity()
-	at.waitingOnLimiter.Store(true)
+	// Phase first, same ordering rule as throttle — the stall gate reads
+	// phase under the publish lock.
 	sess.setPhase(hlsPhaseWait)
+	at.waitingOnLimiter.Store(true)
 	err := e.sleep(at.segCtx, d)
 	at.noteActivity()
 	at.waitingOnLimiter.Store(false)

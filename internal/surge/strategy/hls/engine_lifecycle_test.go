@@ -66,11 +66,17 @@ func TestHLSEngineRespawnAfterDrainToZero(t *testing.T) {
 		t.Fatal("markDraining refused")
 	}
 	close(gate)
-	if err := waitErrBounded(t, e, 3*time.Second); !errors.Is(err, errEngineIncomplete) {
-		t.Fatalf("drain wait = %v, want errEngineIncomplete (lease requeued)", err)
+	// wait() is terminal — observe drain-to-zero via the session registry,
+	// then respawn before waiting.
+	for len(e.liveSessionIDs()) != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("worker never drained out")
+		}
+		time.Sleep(time.Millisecond)
 	}
-
-	// The gate stays legal: admission opens and the worker pool respawns.
+	if rem := e.queue.remaining(); rem != 1 {
+		t.Fatalf("remaining = %d, want 1 (drained lease requeued)", rem)
+	}
 	e.setAdmissionOpen(true)
 	if !e.spawnWorker() {
 		t.Fatal("spawnWorker after drain-to-zero refused")

@@ -391,7 +391,9 @@ func TestHLSSegmentRetryStatusClassification(t *testing.T) {
 		e := newE(t)
 		task := mkTask()
 		o := e.classifyStatus(task, se(408, ""))
-		if o.action != outcomeRetry || task.genericAttempt != 1 {
+		// A 408 response means the connection was already established —
+		// it spends a retry slot but not the connection-attempt counter.
+		if o.action != outcomeRetry || task.genericAttempt != 0 {
 			t.Fatalf("408: action = %v generic = %d", o.action, task.genericAttempt)
 		}
 	})

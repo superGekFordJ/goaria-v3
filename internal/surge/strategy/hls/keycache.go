@@ -90,7 +90,7 @@ func (c *hlsKeyCache) keyTable(
 	fetch func(uri string) ([aes.BlockSize]byte, error),
 ) ([][]byte, error) {
 	if seg == nil {
-		return nil, newSegmentDataError(-1, "missing segment state")
+		return nil, newHLSContractError("missing segment state")
 	}
 	table := make([][]byte, len(keys))
 	if seg.KeyIndex == 0 {

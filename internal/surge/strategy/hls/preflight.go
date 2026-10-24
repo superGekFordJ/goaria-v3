@@ -145,7 +145,7 @@ func fetchManifestText(
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", nil, 0, err
+		return "", nil, 0, &hlsTransportError{err: err}
 	}
 	defer func() {
 		// Drain a small tail so keep-alive can reuse the connection.
