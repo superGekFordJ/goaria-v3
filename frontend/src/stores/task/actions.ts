@@ -19,7 +19,7 @@ import {
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import type { BatchAddResult } from '../../../bindings/goaria-v3/internal/tasks/models'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
-import { mergeTasks, dedupByGid, applyLocalOrder } from './utils'
+import { mergeTasks, dedupByGid, applyLocalOrder, markStoppedTaskRaw } from './utils'
 import { cloneTaskGroupMetadata } from './grouping'
 import type { TaskBucket, TaskMovePlacement } from './events'
 import { useDownloadGroupStore } from '../downloadGroups'
@@ -350,7 +350,7 @@ export function setupActions(state: TaskState) {
       const merged = {
         active: tasks.value.active,
         waiting: tasks.value.waiting,
-        stopped: mergeTasks(tasks.value.stopped, filteredStopped).merged,
+        stopped: mergeTasks(tasks.value.stopped, filteredStopped).merged.map(markStoppedTaskRaw),
       }
       const next = preserveInflightMoves(membershipAtSend, merged)
 
@@ -450,7 +450,7 @@ export function setupActions(state: TaskState) {
 
       let nextActive = applyLocalOrder(tasks.value.active, active).map(applyMetadataFromCache)
       let nextWaiting = applyLocalOrder(tasks.value.waiting, waiting).map(applyMetadataFromCache)
-      const nextStopped = stopped.map(applyMetadataFromCache)
+      const nextStopped = stopped.map(t => markStoppedTaskRaw(applyMetadataFromCache(t)))
 
       // Prepend in THIS assign. await fetchTasks() then a second tasks.value=
       // (prependNewTasks) is two Vue flushes: TaskList capture/plays append,
@@ -708,7 +708,7 @@ export function setupActions(state: TaskState) {
       tasks.value = preserveInflightMoves(membershipAtSend, {
         active: applyLocalOrder(tasks.value.active, active).map(applyMetadataFromCache),
         waiting: applyLocalOrder(tasks.value.waiting, waiting).map(applyMetadataFromCache),
-        stopped: stopped.map(applyMetadataFromCache),
+        stopped: stopped.map(t => markStoppedTaskRaw(applyMetadataFromCache(t))),
       })
 
       if (!pollingEnabled.value && _restartPollingCallback) {

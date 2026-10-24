@@ -5,6 +5,7 @@ import { TaskActions } from './actions'
 import { TaskPolling } from './polling'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache, removeMetadata } from './metadata'
+import { markStoppedTaskRaw, unmarkTaskRaw } from './utils'
 import { TaskMove, TaskDelta } from '../events'
 import {
   cloneTaskGroupMetadata,
@@ -249,6 +250,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       survivor.errorMessage = ''
       patched = true
     }
+    if (survivor === stoppedTask) {
+      unmarkTaskRaw(survivor)
+    }
 
     if (hasValidFiles(survivor) || hasTaskGroupMetadata(survivor)) {
       cacheMetadata(survivor)
@@ -391,8 +395,8 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     incoming: Partial<Task> | undefined,
   ): boolean {
     const copies = collectCopies(gid)
-    const copyList = [copies.active, copies.waiting, copies.stopped].filter(
-      (t): t is Task => Boolean(t),
+    const copyList = [copies.active, copies.waiting, copies.stopped].filter((t): t is Task =>
+      Boolean(t),
     )
     const destRow = copies[dest]
     const richIncoming = Boolean(
@@ -448,6 +452,10 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
         if (dest !== 'waiting') waiting = purge(waiting)
         if (dest !== 'stopped') stopped = purge(stopped)
       }
+      if (dest === 'stopped' && rowChanged) {
+        const nextRow = markStoppedTaskRaw({ ...destRow })
+        stopped = stopped.map(t => (t.gid === gid ? nextRow : t))
+      }
     } else {
       clearStaleTerminalErrors(merged)
       if (incoming) applyAuthoritativeIncoming(merged, incoming, dest)
@@ -456,9 +464,9 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       stopped = purge(stopped)
       if (dest === 'active') active = [merged, ...active]
       else if (dest === 'waiting') waiting = [merged, ...waiting]
-      else stopped = [merged, ...stopped]
+      else stopped = [markStoppedTaskRaw(merged), ...stopped]
     }
-    if (membershipChanged) {
+    if (membershipChanged || (dest === 'stopped' && rowChanged)) {
       tasks.value = { active, waiting, stopped }
     } else if (rowChanged) {
       tasks.value = { ...tasks.value }
@@ -496,14 +504,27 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
       assignField('errorCode')
       assignField('errorMessage')
       const threads = payload.threads
-      if (threads !== undefined && (row as unknown as Record<string, unknown>).threads !== threads) {
+      if (
+        threads !== undefined &&
+        (row as unknown as Record<string, unknown>).threads !== threads
+      ) {
         ;(row as unknown as Record<string, unknown>).threads = threads
         updated = true
       }
       const beforeGroup = cloneTaskGroupMetadata(row)
       Object.assign(row, mergeTaskGroupMetadata(row, payload))
       if (!isTaskGroupEqual(beforeGroup, cloneTaskGroupMetadata(row))) updated = true
-      if (updated) tasks.value = { ...tasks.value }
+      if (updated) {
+        if (row === copies.stopped) {
+          const nextRow = markStoppedTaskRaw({ ...row })
+          tasks.value = {
+            ...tasks.value,
+            stopped: tasks.value.stopped.map(t => (t.gid === gid ? nextRow : t)),
+          }
+        } else {
+          tasks.value = { ...tasks.value }
+        }
+      }
     }
   }
 
@@ -522,8 +543,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
     // Pause is guarded too: every real pause emits its move before the delta
     // flushes, so a pause finding the row still in active is by definition a
     // leftover from a superseded transition.
-    const staleDemotion = () =>
-      dest === 'waiting' && Boolean(collectCopies(gid).active)
+    const staleDemotion = () => dest === 'waiting' && Boolean(collectCopies(gid).active)
 
     switch (delta.type) {
       case 'progress': {
@@ -542,10 +562,7 @@ export function setupEvents(state: TaskState, actions: TaskActions, _polling: Ta
             task.completedLength = payload.completedLength
             hasUpdate = true
           }
-          if (
-            payload.downloadSpeed !== undefined &&
-            task.downloadSpeed !== payload.downloadSpeed
-          ) {
+          if (payload.downloadSpeed !== undefined && task.downloadSpeed !== payload.downloadSpeed) {
             task.downloadSpeed = payload.downloadSpeed
             hasUpdate = true
           }

@@ -1,6 +1,16 @@
+import { markRaw } from 'vue'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { isTaskGroupEqual, mergeTaskGroupMetadata } from './grouping'
+
+export function markStoppedTaskRaw<T extends Task>(task: T): T {
+  return markRaw(task)
+}
+
+export function unmarkTaskRaw<T extends Task>(task: T): T {
+  delete (task as unknown as Record<string, unknown>).__v_skip
+  return task
+}
 
 /**
  * 浅比对两个任务是否相等（仅比较高频变化字段）

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-  import { computed, nextTick, ref, watch } from 'vue'
+  import { computed, nextTick, ref } from 'vue'
   import { useI18n } from 'vue-i18n'
   import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
   import type { TaskGroupHint } from '../../stores/task/grouping'
@@ -8,12 +8,8 @@
   import { Pause, Play, FolderOpen, Trash2, Clock, Zap, Layers3, Share2, Info } from '@lucide/vue'
   import FileIcon from '../common/FileIcon.vue'
   import TaskDetailOverlay from './TaskDetailOverlay.vue'
+  import TaskProgressBar from './TaskProgressBar.vue'
   import { formatSize, formatSpeed, speedUnit, parseLiveThreadCount } from '../../utils/taskDisplay'
-  import {
-    TASK_PROGRESS_CONFIG,
-    SURGE_TASK_PROGRESS_CONFIG,
-    useSmoothProgress,
-  } from '../../composables/useSmoothProgress'
   import { useTaskEta } from '../../composables/useTaskEta'
   import { isInsufficientDiskSpaceFailure } from '../../utils/diskSpaceError'
 
@@ -32,9 +28,6 @@
   const uiStore = useUIStore()
 
   const isSurgeTask = props.task.gid.startsWith('sg_')
-  const { displayDownloaded, totalBytes, updateStats } = useSmoothProgress(
-    isSurgeTask ? SURGE_TASK_PROGRESS_CONFIG : TASK_PROGRESS_CONFIG,
-  )
 
   const nonNegativeFinite = (value: unknown): number => {
     const parsed = Number(value)
@@ -59,37 +52,6 @@
     return { downloaded, speed, total }
   })
 
-  // Sync with prop updates - optimized to watch specific fields
-  watch(
-    [
-      () => props.task.completedLength,
-      () => props.task.downloadSpeed,
-      () => props.task.totalLength,
-      () => props.task.status,
-    ],
-    () => {
-      const { downloaded, speed, total } = taskNumbers.value
-      // While visual total is unknown, supply max(downloaded, 1) as internal
-      // smoothing denominator so displayDownloaded does not collapse to 1 byte.
-      const internalTotal = hasKnownTotal.value ? total : Math.max(downloaded, 1)
-      updateStats({
-        downloaded,
-        speed,
-        total: internalTotal,
-        status: props.task.status as string,
-      })
-    },
-    { immediate: true },
-  )
-
-  // When totalLength transitions from unknown to known, re-anchor displayDownloaded
-  // to avoid catching up from arbitrary smoothing lag.
-  watch(hasKnownTotal, (known, prevKnown) => {
-    if (known && !prevKnown) {
-      displayDownloaded.value = taskNumbers.value.downloaded
-    }
-  })
-
   // Extract filename from path
   const fileName = computed(() => {
     const path = props.task.files?.[0]?.path
@@ -104,14 +66,6 @@
     const { downloaded, total } = taskNumbers.value
     if (total <= 0) return null
     return Math.min(Math.max((downloaded / total) * 100, 0), 100)
-  })
-
-  // Calculate smooth progress scale (0-1) for GPU animation
-  const progressScale = computed(() => {
-    if (!hasKnownTotal.value) return 0
-    if (totalBytes.value <= 0) return 0
-    const ratio = displayDownloaded.value / totalBytes.value
-    return Math.min(Math.max(ratio, 0), 1)
   })
 
   // Calculate ETA (5s sliding window average for Surge; 1s direct tick for Aria2)
@@ -407,33 +361,19 @@
       </div>
 
       <!-- Progress Bar (Neon Style with Energy Flow / Indeterminate) -->
-      <div
+      <TaskProgressBar
         v-if="statusConfig.showProgress"
-        class="mb-4"
-        role="progressbar"
+        :downloaded="taskNumbers.downloaded"
+        :speed="taskNumbers.speed"
+        :total="taskNumbers.total"
+        :status="(task.status as string) || ''"
+        :has-known-total="hasKnownTotal"
+        :is-surge="isSurgeTask"
+        :is-active="isActive"
+        :is-paused="isPaused"
+        :progress="progress"
         :aria-label="t('taskCard.progress')"
-        :aria-valuemin="0"
-        :aria-valuemax="100"
-        :aria-valuenow="
-          hasKnownTotal && progress !== null ? Math.min(Math.round(progress), 99) : undefined
-        "
-      >
-        <div class="progress-bar-container">
-          <template v-if="hasKnownTotal">
-            <div
-              :class="[
-                'progress-bar-fill',
-                { 'opacity-50': isPaused },
-                { 'progress-bar-energy': isActive },
-              ]"
-              :style="{ transform: `scaleX(${progressScale})` }"
-            ></div>
-          </template>
-          <template v-else>
-            <div :class="['progress-bar-indeterminate', { 'opacity-50': isPaused }]"></div>
-          </template>
-        </div>
-      </div>
+      />
     </div>
 
     <!-- Stats Row -->
