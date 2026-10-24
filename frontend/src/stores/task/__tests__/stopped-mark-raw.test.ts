@@ -3,7 +3,7 @@ import { isProxy, isReactive } from 'vue'
 import { setupState } from '../state'
 import { setupActions } from '../actions'
 import { setupEvents } from '../events'
-import { clearMetadataCache } from '../metadata'
+import { clearMetadataCache, cacheMetadata } from '../metadata'
 import type { TaskPolling } from '../polling'
 import type { Task } from '../../../../bindings/goaria-v3/internal/rpc/models'
 
@@ -116,12 +116,15 @@ describe('stopped tasks markRaw reactivity pruning', () => {
 
     state.tasks.value.active = [mockTask('a-to-s', { status: 'active', completedLength: '512' })]
     expect(isReactive(state.tasks.value.active[0])).toBe(true)
+    expect(isReactive(state.tasks.value.active[0].files[0].uris[0])).toBe(true)
+    cacheMetadata(state.tasks.value.active[0])
+    state.tasks.value.active[0].files = []
 
     events.handleTaskMove({
       gid: 'a-to-s',
       from: 'active',
       to: 'stopped',
-      task: { gid: 'a-to-s', status: 'error', errorCode: '1', errorMessage: 'initial' },
+      task: { gid: 'a-to-s', status: 'error', errorCode: '1', errorMessage: 'initial', files: [] },
     })
 
     const firstStoppedRow = state.tasks.value.stopped[0]
@@ -129,6 +132,9 @@ describe('stopped tasks markRaw reactivity pruning', () => {
     expect(isReactive(firstStoppedRow)).toBe(false)
     expect(isProxy(firstStoppedRow.files)).toBe(false)
     expect(isReactive(firstStoppedRow.files)).toBe(false)
+    expect(isProxy(firstStoppedRow.files[0])).toBe(false)
+    expect(isProxy(firstStoppedRow.files[0].uris)).toBe(false)
+    expect(isProxy(firstStoppedRow.files[0].uris[0])).toBe(false)
 
     // Subsequent delta updates errorMessage on the already-stopped row:
     // row reference must change so prop-based observers re-render, and stay raw.
@@ -149,6 +155,25 @@ describe('stopped tasks markRaw reactivity pruning', () => {
     expect(updatedStoppedRow.errorMessage).toBe('insufficient disk space')
     expect(isProxy(updatedStoppedRow)).toBe(false)
     expect(isReactive(updatedStoppedRow)).toBe(false)
+  })
+
+  it('preserves pure order changes in fetchStoppedTasks when task fields are unchanged', async () => {
+    const state = setupState()
+    const actions = setupActions(state)
+
+    mockGetStoppedTasks.mockResolvedValueOnce([mockTask('s1'), mockTask('s2')])
+    await actions.fetchStoppedTasks()
+    expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['s1', 's2'])
+    const s1Ref = state.tasks.value.stopped[0]
+    const s2Ref = state.tasks.value.stopped[1]
+
+    // Backend returns the same tasks in reversed order without field changes
+    mockGetStoppedTasks.mockResolvedValueOnce([mockTask('s2'), mockTask('s1')])
+    await actions.fetchStoppedTasks()
+
+    expect(state.tasks.value.stopped.map(t => t.gid)).toEqual(['s2', 's1'])
+    expect(state.tasks.value.stopped[0]).toBe(s2Ref)
+    expect(state.tasks.value.stopped[1]).toBe(s1Ref)
   })
 
   it('restores Vue reactivity when a markRaw stopped error task is reopened into waiting/active', async () => {

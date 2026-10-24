@@ -16,16 +16,16 @@
   <Transition name="fade">
     <div v-if="show" class="absolute inset-0 flex flex-col items-center justify-center p-8">
       <div class="empty-state animate-fade-in-up">
-        <!-- Animated Icon Container -->
+        <!-- Static Icon Container with Hover Micro-Lift (0fps idle) -->
         <div
-          class="w-24 h-24 rounded-[var(--radius-squircle-xl)] flex items-center justify-center mb-6 relative overflow-hidden"
+          class="group w-24 h-24 rounded-[var(--radius-squircle-xl)] flex items-center justify-center mb-6 relative overflow-hidden"
           :style="{
             background: `color-mix(in srgb, ${config.accent} 3%, transparent)`,
           }"
         >
           <!-- Subtle glow effect -->
           <div
-            class="absolute inset-0 opacity-30"
+            class="absolute inset-0 opacity-30 transition-opacity duration-300 group-hover:opacity-50"
             :style="{
               background: `radial-gradient(circle at center, color-mix(in srgb, ${config.accent} 12%, transparent) 0%, transparent 70%)`,
             }"
@@ -36,7 +36,7 @@
             :style="{
               color: `color-mix(in srgb, ${config.accent} 38%, transparent)`,
             }"
-            class="animate-float"
+            class="transition-transform duration-300 ease-out group-hover:-translate-y-1"
           />
         </div>
 

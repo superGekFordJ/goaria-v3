@@ -195,7 +195,7 @@
 }
 
 .animate-float {
-  animation: float 3s ease-in-out 2 forwards;
+  animation: float 3s ease-in-out infinite;
 }
 
 /* Staggered animation delays */

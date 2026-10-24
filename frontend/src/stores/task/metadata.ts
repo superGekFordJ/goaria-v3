@@ -1,3 +1,4 @@
+import { toRaw } from 'vue'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cloneTaskGroupMetadata, isTaskGroupEqual } from './grouping'
 
@@ -22,8 +23,16 @@ export function cacheMetadata(task: Task) {
   const next: CachedMetadata = existing ? { ...existing } : {}
 
   if (task.files?.length && task.files[0]?.path) {
-    // Deep clone files to avoid reference corruption when task object is mutated
-    next.files = task.files.map(f => ({ ...f, uris: f.uris ? [...f.uris] : [] }))
+    // Deep clone and unwrap raw files/uris to avoid reference corruption and Proxy leakage
+    const rawFiles = toRaw(task.files)
+    next.files = rawFiles.map(f => {
+      const rawFile = toRaw(f)
+      const rawUris = toRaw(rawFile.uris)
+      return {
+        ...rawFile,
+        uris: rawUris ? rawUris.map(u => ({ ...toRaw(u) })) : [],
+      }
+    })
     next.dir = task.dir || ''
     next.totalLength = task.totalLength || '0'
   }

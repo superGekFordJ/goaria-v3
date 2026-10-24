@@ -56,6 +56,7 @@ describe('TaskProgressBar leaf isolation', () => {
   let rafMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
+    vi.useFakeTimers()
     vi.clearAllMocks()
     now = 1000
     rafCallback = null
@@ -71,6 +72,7 @@ describe('TaskProgressBar leaf isolation', () => {
 
   afterEach(() => {
     vi.restoreAllMocks()
+    vi.useRealTimers()
   })
 
   it('updates scaleX inside TaskProgressBar on rAF without tracking displayDownloaded in TaskCard', async () => {

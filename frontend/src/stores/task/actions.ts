@@ -354,7 +354,7 @@ export function setupActions(state: TaskState) {
       const merged = {
         active: tasks.value.active,
         waiting: tasks.value.waiting,
-        stopped: stoppedChanged ? mergedStopped.map(markStoppedTaskRaw) : tasks.value.stopped,
+        stopped: stoppedChanged ? mergedStopped.map(markStoppedTaskRaw) : mergedStopped,
       }
       const next = preserveInflightMoves(membershipAtSend, merged)
 
