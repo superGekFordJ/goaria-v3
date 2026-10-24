@@ -41,13 +41,7 @@ export function formatDuration(seconds: number | null): string {
 }
 
 export function useTaskEta(options: UseTaskEtaOptions): ComputedRef<string> {
-  const {
-    hasKnownTotal,
-    totalBytes,
-    downloadedBytes,
-    rawSpeed,
-    isActive,
-  } = options
+  const { hasKnownTotal, totalBytes, downloadedBytes, rawSpeed, isActive } = options
 
   // Universal path (Aria2 & Surge): 5s sliding window average + 1s stopwatch clock countdown
   const etaSeconds = ref<number | null>(null)
@@ -153,8 +147,13 @@ export function useTaskEta(options: UseTaskEtaOptions): ComputedRef<string> {
   // Initialize target as soon as non-zero speed arrives
   watch(
     () => toValue(rawSpeed),
-    (newSpeed) => {
-      if (toValue(isActive) && toValue(hasKnownTotal) && etaSeconds.value === null && newSpeed > 0) {
+    newSpeed => {
+      if (
+        toValue(isActive) &&
+        toValue(hasKnownTotal) &&
+        etaSeconds.value === null &&
+        newSpeed > 0
+      ) {
         const remaining = toValue(totalBytes) - toValue(downloadedBytes)
         if (remaining > 0) {
           etaSeconds.value = Math.floor(remaining / newSpeed)

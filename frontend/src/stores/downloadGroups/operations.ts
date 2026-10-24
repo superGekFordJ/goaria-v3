@@ -123,7 +123,9 @@ export function useDownloadGroupOperations(
       const result = await ResumeDownloadGroup(normalizedKey)
       const okGids = succeededOperationItemGids(result)
       if (okGids.length > 0) {
-        const { missing } = taskStore.moveTasks(okGids.map(gid => ({ gid, dest: 'waiting' as const })))
+        const { missing } = taskStore.moveTasks(
+          okGids.map(gid => ({ gid, dest: 'waiting' as const })),
+        )
         // Members absent from local lists resync through the wrapper's refresh
         // hint; only an unhinted miss needs its own read.
         if (missing && !normalizeRefreshHint(result.refresh).tasks) {

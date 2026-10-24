@@ -330,7 +330,6 @@ describe('setupActions — integration', () => {
       expect(stoppedGids).not.toContain('overlap')
       expect(stoppedGids).toContain('s1')
     })
-
   })
 
   // =====================================================
@@ -1000,14 +999,7 @@ describe('setupActions — integration', () => {
       // Successful acks flip to 'waiting'; failed/non-boolean keep 'paused'.
       // Stopped 'F' reopens; unrequested/malformed entries never move.
       expect(state.tasks.value.active).toHaveLength(0)
-      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual([
-        'F',
-        'A',
-        'B',
-        'C',
-        'D',
-        'E',
-      ])
+      expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['F', 'A', 'B', 'C', 'D', 'E'])
       expect(state.tasks.value.waiting.map(t => t.status)).toEqual([
         'waiting', // F
         'waiting', // A
@@ -1527,8 +1519,11 @@ describe('setupActions — integration', () => {
       expect(mockGetTasks).not.toHaveBeenCalled()
       expect(state.tasks.value.waiting.map(t => t.gid)).toEqual(['ar_rapid'])
       expect(
-        [...state.tasks.value.active, ...state.tasks.value.waiting, ...state.tasks.value.stopped]
-          .filter(t => t.gid === 'ar_rapid'),
+        [
+          ...state.tasks.value.active,
+          ...state.tasks.value.waiting,
+          ...state.tasks.value.stopped,
+        ].filter(t => t.gid === 'ar_rapid'),
       ).toHaveLength(1)
 
       // Authoritative convergence: active move then progress restores speed.
@@ -1615,8 +1610,11 @@ describe('setupActions — integration', () => {
       expect(state.tasks.value.active.map(t => t.gid)).toEqual(['sg_rapid', 'sg_neighbor'])
       expect(state.tasks.value.active[1]).toBe(neighbor)
       expect(
-        [...state.tasks.value.active, ...state.tasks.value.waiting, ...state.tasks.value.stopped]
-          .filter(t => t.gid === 'sg_rapid'),
+        [
+          ...state.tasks.value.active,
+          ...state.tasks.value.waiting,
+          ...state.tasks.value.stopped,
+        ].filter(t => t.gid === 'sg_rapid'),
       ).toHaveLength(1)
       expect(state.tasks.value.waiting).toHaveLength(0)
       expect(state.tasks.value.stopped).toHaveLength(0)

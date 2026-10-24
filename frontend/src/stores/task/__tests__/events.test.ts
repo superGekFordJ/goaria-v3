@@ -564,9 +564,7 @@ describe('setupEvents', () => {
     })
 
     it('TERMINAL-MAP-NO-MOVE: status-less complete patches present data and fetches without moving', async () => {
-      state.tasks.value.active = [
-        mockTask('gid-map', { status: 'active', completedLength: '10' }),
-      ]
+      state.tasks.value.active = [mockTask('gid-map', { status: 'active', completedLength: '10' })]
 
       await events.handleTaskDelta({
         type: 'complete',

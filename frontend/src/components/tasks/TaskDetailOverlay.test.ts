@@ -52,7 +52,9 @@ function makeTask(overrides: Partial<Task> = {}): Task {
     errorCode: '',
     errorMessage: '',
     dir: '/downloads',
-    files: [{ path: '/downloads/file.bin', uris: [{ uri: 'https://t0.example.com/f', status: 'used' }] }],
+    files: [
+      { path: '/downloads/file.bin', uris: [{ uri: 'https://t0.example.com/f', status: 'used' }] },
+    ],
     ...overrides,
   } as Task
 }
@@ -85,7 +87,8 @@ function mountOverlay(
 }
 
 const cellKinds = (w: VueWrapper) => w.findAll('[data-cell]').map(c => c.attributes('data-cell'))
-const isRevealed = (w: VueWrapper) => w.get('[data-detail-open]').attributes('data-detail-reveal') !== undefined
+const isRevealed = (w: VueWrapper) =>
+  w.get('[data-detail-open]').attributes('data-detail-reveal') !== undefined
 const CHUNKS = {
   chunk_states: [2, 2, 1, 0, 0],
   chunk_count: 5,
@@ -203,9 +206,21 @@ describe('TaskDetailOverlay', () => {
     it('complete', () => {
       const task = makeTask({ status: 'complete', completedLength: '1000' })
       const w = mountOverlay(task, {
-        detail: ready(task, { time_taken_ms: 65_000, avg_speed: 2048, peak_speed: 4096, completed_at: NOW_SEC - 30 }),
+        detail: ready(task, {
+          time_taken_ms: 65_000,
+          avg_speed: 2048,
+          peak_speed: 4096,
+          completed_at: NOW_SEC - 30,
+        }),
       })
-      expect(cellKinds(w)).toEqual(['timeTaken', 'avgSpeed', 'peak', 'completedAt', 'source', 'saveLocation'])
+      expect(cellKinds(w)).toEqual([
+        'timeTaken',
+        'avgSpeed',
+        'peak',
+        'completedAt',
+        'source',
+        'saveLocation',
+      ])
       expect(w.get('[data-cell="timeTaken"]').text()).toContain('1m 5s')
     })
   })
@@ -216,24 +231,37 @@ describe('TaskDetailOverlay', () => {
     it('pending shows fixed placeholders', () => {
       const w = mountOverlay(complete(), { detail: null })
       expect(w.findAll('[data-detail-placeholder]')).toHaveLength(4)
-      expect(cellKinds(w)).toEqual(['timeTaken', 'avgSpeed', 'peak', 'completedAt', 'source', 'saveLocation'])
+      expect(cellKinds(w)).toEqual([
+        'timeTaken',
+        'avgSpeed',
+        'peak',
+        'completedAt',
+        'source',
+        'saveLocation',
+      ])
     })
 
     it('data for another status is treated as pending', () => {
       const task = complete()
-      const w = mountOverlay(task, { detail: { ...ready(task, { time_taken_ms: 1 }), status: 'active' } })
+      const w = mountOverlay(task, {
+        detail: { ...ready(task, { time_taken_ms: 1 }), status: 'active' },
+      })
       expect(w.findAll('[data-detail-placeholder]')).toHaveLength(4)
     })
 
     it('failed hides T1 cells', () => {
       const task = complete()
-      const w = mountOverlay(task, { detail: { gid: task.gid, status: 'complete', phase: 'failed' } })
+      const w = mountOverlay(task, {
+        detail: { gid: task.gid, status: 'complete', phase: 'failed' },
+      })
       expect(cellKinds(w)).toEqual(['source', 'saveLocation'])
     })
 
     it('found:false hides T1 cells', () => {
       const task = complete()
-      const w = mountOverlay(task, { detail: { gid: task.gid, status: 'complete', phase: 'ready', found: false } })
+      const w = mountOverlay(task, {
+        detail: { gid: task.gid, status: 'complete', phase: 'ready', found: false },
+      })
       expect(cellKinds(w)).toEqual(['source', 'saveLocation'])
     })
 
@@ -246,7 +274,9 @@ describe('TaskDetailOverlay', () => {
 
     it('source prefers detail uris and falls back to T0 uris', () => {
       const task = complete()
-      const w = mountOverlay(task, { detail: ready(task, { uris: ['https://d.example.com/f', 'https://m.example.com/f'] }) })
+      const w = mountOverlay(task, {
+        detail: ready(task, { uris: ['https://d.example.com/f', 'https://m.example.com/f'] }),
+      })
       const src = w.get('[data-cell="source"]')
       expect(src.text()).toContain('d.example.com')
       expect(src.text()).toContain('taskDetail.mirrorBadge {"count":1}')

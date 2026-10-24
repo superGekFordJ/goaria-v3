@@ -368,9 +368,18 @@ describe('uiStore openDetailGid', () => {
 
   it.each([
     ['setActiveTab', (s: Awaited<ReturnType<typeof freshStore>>) => s.setActiveTab('stopped')],
-    ['openDownloadGroupDetail', (s: Awaited<ReturnType<typeof freshStore>>) => s.openDownloadGroupDetail('dg-1')],
-    ['closeDownloadGroupDetail', (s: Awaited<ReturnType<typeof freshStore>>) => s.closeDownloadGroupDetail()],
-    ['clearDownloadGroupSelection', (s: Awaited<ReturnType<typeof freshStore>>) => s.clearDownloadGroupSelection()],
+    [
+      'openDownloadGroupDetail',
+      (s: Awaited<ReturnType<typeof freshStore>>) => s.openDownloadGroupDetail('dg-1'),
+    ],
+    [
+      'closeDownloadGroupDetail',
+      (s: Awaited<ReturnType<typeof freshStore>>) => s.closeDownloadGroupDetail(),
+    ],
+    [
+      'clearDownloadGroupSelection',
+      (s: Awaited<ReturnType<typeof freshStore>>) => s.clearDownloadGroupSelection(),
+    ],
   ])('%s clears the open detail', async (_name, act) => {
     const store = await freshStore()
     store.openTaskDetail('ar_1')

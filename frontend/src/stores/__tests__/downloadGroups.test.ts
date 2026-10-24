@@ -1283,9 +1283,7 @@ describe('group operation item helpers', () => {
       ),
     ).toEqual(['gid-ok'])
     // Aggregate result.ok never implies per-GID success.
-    expect(
-      succeededOperationItemGids(operationResult({ ok: true, items: [] })),
-    ).toEqual([])
+    expect(succeededOperationItemGids(operationResult({ ok: true, items: [] }))).toEqual([])
     expect(succeededOperationItemGids(null)).toEqual([])
     expect(succeededOperationItemGids(undefined)).toEqual([])
   })

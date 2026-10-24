@@ -159,7 +159,12 @@ describe('bucketChunkProgress', () => {
     // outside the chunk entirely.
     const states = [CHUNK_DOWNLOADING]
     const out = bucketChunkProgress(states, [50], 100, 400, 4)!
-    expect(Array.from(out)).toEqual([CHUNK_DOWNLOADING, CHUNK_PENDING, CHUNK_PENDING, CHUNK_PENDING])
+    expect(Array.from(out)).toEqual([
+      CHUNK_DOWNLOADING,
+      CHUNK_PENDING,
+      CHUNK_PENDING,
+      CHUNK_PENDING,
+    ])
     // Full recorded bytes complete the bucket even while status lags behind.
     const full = bucketChunkProgress(states, [100], 100, 400, 4)!
     expect(full[0]).toBe(CHUNK_COMPLETE)

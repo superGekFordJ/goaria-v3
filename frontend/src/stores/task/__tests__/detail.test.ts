@@ -45,7 +45,9 @@ describe('setupTaskDetail', () => {
   it('drops out-of-order responses', async () => {
     const first = deferred<unknown>()
     const second = deferred<unknown>()
-    bindingMocks.GetTaskDetails.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    bindingMocks.GetTaskDetails.mockReturnValueOnce(first.promise).mockReturnValueOnce(
+      second.promise,
+    )
     const { taskDetail, fetchTaskDetail } = setupTaskDetail()
 
     const p1 = fetchTaskDetail('ar_old', 'active')

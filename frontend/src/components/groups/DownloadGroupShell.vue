@@ -68,10 +68,7 @@
       if (status === 'complete' || status === 'error') return 'stopped' as const
       return fallback
     }
-    const place = (
-      members: Task[] | undefined,
-      rawBucket: 'active' | 'waiting' | 'stopped',
-    ) => {
+    const place = (members: Task[] | undefined, rawBucket: 'active' | 'waiting' | 'stopped') => {
       for (const member of members ?? []) {
         const gid = member?.gid
         if (!gid || seen.has(gid)) continue

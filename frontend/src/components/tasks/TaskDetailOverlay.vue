@@ -488,10 +488,7 @@
 
       <div class="flex items-start gap-3 mt-2 min-w-0">
         <!-- Fact grid: at most two rows, never scrolls -->
-        <div
-          data-detail-facts
-          class="flex-1 min-w-0 grid grid-cols-4 gap-x-3 gap-y-1.5"
-        >
+        <div data-detail-facts class="flex-1 min-w-0 grid grid-cols-4 gap-x-3 gap-y-1.5">
           <div
             v-for="cell in cells"
             :key="cell.kind"
@@ -658,12 +655,11 @@
      crisp pure-white 12 o'clock specular rim, subtle cold slate hairline edge,
      and deep slate ink typography for high-contrast porcelain readability. */
   [data-theme='light'] .task-detail-overlay {
-    --detail-slab-fill:
-      linear-gradient(
-        180deg,
-        rgba(248, 250, 252, 0.98) 0%,
-        rgba(235, 239, 244, 0.96) 100%
-      );
+    --detail-slab-fill: linear-gradient(
+      180deg,
+      rgba(248, 250, 252, 0.98) 0%,
+      rgba(235, 239, 244, 0.96) 100%
+    );
     --detail-rim: rgba(255, 255, 255, 1);
     --detail-edge: rgba(15, 23, 42, 0.12);
     --detail-glow: rgba(255, 255, 255, 0.95);
@@ -671,7 +667,7 @@
 
     /* Deep slate ink typography: high-contrast, razor-sharp on porcelain backplate */
     --app-text: rgba(15, 23, 42, 0.96);
-    --app-text-muted: rgba(30, 41, 59, 0.90);
+    --app-text-muted: rgba(30, 41, 59, 0.9);
     --app-text-subtle: rgba(71, 85, 105, 0.82);
   }
 
@@ -816,7 +812,7 @@
       transform: scaleY(0.95);
     }
     50% {
-      opacity: 0.30;
+      opacity: 0.3;
       transform: scaleY(1.04);
     }
   }

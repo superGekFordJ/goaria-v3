@@ -103,7 +103,15 @@ describe('packGridCells', () => {
 
   it('fills two rows of four in priority order', () => {
     const packed = packGridCells(
-      [cell('a', 1), cell('b', 2), cell('c', 1), cell('d', 2), cell('e', 1), cell('f', 1), cell('g', 1)],
+      [
+        cell('a', 1),
+        cell('b', 2),
+        cell('c', 1),
+        cell('d', 2),
+        cell('e', 1),
+        cell('f', 1),
+        cell('g', 1),
+      ],
       4,
       2,
     )
@@ -116,12 +124,20 @@ describe('packGridCells', () => {
   })
 
   it('drops a wide cell that would spill into a third row', () => {
-    const packed = packGridCells([cell('err', 4), cell('src', 2), cell('save', 2), cell('x', 2)], 4, 2)
+    const packed = packGridCells(
+      [cell('err', 4), cell('src', 2), cell('save', 2), cell('x', 2)],
+      4,
+      2,
+    )
     expect(ids(packed)).toEqual(['err', 'src', 'save'])
   })
 
   it('backfills a narrow cell after dropping a wide one, matching CSS layout', () => {
-    const packed = packGridCells([cell('a', 2), cell('b', 1), cell('c', 2), cell('d', 2), cell('e', 1)], 4, 2)
+    const packed = packGridCells(
+      [cell('a', 2), cell('b', 1), cell('c', 2), cell('d', 2), cell('e', 1)],
+      4,
+      2,
+    )
     // a b | c d  -> e has no room; a b _ | c d
     expect(ids(packed)).toEqual(['a', 'b', 'c', 'd'])
     const backfill = packGridCells([cell('a', 2), cell('b', 1), cell('c', 4), cell('d', 1)], 4, 2)
