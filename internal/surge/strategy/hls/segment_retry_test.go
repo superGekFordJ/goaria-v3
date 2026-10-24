@@ -445,7 +445,7 @@ func TestHLSSegmentRetryDeadlineCombinesMax(t *testing.T) {
 	if !until.After(cur) {
 		t.Fatal("penalty did not stick")
 	}
-	if err := e.waitRetry(sess, task, time.Second); err != nil {
+	if err := e.waitRetry(sess, task, attemptOutcome{delay: time.Second}); err != nil {
 		t.Fatalf("waitRetry = %v", err)
 	}
 	if len(calls) != 1 || calls[0] != until.Sub(cur) {
@@ -455,7 +455,7 @@ func TestHLSSegmentRetryDeadlineCombinesMax(t *testing.T) {
 	// Once the fake clock passes the penalty deadline the segment's own
 	// retry deadline dominates again — still a single sleep.
 	cur = until.Add(time.Second)
-	if err := e.waitRetry(sess, task, 5*time.Second); err != nil {
+	if err := e.waitRetry(sess, task, attemptOutcome{delay: 5 * time.Second}); err != nil {
 		t.Fatalf("waitRetry = %v", err)
 	}
 	if len(calls) != 2 || calls[1] != 5*time.Second {

@@ -156,7 +156,7 @@ func (e *segmentEngine) execMediaAttempt(sess *hlsWorkerSession, at *hlsAttempt)
 	at.noteStatus(0)
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("hls segment %d: %w", seg.Index, err)
+		return fmt.Errorf("hls segment %d: %w", seg.Index, &hlsTransportError{err: err})
 	}
 	at.noteActivity()
 	at.noteStatus(resp.StatusCode)
@@ -173,6 +173,7 @@ func (e *segmentEngine) execMediaAttempt(sess *hlsWorkerSession, at *hlsAttempt)
 				index:      seg.Index,
 				status:     resp.StatusCode,
 				retryAfter: resp.Header.Get("Retry-After"),
+				host:       transport.MirrorHost(seg.URI),
 			}
 		}
 		return fmt.Errorf("hls segment %d: unexpected status %d: %w",
@@ -278,6 +279,9 @@ func (e *segmentEngine) execMediaAttempt(sess *hlsWorkerSession, at *hlsAttempt)
 		key, ferr := fetchHLSKey(at.segCtx, e.client, seg.Index, uri,
 			e.taskHeaders, e.credBase, e.runCfg, at)
 		sess.setPhase(hlsPhaseDecrypt)
+		if ferr == nil {
+			e.hostLimiter.RecordSuccess(transport.MirrorHost(uri))
+		}
 		return key, ferr
 	})
 	if kerr != nil {

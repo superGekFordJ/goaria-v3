@@ -98,6 +98,12 @@ func newSegmentEngine(p segmentEngineParams) (*segmentEngine, error) {
 	if p.Seed == nil || p.Seed.TotalSegments <= 0 {
 		return nil, newHLSContractError("seed is not a prepared media table")
 	}
+	// The seed must satisfy the same prepared-prefix contract the window
+	// enforces — segment count, ordered Index and an exact bitmap — or the
+	// queue would lease phantom/duplicate work at construction.
+	if err := validateSeed(p.Seed); err != nil {
+		return nil, err
+	}
 	if p.Window == nil {
 		return nil, newHLSContractError("nil reorder window")
 	}
@@ -108,9 +114,10 @@ func newSegmentEngine(p segmentEngineParams) (*segmentEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	runCfg := p.RunCfg
-	if runCfg == nil {
-		runCfg = types.DefaultRuntimeConfig()
+	runCfg := types.DefaultRuntimeConfig()
+	if p.RunCfg != nil {
+		rc := *p.RunCfg
+		runCfg = &rc
 	}
 	parent := p.Parent
 	if parent == nil {
@@ -268,6 +275,11 @@ func (e *segmentEngine) spawn(initial bool) bool {
 	}
 	id := int(e.nextID.Add(1)) - 1
 	e.workers++
+	if e.workers == 1 {
+		// Every zero-to-one transition arms a fresh epoch channel — the
+		// previous one already closed when the last epoch drained to zero.
+		e.workersDone = make(chan struct{})
+	}
 	e.lifeMu.Unlock()
 
 	sess := e.newSession(id)
@@ -353,6 +365,9 @@ func (e *segmentEngine) sessionViews() []hlsSessionView {
 // cancelAttemptKill cancels only the worker's still-interruptible attempt:
 // the unaccepted credit is rolled back and the whole segment requeued once,
 // without consuming retry budget; the goroutine, session and ID persist.
+// Between attempts (retry backoff, host-penalty waits) there is no attempt
+// to kill — the lease simply retries on schedule, so false is correct; the
+// drain primitive still wakes those protected waits immediately.
 func (e *segmentEngine) cancelAttemptKill(id int) bool {
 	s := e.sessionByID(id)
 	if s == nil {
@@ -399,16 +414,40 @@ func (e *segmentEngine) stopped() bool {
 	return e.ctx.Err() != nil || e.fatalErr() != nil
 }
 
+// stop seals spawn, closes the queue and cancels every session — in-flight
+// commits still settle, then workers exit. Unfinished work is reported by
+// wait() as errEngineIncomplete.
+func (e *segmentEngine) stop() {
+	e.seal()
+	e.queue.close()
+	e.cancel()
+}
+
 // wait blocks until every worker exits, then releases the pooled transport
 // lease last. It reports the first fatal (joined with external ctx identity
 // when both fired), the parent ctx identity on external cancel, nil on a
 // fully accepted queue, and errEngineIncomplete when the engine stopped
 // with segments unaccepted — an empty ready list alone is never success.
 func (e *segmentEngine) wait() error {
-	<-e.workersDone
-	if e.release != nil {
-		e.release()
-		e.release = nil
+	// The done channel is per-epoch: a drain-to-zero closes the current one,
+	// a respawn arms the next. Wait until workers hit zero and stay zero at
+	// observation time — never block on an unarmed pre-start channel.
+	for {
+		e.lifeMu.Lock()
+		workers := e.workers
+		done := e.workersDone
+		e.lifeMu.Unlock()
+		if workers == 0 {
+			break
+		}
+		<-done
+	}
+	e.lifeMu.Lock()
+	release := e.release
+	e.release = nil
+	e.lifeMu.Unlock()
+	if release != nil {
+		release()
 	}
 	fatal := e.fatalErr()
 	parentErr := e.parent.Err()
@@ -498,7 +537,7 @@ func (e *segmentEngine) runTask(sess *hlsWorkerSession, task *segmentTask) error
 		case outcomeDone:
 			return nil
 		case outcomeRetry:
-			if werr := e.waitRetry(sess, task, outcome.delay); werr != nil {
+			if werr := e.waitRetry(sess, task, outcome); werr != nil {
 				// Wait interrupted: drain requeues free; cancel/fatal exits.
 				if sess.draining.Load() {
 					e.queue.requeue(task)

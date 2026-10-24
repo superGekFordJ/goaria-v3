@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/transport"
 	"goaria-v3/internal/surge/types"
 )
 
@@ -69,7 +70,9 @@ type fixtureOpts struct {
 	handler    http.HandlerFunc // full override
 	ops        *fileOps
 	headers    map[string]string
+	client     *http.Client // nil uses the fixture server client
 	limiter    types.ByteLimiter
+	hostLim    *transport.HostRateLimiter
 	onAccepted func(index int, res IngestResult, started time.Time)
 	sleep      func(ctx context.Context, d time.Duration) error
 	now        func() time.Time
@@ -155,14 +158,19 @@ func newHLSFixture(t *testing.T, bodies [][]byte, opts fixtureOpts) *hlsFixture 
 
 func (f *hlsFixture) buildEngine(t *testing.T, opts fixtureOpts) *segmentEngine {
 	t.Helper()
+	client := opts.client
+	if client == nil {
+		client = f.srv.Client()
+	}
 	e, err := newSegmentEngine(segmentEngineParams{
 		Seed:        f.seed,
 		Window:      f.window,
 		Progress:    f.prog,
-		Client:      f.srv.Client(),
+		Client:      client,
 		RunCfg:      types.DefaultRuntimeConfig(),
 		TaskHeaders: opts.headers,
 		Limiter:     opts.limiter,
+		HostLimiter: opts.hostLim,
 		Parent:      context.Background(),
 		MaxWorkers:  8,
 		OnAccepted:  opts.onAccepted,

@@ -40,6 +40,10 @@ type hlsStatusError struct {
 	index      int
 	status     int
 	retryAfter string
+	// host is transport.MirrorHost of the URI that produced the status —
+	// key and segment URIs may live on different hosts, and every
+	// penalty/success record must land on the resource's own host.
+	host string
 }
 
 func (e *hlsStatusError) Error() string {
@@ -60,6 +64,22 @@ func (e *hlsRedirectRefusalError) Error() string {
 	return "hls: redirect refused: " + e.err.Error()
 }
 func (e *hlsRedirectRefusalError) Unwrap() error { return e.err }
+
+// hlsTransportError wraps a client.Do failure — usually *url.Error, whose
+// message embeds the raw request URL (signed query, userinfo, and all).
+// Error() reports only the inner cause so logs and error text never leak
+// credentials; Unwrap keeps errors.As/Is transparent for the classifier
+// (net.Error, ctx identity, redirect sentinels all still resolve).
+type hlsTransportError struct{ err error }
+
+func (e *hlsTransportError) Error() string {
+	cause := e.err
+	if ue, ok := errors.AsType[*url.Error](cause); ok && ue.Err != nil {
+		cause = ue.Err
+	}
+	return "hls: request failed: " + cause.Error()
+}
+func (e *hlsTransportError) Unwrap() error { return e.err }
 
 // newHLSClient returns the shared HLS HTTP client for manifest, key, init and
 // media-segment sub-requests. A nil client borrows the shared network pool
@@ -149,6 +169,11 @@ func restoreHLSHeaderSet(req, src *http.Request, credentialBaseURL *url.URL) {
 			continue
 		}
 		req.Header[k] = append([]string(nil), vs...)
+	}
+	// net/http drops req.Host across redirects — a same-site Host override
+	// bound to the anchor must be re-pinned or it silently dies on hop one.
+	if src.Host != "" {
+		req.Host = src.Host
 	}
 }
 

@@ -86,6 +86,10 @@ type attemptOutcome struct {
 	action outcomeAction
 	delay  time.Duration
 	err    error
+	// retryHost is the penalized mirror host a retry must wait out — set
+	// only by 429/503 so a key-resource limiter does not sleep against the
+	// segment host's penalty table.
+	retryHost string
 }
 
 // settleOutcome classifies one finished attempt in strict priority:
@@ -218,11 +222,14 @@ func (e *segmentEngine) consumeRetry(task *segmentTask, generic bool, err error)
 // counter only moves on connection-class failures and RA-less 429/503 —
 // never on 404, never on 5xx.
 func (e *segmentEngine) classifyStatus(task *segmentTask, se *hlsStatusError) attemptOutcome {
-	host := transport.MirrorHost(task.seg.URI)
+	host := se.host
+	if host == "" {
+		host = transport.MirrorHost(task.seg.URI)
+	}
 	permanent := func() attemptOutcome {
-		return attemptOutcome{action: outcomeFatal, err: fmt.Errorf(
-			"hls %s (segment %d): status %d: %w",
-			se.resource, se.index, se.status, types.ErrPermanentHTTP)}
+		// Join keeps the typed status error reachable through errors.As —
+		// callers still see the status and Retry-After on terminal exits.
+		return attemptOutcome{action: outcomeFatal, err: errors.Join(se, types.ErrPermanentHTTP)}
 	}
 	switch {
 	case se.status == http.StatusNotFound:
@@ -253,7 +260,7 @@ func (e *segmentEngine) classifyStatus(task *segmentTask, se *hlsStatusError) at
 		if explicit {
 			delay = ra // RA is the earliest allowed time; host penalty may still extend it
 		}
-		return attemptOutcome{action: outcomeRetry, delay: delay}
+		return attemptOutcome{action: outcomeRetry, delay: delay, retryHost: host}
 
 	case se.status == http.StatusForbidden || se.status == http.StatusGone:
 		if !e.admissionOpen.Load() {
@@ -300,9 +307,12 @@ func (e *segmentEngine) classifyStatus(task *segmentTask, se *hlsStatusError) at
 // waitRetry sleeps once until max(segment retry deadline, host penalty
 // deadline) — never two sequential sleeps. The wait is session-visible
 // (protected) and wakes on drain/stop/ctx.
-func (e *segmentEngine) waitRetry(sess *hlsWorkerSession, task *segmentTask, delay time.Duration) error {
-	deadline := e.now().Add(delay)
-	host := transport.MirrorHost(task.seg.URI)
+func (e *segmentEngine) waitRetry(sess *hlsWorkerSession, task *segmentTask, outcome attemptOutcome) error {
+	deadline := e.now().Add(outcome.delay)
+	host := outcome.retryHost
+	if host == "" {
+		host = transport.MirrorHost(task.seg.URI)
+	}
 	if until := e.hostLimiter.BlockedUntil(host, e.now()); until.After(deadline) {
 		deadline = until
 	}

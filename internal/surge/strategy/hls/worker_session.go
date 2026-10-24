@@ -353,8 +353,10 @@ func (a *hlsAttempt) throttle(ctx context.Context, n int64) error {
 		return nil
 	}
 	a.noteActivity()
-	a.waitingOnLimiter.Store(true)
+	// Phase first: the stall gate reads phase under the publish lock, so the
+	// wait must be visible as protected before the limiter flag flips.
 	a.sess.setPhase(hlsPhaseWait)
+	a.waitingOnLimiter.Store(true)
 	err := limiter.WaitN(ctx, n)
 	a.noteActivity()
 	a.waitingOnLimiter.Store(false)

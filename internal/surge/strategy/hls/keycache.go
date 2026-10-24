@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"sync"
 
+	"goaria-v3/internal/surge/transport"
 	"goaria-v3/internal/surge/types"
 )
 
@@ -145,7 +146,7 @@ func fetchHLSKey(
 	noteReadStatus(hooks, 0)
 	resp, err := client.Do(req)
 	if err != nil {
-		return zero, fmt.Errorf("hls key (segment %d): %w", segIndex, err)
+		return zero, fmt.Errorf("hls key (segment %d): %w", segIndex, &hlsTransportError{err: err})
 	}
 	noteReadActivity(hooks)
 	noteReadStatus(hooks, resp.StatusCode)
@@ -161,6 +162,7 @@ func fetchHLSKey(
 			index:      segIndex,
 			status:     resp.StatusCode,
 			retryAfter: resp.Header.Get("Retry-After"),
+			host:       transport.MirrorHost(keyURI),
 		}
 	}
 
