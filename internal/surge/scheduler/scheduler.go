@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"goaria-v3/internal/surge/progress"
+	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/transport"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
@@ -25,6 +26,15 @@ type activeDownload struct {
 	// done is closed by the worker when it stops (running becomes false).
 	// Callers waiting for the worker to exit should select on this channel.
 	done chan struct{}
+
+	// FORK-PATCH: HLS terminal-event fence. hlsEventMu serializes the
+	// worker's terminal error publication against Cancel's removal marker:
+	// Cancel sets hlsRemoved under p.mu, cancels the ctx, then acquires and
+	// releases this mutex as a barrier before returning, so an HLS claim
+	// already removed from downloads can never publish an error that lands
+	// after EventRemoved on the shared event stream.
+	hlsEventMu sync.Mutex
+	hlsRemoved atomic.Bool
 }
 
 // queuedTask wraps a download config with SQS-style visibility and retry state
@@ -974,6 +984,28 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 		delete(p.downloads, downloadID)
 	}
 
+	// FORK-PATCH: mark every unsettled HLS claim for this ID — the downloads
+	// slot plus any busy claim whose registered ad still names it — so a
+	// late worker error can never publish after EventRemoved. The
+	// barrier/cancel happens after p.mu is released below.
+	var hlsClaims []*activeDownload
+	markHLS := func(a *activeDownload) {
+		if a == nil || a.config.Strategy != types.StrategyHLS {
+			return
+		}
+		if a.hlsRemoved.CompareAndSwap(false, true) {
+			hlsClaims = append(hlsClaims, a)
+		}
+	}
+	if activeExists {
+		markHLS(ad)
+	}
+	for _, slot := range p.busy {
+		if slot.ad != nil && slot.ad.config.ID == downloadID {
+			markHLS(slot.ad)
+		}
+	}
+
 	var droppedQueued bool
 	if queuedExists {
 		delete(p.queued, downloadID)
@@ -1023,6 +1055,23 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 	} else if queuedExists {
 		result.Filename = queuedCfg.Filename
 		result.DestPath = resolveDestPath(&queuedCfg)
+	}
+
+	// FORK-PATCH: HLS terminal fence — cancel every marked claim's ctx (the
+	// active ad already fired above; busy claims with a different ad cancel
+	// here), then acquire/release each claim's event mutex as a barrier so
+	// any error send already inside the mutex completes before Cancel
+	// returns and EventRemoved is published.
+	for _, a := range hlsClaims {
+		if a != ad && a.cancel != nil {
+			a.cancel()
+		}
+	}
+	for _, a := range hlsClaims {
+		a.hlsEventMu.Lock()
+		// The acquire is the barrier; the read keeps the section non-empty.
+		_ = a.hlsRemoved.Load()
+		a.hlsEventMu.Unlock()
 	}
 
 	return result
@@ -1075,15 +1124,61 @@ func (p *Scheduler) UpdateURL(downloadID string, newURL string) error {
 	}
 
 	if exists && ad != nil {
-		if ad.config.ProgressState != nil && !progress.CfgProgress(&ad.config).IsPaused() {
-			if ad.running.Load() {
+		if ad.config.Strategy == types.StrategyHLS {
+			// FORK-PATCH: an HLS source change is rejected while any physical
+			// claim for this ID is unsettled — running, pausing, or a busy
+			// slot still held — even when the Paused flag is already true or
+			// ProgressState is nil. Only a fully settled paused task may be
+			// rebased below.
+			busyHeld := ad.running.Load()
+			if !busyHeld {
+				for _, slot := range p.busy {
+					if slot.ad == ad {
+						busyHeld = true
+						break
+					}
+				}
+			}
+			if busyHeld {
 				p.mu.Unlock()
 				return types.ErrActiveUpdate
 			}
+			ad.config.URL = newURL
+			ad.config.URLHash = store.URLHash(newURL)
+			ad.config.Downloaded = 0
+			ad.config.TotalSize = 0
+			ad.config.HLSResume = ad.config.HLSResume.RebaseManifestURL(newURL)
+			if ad.config.ProgressState != nil {
+				progress.CfgProgress(&ad.config).SetURL(newURL)
+				progress.CfgProgress(&ad.config).SetPendingResumeState(nil)
+			}
+		} else {
+			if ad.config.ProgressState != nil && !progress.CfgProgress(&ad.config).IsPaused() {
+				if ad.running.Load() {
+					p.mu.Unlock()
+					return types.ErrActiveUpdate
+				}
+			}
+			ad.config.URL = newURL
+			if ad.config.ProgressState != nil {
+				progress.CfgProgress(&ad.config).SetURL(newURL)
+			}
 		}
-		ad.config.URL = newURL
-		if ad.config.ProgressState != nil {
-			progress.CfgProgress(&ad.config).SetURL(newURL)
+	} else {
+		// FORK-PATCH: no downloads entry — an unsettled HLS busy claim for
+		// this ID still refuses the mutation even though the ad is gone.
+		for key, slot := range p.busy {
+			if key.ID != downloadID {
+				continue
+			}
+			strategy := slot.strategy
+			if slot.ad != nil {
+				strategy = slot.ad.config.Strategy
+			}
+			if strategy == types.StrategyHLS {
+				p.mu.Unlock()
+				return types.ErrActiveUpdate
+			}
 		}
 	}
 	p.mu.Unlock()
@@ -1283,6 +1378,11 @@ func (p *Scheduler) worker() {
 			ad.config.Runtime = localCfg.Runtime
 			ad.config.Strategy = localCfg.Strategy
 			ad.config.HLSResume = localCfg.HLSResume.Clone()
+			if localCfg.Strategy == types.StrategyHLS {
+				// For HLS the copy-back durable prefix IS the authoritative
+				// downloaded figure — keep the parked record honest.
+				ad.config.Downloaded = localCfg.Downloaded
+			}
 		}
 		p.mu.Unlock()
 
@@ -1290,6 +1390,14 @@ func (p *Scheduler) worker() {
 		// 1. If err == nil (successful download): Clear stale pause, mark Done, remove from downloads.
 		// 2. If paused (ErrPaused or pause requested): Keep in downloads for potential resume.
 		// 3. If other error: Retry or emit EventError.
+
+		// FORK-PATCH: an HLS run that failed while the parent ctx is already
+		// done reports the cancel identity — a stray socket/storage error
+		// must not impersonate the terminal cause (retry/EventError) of a
+		// user cancel.
+		if localCfg.Strategy == types.StrategyHLS && err != nil && ctx.Err() != nil {
+			err = errors.Join(ctx.Err(), err)
+		}
 
 		isPaused := localCfg.ProgressState != nil && progress.CfgProgress(&localCfg).IsPaused()
 
@@ -1322,7 +1430,8 @@ func (p *Scheduler) worker() {
 			// The concurrent downloader sends DownloadPausedMsg itself via handlePause().
 			// When a single-threaded download is paused, RunDownload returns an error,
 			// and the pool fills the gap.
-			if !errors.Is(err, types.ErrPaused) && localCfg.ProgressCh != nil {
+			if !errors.Is(err, types.ErrPaused) && localCfg.ProgressCh != nil &&
+				(localCfg.Strategy != types.StrategyHLS || !ad.hlsRemoved.Load()) {
 				var downloaded int64
 				var rateLimit int64
 				var rateLimitSet bool
@@ -1362,11 +1471,17 @@ func (p *Scheduler) worker() {
 			_, slotTaken := p.queued[localCfg.ID]
 			foreignActive := p.downloads[localCfg.ID] != nil
 
+			// FORK-PATCH: a cancel that already claimed this HLS ad (removal
+			// marker or fired parent ctx) owns the lifecycle — no retry, no
+			// error publish, no SetError may follow.
+			hlsTask := localCfg.Strategy == types.StrategyHLS
+			hlsClaimed := hlsTask && (ad.hlsRemoved.Load() || ctx.Err() != nil)
+
 			// A requeue mints a fresh opportunity token: the old admission must
 			// not carry over, and stale keys for the finished claim must never
 			// alias the new queueing round. On token exhaustion the task takes
 			// the terminal path below — no opportunity, no leak.
-			retryable := shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) && !slotTaken && !foreignActive
+			retryable := !hlsClaimed && shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) && !slotTaken && !foreignActive
 			var newToken uint64
 			tokenOK := true
 			if retryable {
@@ -1480,6 +1595,17 @@ func (p *Scheduler) worker() {
 			// context.Canceled as a failure would race notify + error DB writes.
 			isCancel := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 			var errEvent *types.DownloadEvent
+			if hlsTask {
+				// FORK-PATCH: enter the claim fence before the terminal
+				// decision — a Cancel that won after the retry check must
+				// still silence this publication, and the mutex is held
+				// through the send so a winning send completes before
+				// EventRemoved can follow it.
+				ad.hlsEventMu.Lock()
+				if ad.hlsRemoved.Load() || ctx.Err() != nil {
+					isCancel = true
+				}
+			}
 			if !isCancel && localCfg.ProgressCh != nil {
 				var finalDestPath string
 				var finalFilename string
@@ -1501,7 +1627,20 @@ func (p *Scheduler) worker() {
 					DestPath:   finalDestPath,
 					Err:        err,
 				}
-				if localCfg.ProgressState != nil {
+				if hlsTask {
+					// FORK-PATCH: the HLS error snapshot is the durable
+					// copy-back record — never a live in-flight projection.
+					if localCfg.HLSResume != nil {
+						snap := localCfg
+						snap.HLSResume = localCfg.HLSResume.Clone()
+						snap.ProgressState = nil
+						snap.ProgressCh = nil
+						errEvent.State = &snap
+						if snap.Downloaded > 0 {
+							errEvent.Downloaded = snap.Downloaded
+						}
+					}
+				} else if localCfg.ProgressState != nil {
 					if pending := progress.CfgProgress(&localCfg).TakePendingResumeState(); pending != nil {
 						errEvent.State = pending
 						if pending.Downloaded > 0 {
@@ -1520,9 +1659,21 @@ func (p *Scheduler) worker() {
 			p.mu.Unlock()
 
 			// Send outside the lock: safeSendProgress may block on a full
-			// channel and must not hold p.mu while doing so.
+			// channel and must not hold p.mu while doing so. The bounded
+			// send stays inside the HLS claim fence so it cannot wedge
+			// Cancel's barrier — but a send that already won completes
+			// before EventRemoved can be published. For HLS the send also
+			// obeys the claim ctx, so ad.cancel() interrupts a blocked send
+			// instead of waiting out the terminal timeout.
 			if errEvent != nil {
-				safeSendProgress(localCfg.ProgressCh, *errEvent, p.progressDone)
+				var done <-chan struct{} = p.progressDone
+				if hlsTask {
+					done = ctx.Done()
+				}
+				safeSendProgress(localCfg.ProgressCh, *errEvent, done)
+			}
+			if hlsTask {
+				ad.hlsEventMu.Unlock()
 			}
 		}
 		// If paused, we keep it in downloads map for potential resume.

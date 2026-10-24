@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strings"
 	"time"
 
@@ -95,27 +94,7 @@ func PreflightHLSManifest(
 		mediaPl = mediaPl2
 	}
 
-	estimatedBytes := ComputeEstimatedBytes(selectedBandwidth, mediaPl.TotalDurationSec)
-	resumeState := &types.HLSResumeState{
-		ManifestURL:         trimmedURL,
-		MediaPlaylistURL:    mediaPl.BaseURL,
-		SegmentRefURL:       mediaPl.SegmentRefURL,
-		ManifestFingerprint: mediaPl.ManifestFingerprint,
-		ContainerFormat:     mediaPl.ContainerFormat,
-		EstimatedBytes:      estimatedBytes,
-		RecordEligible:      ComputeRecordEligible(estimatedBytes),
-		TotalSegments:       len(mediaPl.Segments),
-		CompletedBitmap:     make([]byte, (len(mediaPl.Segments)+7)/8),
-		Keys:                slices.Clone(mediaPl.Keys),
-		Segments:            slices.Clone(mediaPl.Segments),
-	}
-	if mediaPl.InitMap != nil {
-		resumeState.InitSegmentURI = mediaPl.InitMap.URI
-		resumeState.InitByteOffset = mediaPl.InitMap.ByteOffset
-		resumeState.InitByteLength = mediaPl.InitMap.ByteLength
-		resumeState.InitKeyIndex = mediaPl.InitMap.KeyIndex
-		resumeState.InitIVHex = mediaPl.InitMap.IVHex
-	}
+	resumeState := zeroProgressResumeState(trimmedURL, mediaPl, selectedBandwidth)
 	return &HLSPreflightResult{
 		ResumeState:       resumeState,
 		ContainerExt:      ContainerFormatExtension(mediaPl.ContainerFormat),

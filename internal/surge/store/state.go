@@ -709,6 +709,16 @@ func UpdateStatus(id string, status string) error {
 	return saveMasterListLocked(list)
 }
 
+// UpdateURL rewrites the persisted source URL for a download.
+// For an unfinished HLS task the detail checkpoint is rebased too: every
+// derived playlist/segment/key/progress reference is invalidated to a
+// minimal ManifestURL-only seed while identity, credentials, mirrors and
+// rate-limit survive — a completed HLS row only updates the historical
+// URL without touching the final record.
+// FORK-PATCH: the whole operation runs inside the single masterMu critical
+// section (no re-locking store APIs); a failed master write attempts a
+// best-effort detail rollback — there is no cross-file transaction, only
+// ordered writes plus repair.
 func UpdateURL(id string, newURL string) error {
 	masterMu.Lock()
 	defer masterMu.Unlock()
@@ -717,19 +727,97 @@ func UpdateURL(id string, newURL string) error {
 	if err != nil {
 		return err
 	}
-	found := false
+	idx := -1
+	var entry types.DownloadRecord
 	for i, e := range list.Downloads {
 		if e.ID == id {
-			list.Downloads[i].URL = newURL
-			list.Downloads[i].URLHash = URLHash(newURL)
-			found = true
+			idx = i
+			entry = e
 			break
 		}
 	}
-	if !found {
+	if idx < 0 {
 		return fmt.Errorf("%w: %s", types.ErrNotFound, id)
 	}
-	return saveMasterListLocked(list)
+
+	if entry.Strategy != types.StrategyHLS || entry.Status == "completed" {
+		list.Downloads[idx].URL = newURL
+		list.Downloads[idx].URLHash = URLHash(newURL)
+		return saveMasterListLocked(list)
+	}
+
+	// Unfinished HLS: rebase the detail record first. A missing detail is
+	// minted from the master identity; a corrupt or unreadable one is a
+	// reported failure, never silently rebuilt over.
+	detailPath := getDetailPath(baseDir, id)
+	var oldDetail *DetailState
+	var rec *types.DownloadRecord
+	var ds DetailState
+	loadErr := loadGob(detailPath, &ds)
+	switch {
+	case loadErr == nil && ds.State != nil:
+		oldDetail = &ds
+		rec = toRecord(ds.State)
+	case loadErr == nil || os.IsNotExist(loadErr):
+		rec = &types.DownloadRecord{
+			ID:                   entry.ID,
+			Filename:             entry.Filename,
+			DestPath:             entry.DestPath,
+			Status:               entry.Status,
+			CreatedAt:            entry.CreatedAt,
+			PausedAt:             entry.PausedAt,
+			Elapsed:              entry.TimeTaken * int64(time.Millisecond),
+			Mirrors:              entry.Mirrors,
+			RateLimit:            entry.RateLimit,
+			RateLimitSet:         entry.RateLimitSet,
+			Workers:              entry.Workers,
+			MinChunkSize:         entry.MinChunkSize,
+			RangeAcquisitionMode: entry.RangeAcquisitionMode,
+			SkipServerProbe:      entry.SkipServerProbe,
+		}
+	default:
+		return fmt.Errorf("failed to load detail state for url update: %w", loadErr)
+	}
+
+	rec.URL = newURL
+	rec.URLHash = URLHash(newURL)
+	rec.Strategy = types.StrategyHLS
+	rec.HLSResume = rec.HLSResume.RebaseManifestURL(newURL)
+	rec.Downloaded = 0
+	rec.TotalSize = 0
+	// Byte-range payload is meaningless under the new source.
+	rec.FileHash = ""
+	rec.Tasks = nil
+	rec.ChunkBitmap = nil
+	rec.ActualChunkSize = 0
+
+	if err := ensureDirsLocked(); err != nil {
+		return err
+	}
+	newDetail := DetailState{Version: 2, State: toPersisted(rec)}
+	if err := atomicWrite(detailPath, newDetail); err != nil {
+		return fmt.Errorf("failed to write detail state for url update: %w", err)
+	}
+
+	list.Downloads[idx].URL = newURL
+	list.Downloads[idx].URLHash = URLHash(newURL)
+	list.Downloads[idx].Downloaded = 0
+	list.Downloads[idx].TotalSize = 0
+	if err := saveMasterListLocked(list); err != nil {
+		// Best-effort repair: restore the previous detail (or drop the
+		// minted one) so the two files do not diverge silently.
+		var rerr error
+		if oldDetail != nil {
+			rerr = atomicWrite(detailPath, *oldDetail)
+		} else {
+			rerr = utils.RemoveFile(detailPath)
+		}
+		if rerr != nil {
+			return fmt.Errorf("failed to update master list: %w (detail rollback also failed: %w)", err, rerr)
+		}
+		return fmt.Errorf("failed to update master list: %w", err)
+	}
+	return nil
 }
 
 func PauseAllDownloads() error {

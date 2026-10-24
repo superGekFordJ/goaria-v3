@@ -14,6 +14,7 @@ import (
 	"goaria-v3/internal/surge/progress"
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/strategy/concurrent"
+	"goaria-v3/internal/surge/strategy/hls"
 	"goaria-v3/internal/surge/strategy/single"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
@@ -193,6 +194,46 @@ func detachConcurrentBridges(progState *progress.DownloadProgress) {
 	progState.SetDrainWorkerFn(nil)
 }
 
+// attachHlsDownloader constructs the HLS orchestrator and registers the
+// four instance-scoped control bridges on the progress state.
+func attachHlsDownloader(cfg *types.DownloadRecord, progState *progress.DownloadProgress) *hls.HlsDownloader {
+	d := hls.NewHlsDownloader(cfg.ID, cfg.ProgressCh, progState, cfg.Runtime)
+	d.Headers = cfg.Headers
+	d.Mirrors = append([]string(nil), cfg.Mirrors...)
+	d.Limiter = cfg.Limiter
+	d.HLSResume = cfg.HLSResume
+	d.IsResume = cfg.IsResume
+	d.CreatedAt = cfg.CreatedAt
+	d.RateLimit = cfg.RateLimit
+	d.RateLimitSet = cfg.RateLimitSet
+	if progState != nil {
+		progState.SetScaleWorkersFn(d.ScaleWorkers)
+		progState.SetKillWorkerFn(d.KillWorker)
+		progState.SetSetSlowThresholdFn(d.SetSlowWorkerThreshold)
+		progState.SetDrainWorkerFn(d.DrainWorker)
+	}
+	return d
+}
+
+// copyBackHLS writes the durable prefix checkpoint back into cfg so a
+// scheduler retry or paused-resume rebuilds from provable state, and — on
+// physical success only — publishes the final merged size through the
+// ByteTracker (never DownloadProgress.SetTotalSize, which would reset the
+// session timer).
+func copyBackHLS(d *hls.HlsDownloader, cfg *types.DownloadRecord, progState *progress.DownloadProgress, effectiveTotalSize *int64) {
+	if snap := d.ResumeSnapshot(); snap != nil {
+		cfg.HLSResume = snap
+		cfg.Downloaded = snap.VerifiedBytes
+	}
+	if d.TotalSize > 0 {
+		cfg.TotalSize = d.TotalSize
+		*effectiveTotalSize = d.TotalSize
+		if progState != nil {
+			progState.Bytes.SetTotalSize(d.TotalSize)
+		}
+	}
+}
+
 func copyBackConcurrent(d *concurrent.ConcurrentDownloader, cfg *types.DownloadRecord, effectiveTotalSize *int64) {
 	if d.TotalSize > 0 {
 		*effectiveTotalSize = d.TotalSize
@@ -295,6 +336,18 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		progState.SetDestPath(finalDestPath)
 	}
 
+	// FORK-PATCH: HLS tasks have an unknown total — pin cfg/state/effective
+	// total to 0 before EventStarted and every generic size read so a stale
+	// or estimated size can never reset the session timer, clamp progress to
+	// 100%, gate Pause, or pin resume to a single worker.
+	isHLS := cfg.Strategy == types.StrategyHLS
+	if isHLS {
+		cfg.TotalSize = 0
+		if progState != nil {
+			progState.Bytes.SetTotalSize(0)
+		}
+	}
+
 	currentRateLimit := func() (int64, bool) {
 		if progState != nil {
 			return progState.GetRateLimit()
@@ -333,7 +386,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 	}
 
 	effectiveTotalSize := cfg.TotalSize
-	if progState != nil && effectiveTotalSize <= 0 {
+	if progState != nil && effectiveTotalSize <= 0 && !isHLS {
 		_, stateTotal, _, _, _, _ := progState.GetProgress()
 		if stateTotal > 0 {
 			effectiveTotalSize = stateTotal
@@ -344,16 +397,20 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 	var downloadErr error
 	useConcurrent := types.ShouldUseConcurrent(cfg.RangeAcquisitionMode, cfg.SupportsRange)
 
-	if cfg.Strategy == types.StrategyHLS {
-		// FORK-PATCH: mutually exclusive HLS dispatch. The segment downloader
-		// lands later; until then HLS must never enter the concurrent or
-		// single downloaders — a playlist body is not a file payload, and a
-		// "successful" single GET would fake completion.
+	if isHLS {
+		// FORK-PATCH: mutually exclusive HLS dispatch — the segment
+		// orchestrator owns the whole lifecycle; a playlist body is not a
+		// file payload, so HLS never enters concurrent or single downloaders.
 		utils.Debug("Using HLS downloader strategy")
 		if err := ctx.Err(); err != nil {
 			downloadErr = err
 		} else {
-			downloadErr = types.ErrHLSNotImplemented
+			d := attachHlsDownloader(cfg, progState)
+			downloadErr = d.Run(ctx, cfg.URL, finalDestPath)
+			// FORK-PATCH: bridges always detach on every exit, then the
+			// durable prefix checkpoint copies back into cfg.
+			detachConcurrentBridges(progState)
+			copyBackHLS(d, cfg, progState, &effectiveTotalSize)
 		}
 	} else if useConcurrent {
 		utils.Debug("Using concurrent downloader")
@@ -438,7 +495,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		}
 	}
 
-	if cfg.Strategy != types.StrategyHLS && !useConcurrent {
+	if !isHLS && !useConcurrent {
 		// Fallback to single-threaded downloader
 		utils.Debug("Using single-threaded downloader")
 		d := single.NewSingleDownloader(cfg.ID, cfg.ProgressCh, progState, cfg.Runtime)

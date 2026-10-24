@@ -257,6 +257,29 @@ func (e *segmentEngine) spawnWorker() bool {
 	return e.spawn(false)
 }
 
+// lifecycleView is a consistent read-only snapshot of the worker-count
+// epoch under lifeMu: the live worker count plus the channel that closes on
+// the next drain-to-zero. Readers must re-view after every wake — a
+// zero-to-one transition arms a fresh channel. This is the runtime
+// monitoring path; wait() stays reserved for the terminal seal.
+type engineLifecycleView struct {
+	workers     int
+	workersDone chan struct{}
+	running     bool
+	sealed      bool
+}
+
+func (e *segmentEngine) lifecycleView() engineLifecycleView {
+	e.lifeMu.Lock()
+	defer e.lifeMu.Unlock()
+	return engineLifecycleView{
+		workers:     e.workers,
+		workersDone: e.workersDone,
+		running:     e.running,
+		sealed:      e.sealed,
+	}
+}
+
 func (e *segmentEngine) spawn(initial bool) bool {
 	if !initial && !e.admissionOpen.Load() {
 		return false

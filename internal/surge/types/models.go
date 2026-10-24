@@ -192,6 +192,21 @@ func (s *HLSResumeState) Clone() *HLSResumeState {
 	return &cp
 }
 
+// RebaseManifestURL returns an independent minimal state for an explicit
+// source change: the new manifest anchor with every derived playlist,
+// segment, key, byte-range, progress and spill reference invalidated. The
+// receiver is never mutated; a nil receiver yields nil — there is no state
+// to rebase.
+func (s *HLSResumeState) RebaseManifestURL(newURL string) *HLSResumeState {
+	if s == nil {
+		return nil
+	}
+	return &HLSResumeState{
+		ManifestURL:    newURL,
+		RecordEligible: true,
+	}
+}
+
 // MasterList holds all tracked downloads.
 type MasterList struct {
 	Downloads []DownloadRecord `json:"downloads"`
