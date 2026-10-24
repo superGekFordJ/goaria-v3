@@ -1023,11 +1023,14 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 		p.wg.Done()
 	}
 
-	if !activeExists && !queuedExists {
+	// A busy-claim-only HLS removal still runs the cancel+barrier below —
+	// the removal marker alone cannot recall a publication already inside
+	// the claim fence.
+	if !activeExists && !queuedExists && len(hlsClaims) == 0 {
 		return types.CancelResult{}
 	}
 
-	result := types.CancelResult{Found: true, WasQueued: queuedExists && !activeExists}
+	result := types.CancelResult{Found: activeExists || queuedExists, WasQueued: queuedExists && !activeExists}
 
 	if activeExists && ad != nil {
 		result.Filename = ad.config.Filename
@@ -1127,13 +1130,14 @@ func (p *Scheduler) UpdateURL(downloadID string, newURL string) error {
 		if ad.config.Strategy == types.StrategyHLS {
 			// FORK-PATCH: an HLS source change is rejected while any physical
 			// claim for this ID is unsettled — running, pausing, or a busy
-			// slot still held — even when the Paused flag is already true or
-			// ProgressState is nil. Only a fully settled paused task may be
-			// rebased below.
+			// claim still naming this ID (including a stale claim whose ad is
+			// no longer the downloads entry) — even when the Paused flag is
+			// already true or ProgressState is nil. Only a fully settled
+			// paused task may be rebased below.
 			busyHeld := ad.running.Load()
 			if !busyHeld {
 				for _, slot := range p.busy {
-					if slot.ad == ad {
+					if slot.ad != nil && slot.ad.config.ID == downloadID {
 						busyHeld = true
 						break
 					}
@@ -1430,8 +1434,7 @@ func (p *Scheduler) worker() {
 			// The concurrent downloader sends DownloadPausedMsg itself via handlePause().
 			// When a single-threaded download is paused, RunDownload returns an error,
 			// and the pool fills the gap.
-			if !errors.Is(err, types.ErrPaused) && localCfg.ProgressCh != nil &&
-				(localCfg.Strategy != types.StrategyHLS || !ad.hlsRemoved.Load()) {
+			if !errors.Is(err, types.ErrPaused) && localCfg.ProgressCh != nil {
 				var downloaded int64
 				var rateLimit int64
 				var rateLimitSet bool
@@ -1445,7 +1448,7 @@ func (p *Scheduler) worker() {
 					minChunkSize = localCfg.Runtime.MinChunkSize
 				}
 				rateLimit, rateLimitSet = localCfg.RateLimit, localCfg.RateLimitSet
-				safeSendProgress(localCfg.ProgressCh, types.DownloadEvent{
+				pausedEv := types.DownloadEvent{
 					Type:         types.EventPaused,
 					DownloadID:   localCfg.ID,
 					Filename:     localCfg.Filename,
@@ -1454,7 +1457,22 @@ func (p *Scheduler) worker() {
 					RateLimitSet: rateLimitSet,
 					Workers:      workers,
 					MinChunkSize: minChunkSize,
-				}, p.progressDone)
+				}
+				if localCfg.Strategy == types.StrategyHLS {
+					// FORK-PATCH: publish through the claim fence — a Cancel
+					// marking this claim before the send suppresses the sparse
+					// pause event; a send that already won lands ahead of
+					// EventRemoved. The claim ctx is already canceled on a
+					// legitimate pause, so the send only obeys the
+					// shutdown/timeout bound.
+					ad.hlsEventMu.Lock()
+					if !ad.hlsRemoved.Load() {
+						safeSendProgress(localCfg.ProgressCh, pausedEv, p.progressDone)
+					}
+					ad.hlsEventMu.Unlock()
+				} else {
+					safeSendProgress(localCfg.ProgressCh, pausedEv, p.progressDone)
+				}
 			}
 		} else {
 			p.mu.Lock()
@@ -1521,7 +1539,7 @@ func (p *Scheduler) worker() {
 						workers = localCfg.Runtime.Workers
 						minChunkSize = localCfg.Runtime.MinChunkSize
 					}
-					safeSendProgress(localCfg.ProgressCh, types.DownloadEvent{
+					queuedEv := types.DownloadEvent{
 						Type:         types.EventQueued,
 						DownloadID:   localCfg.ID,
 						Filename:     localCfg.Filename,
@@ -1534,7 +1552,21 @@ func (p *Scheduler) worker() {
 						RateLimitSet: localCfg.RateLimitSet,
 						Workers:      workers,
 						MinChunkSize: minChunkSize,
-					}, p.progressDone)
+					}
+					if hlsTask {
+						// FORK-PATCH: publish through the claim fence — a
+						// Cancel marking this claim while the requeue
+						// settled must not let EventQueued land after
+						// EventRemoved. The claim ctx cancels a wedged
+						// send so Cancel's barrier is never held up.
+						ad.hlsEventMu.Lock()
+						if !ad.hlsRemoved.Load() && ctx.Err() == nil {
+							safeSendProgress(localCfg.ProgressCh, queuedEv, ctx.Done())
+						}
+						ad.hlsEventMu.Unlock()
+					} else {
+						safeSendProgress(localCfg.ProgressCh, queuedEv, p.progressDone)
+					}
 				}
 
 				p.mu.Lock()

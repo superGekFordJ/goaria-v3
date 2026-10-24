@@ -109,6 +109,9 @@ func (d *HlsDownloader) mount(ctx context.Context, destPath string, seed *types.
 		// One controlled fallback: zero the prefix, refetch init, rebuild.
 		// I/O faults never take this branch.
 		resetProgress(prepared)
+		// The sampled baseline is stale after the reset — a fresh start
+		// must not look like a resume (it would suppress FirstByte).
+		mnt.resumeBaseline = prepared.VerifiedBytes
 		if terr := out.Truncate(0); terr != nil {
 			return fail(newStorageError("truncate", surgePath, terr))
 		}

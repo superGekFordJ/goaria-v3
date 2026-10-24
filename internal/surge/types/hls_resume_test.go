@@ -6,7 +6,7 @@ import (
 
 // RebaseManifestURL must collapse every derived reference to a minimal
 // anchor-only seed without mutating the receiver.
-func TestHLSResumeState_RebaseManifestURL(t *testing.T) {
+func TestHLSRebase_ManifestURLCollapsesToMinimalSeed(t *testing.T) {
 	const oldURL = "https://cdn-a.example.com/master.m3u8"
 	const newURL = "https://cdn-b.example.com/v2/master.m3u8"
 
@@ -70,7 +70,7 @@ func TestHLSResumeState_RebaseManifestURL(t *testing.T) {
 	}
 }
 
-func TestHLSResumeState_RebaseManifestURLNil(t *testing.T) {
+func TestHLSRebase_NilReceiverYieldsNil(t *testing.T) {
 	var nilState *HLSResumeState
 	if got := nilState.RebaseManifestURL("https://x/y.m3u8"); got != nil {
 		t.Fatalf("nil rebase = %+v, want nil", got)

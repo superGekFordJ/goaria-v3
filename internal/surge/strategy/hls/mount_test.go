@@ -228,6 +228,9 @@ func TestHLSMount_DirtySeedSingleControlledFallback(t *testing.T) {
 	if fi, _ := mnt.out.Stat(); fi.Size() != 0 {
 		t.Fatalf("file size = %d after fallback, want 0", fi.Size())
 	}
+	if mnt.resumeBaseline != 0 {
+		t.Fatalf("resumeBaseline = %d after dirty fallback — a fresh start must not look like a resume", mnt.resumeBaseline)
+	}
 }
 
 func TestHLSMount_BadSeedIsContractError(t *testing.T) {

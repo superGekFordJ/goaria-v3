@@ -190,7 +190,7 @@ func e2eEnqueueHLS(t *testing.T, s *hlsE2EStack, manifestURL, dir, filename stri
 	return id
 }
 
-func TestHLSE2E_TSVODCompletesAndPromotes(t *testing.T) {
+func TestHLSDownloadLifecycle_TSVODCompletesAndPromotes(t *testing.T) {
 	s := newHLSE2EStack(t, 2)
 	o := newHLSOrigin(t)
 	segs := [][]byte{[]byte("seg-0-"), []byte("seg-1-"), []byte("seg-2-tail")}
@@ -248,7 +248,7 @@ func TestHLSE2E_TSVODCompletesAndPromotes(t *testing.T) {
 	}
 }
 
-func TestHLSE2E_EncryptedFMP4CompletesAndPromotes(t *testing.T) {
+func TestHLSDownloadLifecycle_EncryptedFMP4CompletesAndPromotes(t *testing.T) {
 	s := newHLSE2EStack(t, 2)
 	o := newHLSOrigin(t)
 	key := make([]byte, aes.BlockSize)
@@ -295,7 +295,7 @@ func TestHLSE2E_EncryptedFMP4CompletesAndPromotes(t *testing.T) {
 	}
 }
 
-func TestHLSE2E_TransientErrorRetriesThenCompletes(t *testing.T) {
+func TestHLSDownloadLifecycle_TransientErrorRetriesThenCompletes(t *testing.T) {
 	s := newHLSE2EStack(t, 1)
 	o := newHLSOrigin(t)
 	segs := [][]byte{[]byte("r0"), []byte("r1")}
@@ -340,7 +340,7 @@ func TestHLSE2E_TransientErrorRetriesThenCompletes(t *testing.T) {
 	}
 }
 
-func TestHLSE2E_PauseResumePreservesMergedPrefix(t *testing.T) {
+func TestHLSDownloadLifecycle_PauseResumePreservesMergedPrefix(t *testing.T) {
 	s := newHLSE2EStack(t, 1)
 	o := newHLSOrigin(t)
 	o.serve("/s0.ts", []byte("part-0"))
@@ -407,7 +407,7 @@ func TestHLSE2E_PauseResumePreservesMergedPrefix(t *testing.T) {
 	}
 }
 
-func TestHLSE2E_CancelRemovesArtifacts(t *testing.T) {
+func TestHLSDownloadLifecycle_CancelRemovesArtifacts(t *testing.T) {
 	s := newHLSE2EStack(t, 1)
 	o := newHLSOrigin(t)
 	o.serve("/s0.ts", []byte("part-0"))

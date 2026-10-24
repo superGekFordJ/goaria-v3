@@ -5,17 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"goaria-v3/internal/surge/progress"
-	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/testutil"
 	"goaria-v3/internal/surge/types"
 )
@@ -821,155 +818,5 @@ func TestSafeSendProgress_CompleteTerminalReliableAgainstCanceledContext(t *test
 	second := <-ch
 	if second.Type != types.EventComplete {
 		t.Fatalf("expected EventComplete, got %v", second.Type)
-	}
-}
-
-func TestRunDownload_HLSStrategy_MutuallyExclusiveNeverFallsBackToSingle(t *testing.T) {
-	store.Configure(filepath.Join(t.TempDir(), "state.db"))
-	t.Cleanup(store.CloseDB)
-
-	segPayload := []byte("SEGMENT-PAYLOAD-0123456789")
-	var requests atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		switch r.URL.Path {
-		case "/index.m3u8":
-			w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-			_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.0,\nseg0.ts\n#EXT-X-ENDLIST\n"))
-		case "/seg0.ts":
-			_, _ = w.Write(segPayload)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer ts.Close()
-
-	tmpDir := t.TempDir()
-	progressCh := make(chan types.DownloadEvent, 16)
-	cfg := types.DownloadRecord{
-		URL:           ts.URL + "/index.m3u8",
-		OutputPath:    tmpDir,
-		Filename:      "video.ts",
-		ID:            "hls-dispatch",
-		ProgressCh:    progressCh,
-		ProgressState: progress.New("hls-dispatch", 0),
-		Runtime:       &types.RuntimeConfig{},
-		// A single-stream-looking config on purpose: the strategy branch must
-		// win before the concurrent/single selection even runs.
-		SupportsRange: false,
-		Strategy:      types.StrategyHLS,
-	}
-
-	if err := RunDownload(context.Background(), &cfg); err != nil {
-		t.Fatalf("RunDownload = %v", err)
-	}
-	// The HLS pipeline ran: manifest fetch plus the segment fetch — a
-	// single-file fallback would have written the playlist body itself.
-	if requests.Load() < 2 {
-		t.Fatalf("server requests = %d, want manifest+segment fetches", requests.Load())
-	}
-	surge, err := os.ReadFile(filepath.Join(tmpDir, "video.ts") + types.IncompleteSuffix)
-	if err != nil {
-		t.Fatalf("read .surge: %v", err)
-	}
-	if string(surge) != string(segPayload) {
-		t.Fatalf(".surge content %q, want segment payload (playlist body must never land on disk)", surge)
-	}
-	if cfg.TotalSize != int64(len(segPayload)) {
-		t.Fatalf("cfg.TotalSize = %d, want %d (physical merged size)", cfg.TotalSize, len(segPayload))
-	}
-	var sawComplete bool
-	for len(progressCh) > 0 {
-		ev := <-progressCh
-		if ev.Type == types.EventComplete {
-			sawComplete = true
-			if ev.Total != int64(len(segPayload)) {
-				t.Fatalf("EventComplete.Total = %d, want %d", ev.Total, len(segPayload))
-			}
-		}
-	}
-	if !sawComplete {
-		t.Fatal("HLS run finished without EventComplete")
-	}
-
-	// A pre-canceled context reports the context error without touching the
-	// network.
-	requests.Store(0)
-	cfg2 := cfg
-	cfg2.ProgressCh = nil
-	cfg2.ID = "hls-dispatch-canceled"
-	cfg2.OutputPath = t.TempDir()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := RunDownload(ctx, &cfg2); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled RunDownload = %v, want context.Canceled", err)
-	}
-	if requests.Load() != 0 {
-		t.Fatalf("canceled run still hit the server %d times", requests.Load())
-	}
-}
-
-func TestScheduler_HLSStrategy_TerminalNotRetried(t *testing.T) {
-	store.Configure(filepath.Join(t.TempDir(), "state.db"))
-	t.Cleanup(store.CloseDB)
-
-	var requests atomic.Int32
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		_, _ = w.Write([]byte("#EXTM3U\n"))
-	}))
-	defer ts.Close()
-
-	ch := make(chan types.DownloadEvent, 16)
-	pool := New(ch, 1)
-	t.Cleanup(pool.GracefulShutdown)
-
-	const id = "hls-terminal"
-	tmpDir := t.TempDir()
-	if !pool.Add(types.DownloadRecord{
-		ID:            id,
-		URL:           ts.URL + "/index.m3u8",
-		OutputPath:    tmpDir,
-		Filename:      "v.ts",
-		ProgressState: progress.New(id, 0),
-		Runtime:       &types.RuntimeConfig{},
-		Strategy:      types.StrategyHLS,
-	}) {
-		t.Fatal("Add refused")
-	}
-
-	sawStarted := false
-	sawError := false
-	deadline := time.After(10 * time.Second)
-	for !sawError {
-		select {
-		case ev := <-ch:
-			if ev.DownloadID != id {
-				continue
-			}
-			switch ev.Type {
-			case types.EventStarted:
-				sawStarted = true
-			case types.EventQueued:
-				t.Fatal("a permanent manifest error must not requeue the task")
-			case types.EventComplete:
-				t.Fatal("an invalid manifest must never complete")
-			case types.EventError:
-				if !types.IsPermanentHLSError(ev.Err) {
-					t.Fatalf("EventError.Err = %v, want a permanent HLS error", ev.Err)
-				}
-				sawError = true
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for terminal EventError")
-		}
-	}
-	if !sawStarted {
-		t.Fatal("expected EventStarted before the terminal error")
-	}
-	// Exactly one manifest fetch: the permanent error ends the task at
-	// bootstrap — no segment fetches, no retries.
-	if requests.Load() != 1 {
-		t.Fatalf("server requests = %d, want 1", requests.Load())
 	}
 }

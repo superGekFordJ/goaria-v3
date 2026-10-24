@@ -403,7 +403,7 @@ func (d *HlsDownloader) settleRun(ctx context.Context, mnt *hlsMount, prog *prog
 		werr = newHLSContractError("engine drained without a terminal cause")
 	}
 	// Non-cancel error path: capture the durable prefix, sync, persist.
-	d.checkpointOnError(mnt, prog, &werr)
+	d.checkpointOnError(ctx, mnt, prog, &werr)
 	return werr
 }
 
@@ -452,7 +452,7 @@ func (d *HlsDownloader) finishPhysical(mnt *hlsMount) error {
 
 // checkpointOnError preserves the last provable prefix on a non-cancel
 // failure so the scheduler retry/paused-resume can rebuild from it.
-func (d *HlsDownloader) checkpointOnError(mnt *hlsMount, prog *progress.DownloadProgress, werr *error) {
+func (d *HlsDownloader) checkpointOnError(ctx context.Context, mnt *hlsMount, prog *progress.DownloadProgress, werr *error) {
 	window := mnt.window
 	out := mnt.out
 	if window == nil || out == nil {
@@ -468,6 +468,12 @@ func (d *HlsDownloader) checkpointOnError(mnt *hlsMount, prog *progress.Download
 	if err := window.Sync(); err != nil {
 		// Keep the previous durable checkpoint; report alongside the cause.
 		*werr = errors.Join(*werr, err)
+		d.realignProgress(prog)
+		return
+	}
+	if ctx.Err() != nil {
+		// A cancel landed mid-checkpoint: a fresh detail save now would
+		// race the caller's teardown — keep the last synced prefix only.
 		d.realignProgress(prog)
 		return
 	}
@@ -540,7 +546,14 @@ func (d *HlsDownloader) onSegmentAccepted(e *segmentEngine, index int, res Inges
 		return
 	}
 	d.firstSegOnce.Do(func() {
+		// ctrlMu-published fields: the mount/engine were published before
+		// start, but keep the read discipline uniform with every other
+		// consumer (detach mutates the same fields post-join).
+		d.ctrlMu.Lock()
 		window := d.window
+		maxWorkers := d.maxWorkers
+		resumeBaseline := d.resumeBaseline
+		d.ctrlMu.Unlock()
 		if window == nil {
 			e.latchFatal(newHLSContractError("accepted segment without window"))
 			return
@@ -559,11 +572,11 @@ func (d *HlsDownloader) onSegmentAccepted(e *segmentEngine, index int, res Inges
 			return
 		}
 		d.setDurable(snap)
-		if !d.IsResume && d.resumeBaseline == 0 && d.firstByteEmitted.CompareAndSwap(false, true) {
+		if !d.IsResume && resumeBaseline == 0 && d.firstByteEmitted.CompareAndSwap(false, true) {
 			d.sendFirstByte(e.ctx, time.Since(attemptStart).Milliseconds())
 		}
 		e.setAdmissionOpen(true)
-		target := d.maxWorkers
+		target := maxWorkers
 		for spawned := 1; spawned < target; spawned++ {
 			// Bound new workers by feedable work — leased tasks are not
 			// infinitely re-spawnable supply.
