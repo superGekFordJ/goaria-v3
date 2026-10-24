@@ -347,10 +347,14 @@ export function setupActions(state: TaskState) {
       // Active/waiting pass through untouched; the reconcile only re-homes
       // rows events folded mid-flight (e.g. a completion landing in stopped
       // that a pre-move stopped snapshot does not know yet).
+      const { merged: mergedStopped, changed: stoppedChanged } = mergeTasks(
+        tasks.value.stopped,
+        filteredStopped,
+      )
       const merged = {
         active: tasks.value.active,
         waiting: tasks.value.waiting,
-        stopped: mergeTasks(tasks.value.stopped, filteredStopped).merged.map(markStoppedTaskRaw),
+        stopped: stoppedChanged ? mergedStopped.map(markStoppedTaskRaw) : tasks.value.stopped,
       }
       const next = preserveInflightMoves(membershipAtSend, merged)
 

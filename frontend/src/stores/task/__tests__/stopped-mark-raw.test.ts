@@ -127,6 +127,8 @@ describe('stopped tasks markRaw reactivity pruning', () => {
     const firstStoppedRow = state.tasks.value.stopped[0]
     expect(isProxy(firstStoppedRow)).toBe(false)
     expect(isReactive(firstStoppedRow)).toBe(false)
+    expect(isProxy(firstStoppedRow.files)).toBe(false)
+    expect(isReactive(firstStoppedRow.files)).toBe(false)
 
     // Subsequent delta updates errorMessage on the already-stopped row:
     // row reference must change so prop-based observers re-render, and stay raw.

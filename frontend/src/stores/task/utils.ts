@@ -1,14 +1,22 @@
-import { markRaw } from 'vue'
+import { markRaw, type Raw } from 'vue'
 import { Task } from '../../../bindings/goaria-v3/internal/rpc/models.js'
 import { cacheMetadata, applyMetadataFromCache } from './metadata'
 import { isTaskGroupEqual, mergeTaskGroupMetadata } from './grouping'
 
-export function markStoppedTaskRaw<T extends Task>(task: T): T {
+export function markStoppedTaskRaw<T extends Task>(task: T): Raw<T> {
   return markRaw(task)
 }
 
 export function unmarkTaskRaw<T extends Task>(task: T): T {
-  delete (task as unknown as Record<string, unknown>).__v_skip
+  const raw = task as unknown as Record<string, unknown>
+  try {
+    delete raw.__v_skip
+  } catch {
+    // Fallback if non-configurable in future Vue versions
+  }
+  if ('__v_skip' in raw && import.meta.env.DEV) {
+    console.warn('[Task] Failed to delete __v_skip on task:', task.gid)
+  }
   return task
 }
 

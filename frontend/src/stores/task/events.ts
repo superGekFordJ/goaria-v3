@@ -1,3 +1,4 @@
+import { toRaw } from 'vue'
 import { getActivePinia } from 'pinia'
 import { useDownloadGroupStore } from '../downloadGroups'
 import { TaskState } from './state'
@@ -94,7 +95,7 @@ function toTask(task: Partial<Task> | undefined): Task {
     errorCode: task?.errorCode ?? '',
     errorMessage: task?.errorMessage ?? '',
     dir: task?.dir ?? '',
-    files: task?.files ?? [],
+    files: toRaw(task?.files) ?? [],
   }
   if (task?.title !== undefined) result.title = task.title
   if ((task as unknown as { threads?: string })?.threads !== undefined) {
@@ -120,9 +121,9 @@ function mergeTaskPreservingRichData(
   if (isNonEmptyString(incoming.title)) merged.title = incoming.title
 
   if (hasValidFiles(incoming)) {
-    merged.files = incoming.files ?? []
+    merged.files = toRaw(incoming.files) ?? []
   } else if (existing?.files?.length) {
-    merged.files = existing.files
+    merged.files = toRaw(existing.files)
   }
 
   if (isNonEmptyString(incoming.dir)) {

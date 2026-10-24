@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { nextTick, onRenderTracked } from 'vue'
+import { nextTick, type ComponentInternalInstance, type DebuggerEvent } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import TaskCard from './TaskCard.vue'
 import TaskProgressBar from './TaskProgressBar.vue'
@@ -74,7 +74,9 @@ describe('TaskProgressBar leaf isolation', () => {
   })
 
   it('updates scaleX inside TaskProgressBar on rAF without tracking displayDownloaded in TaskCard', async () => {
-    const trackedKeys: unknown[] = []
+    const taskCardTrackedKeys: unknown[] = []
+    let taskCardUpdates = 0
+    let progressBarUpdates = 0
     const wrapper = mount(TaskCard, {
       props: { task: mockTask() },
       global: {
@@ -82,10 +84,12 @@ describe('TaskProgressBar leaf isolation', () => {
           {
             install(app) {
               app.mixin({
-                setup() {
-                  onRenderTracked(e => {
-                    trackedKeys.push(e.key)
-                  })
+                renderTracked(this: { $?: ComponentInternalInstance }, e: DebuggerEvent) {
+                  if (this.$?.type === TaskCard) taskCardTrackedKeys.push(e.key)
+                },
+                updated(this: { $?: ComponentInternalInstance }) {
+                  if (this.$?.type === TaskCard) taskCardUpdates++
+                  if (this.$?.type === TaskProgressBar) progressBarUpdates++
                 },
               })
             },
@@ -106,6 +110,9 @@ describe('TaskProgressBar leaf isolation', () => {
     const updatedStyle = fill.attributes('style') || ''
     expect(updatedStyle).not.toContain('scaleX(0.2)')
     expect(updatedStyle).toMatch(/scaleX\(0\.20\d+\)/)
+    expect(taskCardTrackedKeys).not.toContain('displayDownloaded')
+    expect(taskCardUpdates).toBe(0)
+    expect(progressBarUpdates).toBe(1)
     wrapper.unmount()
   })
 
