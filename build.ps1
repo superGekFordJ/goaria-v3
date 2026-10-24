@@ -24,7 +24,7 @@ Write-Host "Detected Version: $version" -ForegroundColor Cyan
 $baseName = "goaria"
 $binDir = Join-Path $PSScriptRoot "bin"
 
-if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir }
+[System.IO.Directory]::CreateDirectory($binDir) | Out-Null
 
 # 函数：打包 zip
 function Build-And-Package($arch) {
@@ -42,7 +42,7 @@ function Build-And-Package($arch) {
         $exeSource = Join-Path $binDir "goaria-v3-arm64.exe"
     }
 
-    if (-not (Test-Path $exeSource)) {
+    if (-not [System.IO.File]::Exists($exeSource)) {
         Write-Error "Build failed or output not found: $exeSource"
         exit 1
     }
@@ -54,14 +54,14 @@ function Build-And-Package($arch) {
 
     # 如果源和目标不同，更名（为了打包出的 exe 也不带 v3）
     if ($exeSource -ne $exePath) {
-        if (Test-Path $exePath) { Remove-Item $exePath -Force }
+        if ([System.IO.File]::Exists($exePath)) { [System.IO.File]::Delete($exePath) }
         Move-Item $exeSource $exePath
     }
 
     $zipName = "$baseName-v$version-windows-$arch.zip"
     $zipPath = Join-Path $binDir $zipName
 
-    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    if ([System.IO.File]::Exists($zipPath)) { [System.IO.File]::Delete($zipPath) }
 
     Write-Host "Packaging $zipName (containing $targetExeName)..." -ForegroundColor Green
     Compress-Archive -Path $exePath -DestinationPath $zipPath -Force

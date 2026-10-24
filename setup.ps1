@@ -77,7 +77,7 @@ if (Test-Command "wails3") {
 # -------------------------------------------------------------------------
 # 3. Download & Install Aria2c
 # -------------------------------------------------------------------------
-$targetDir = Join-Path $PSScriptRoot "internal\process\bundled\windows"
+$targetDir = Join-Path $PSScriptRoot "internal/process/bundled/windows"
 $aria2Exe = Join-Path $targetDir "aria2c.exe"
 $aria2Version = "1.37.0"
 $expectedHashes = @{
@@ -102,7 +102,7 @@ $expectedHash = $expectedHashes[$arch]
 
 Write-Host "Checking aria2c binary..." -NoNewline
 
-if (Test-Path $aria2Exe) {
+if ([System.IO.File]::Exists($aria2Exe)) {
     try {
         Test-Aria2Hash -Path $aria2Exe -ExpectedHash $expectedHash.Exe -Label "Existing aria2c.exe"
         Write-Color " [OK]" Green
@@ -110,11 +110,11 @@ if (Test-Path $aria2Exe) {
     } catch {
         Write-Color " [INVALID]" Yellow
         Write-Color "   Existing bundled aria2c.exe failed integrity verification and will be replaced." Yellow
-        Remove-Item $aria2Exe -Force
+        if ([System.IO.File]::Exists($aria2Exe)) { [System.IO.File]::Delete($aria2Exe) }
     }
 }
 
-if (-not (Test-Path $aria2Exe)) {
+if (-not [System.IO.File]::Exists($aria2Exe)) {
     Write-Color " [MISSING]" Yellow
     Write-Color "⬇️  Downloading aria2c v$aria2Version ($arch)..." Cyan
     Write-Color "   Source: $downloadUrl" Gray
@@ -135,14 +135,14 @@ if (-not (Test-Path $aria2Exe)) {
         # Use the exact expected archive path
         $foundExe = Join-Path $tempExtract $expectedArchiveExe
 
-        if (Test-Path $foundExe) {
+        if ([System.IO.File]::Exists($foundExe)) {
             Test-Aria2Hash -Path $foundExe -ExpectedHash $expectedHash.Exe -Label "Extracted aria2c.exe"
-            # Ensure target directory exists
-            if (-not (Test-Path $targetDir)) { New-Item -ItemType Directory -Path $targetDir | Out-Null }
+            # Ensure target directory exists (idempotent in .NET)
+            [System.IO.Directory]::CreateDirectory($targetDir) | Out-Null
 
             # Move
             Move-Item -Path $foundExe -Destination $aria2Exe -Force
-            Write-Color "✅ aria2c.exe installed to internal/process\bundled\windows/" Green
+            Write-Color "✅ aria2c.exe installed to internal/process/bundled/windows/" Green
         } else {
             throw "aria2c.exe not found at expected archive path '$expectedArchiveExe'."
         }
@@ -153,8 +153,10 @@ if (-not (Test-Path $aria2Exe)) {
         exit 1
     } finally {
         # Cleanup
-        if (Test-Path $tempZip) { Remove-Item $tempZip -Force -ErrorAction SilentlyContinue }
-        if (Test-Path $tempExtract) { Remove-Item $tempExtract -Recurse -Force -ErrorAction SilentlyContinue }
+        try {
+            if ([System.IO.File]::Exists($tempZip)) { [System.IO.File]::Delete($tempZip) }
+            if ([System.IO.Directory]::Exists($tempExtract)) { [System.IO.Directory]::Delete($tempExtract, $true) }
+        } catch {}
     }
 }
 

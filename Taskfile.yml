@@ -143,7 +143,7 @@ tasks:
   clean:dist:
     summary: Remove frontend build artifacts
     cmds:
-      - cmd: powershell -NoProfile -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }"
+      - cmd: cmd /c "if exist frontend\dist rmdir /s /q frontend\dist"
         platforms: [windows]
       - cmd: rm -rf frontend/dist
         platforms: [linux, darwin]
@@ -151,7 +151,7 @@ tasks:
   clean:all:
     summary: Remove frontend dist, binaries, and generated bindings (non-destructive to cache)
     cmds:
-      - cmd: powershell -NoProfile -Command "if (Test-Path 'frontend/dist') { Remove-Item -Recurse -Force 'frontend/dist' }; if (Test-Path 'bin') { Remove-Item -Recurse -Force 'bin' }; if (Test-Path 'frontend/bindings') { Remove-Item -Recurse -Force 'frontend/bindings' }"
+      - cmd: cmd /c "if exist frontend\dist rmdir /s /q frontend\dist & if exist bin rmdir /s /q bin & if exist frontend\bindings rmdir /s /q frontend\bindings"
         platforms: [windows]
       - cmd: rm -rf frontend/dist bin frontend/bindings
         platforms: [linux, darwin]

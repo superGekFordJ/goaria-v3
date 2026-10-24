@@ -44,7 +44,7 @@ tasks:
     cmds:
       - task: generate:syso
       - go build {{.BUILD_FLAGS}} -o {{.BIN_DIR}}/{{.APP_NAME}}.exe
-      - cmd: powershell -NoProfile Remove-Item *.syso
+      - cmd: cmd /c "if exist *.syso del /f /q *.syso"
         platforms: [windows]
       - cmd: rm -f *.syso
         platforms: [linux, darwin]
@@ -77,7 +77,7 @@ tasks:
       - go build {{.BUILD_FLAGS}} -o bin/{{.APP_NAME}}-arm64.exe
 
       # 3. 清理 syso 文件
-      - cmd: powershell -NoProfile Remove-Item *.syso
+      - cmd: cmd /c "if exist *.syso del /f /q *.syso"
         platforms: [windows]
       - cmd: rm -f *.syso
         platforms: [linux, darwin]
@@ -147,7 +147,7 @@ tasks:
       - wails3 generate webview2bootstrapper -dir "{{.ROOT_DIR}}/build/windows/nsis"
       - |
         {{if eq OS "windows"}}
-        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" project.nsi
+        makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{fromSlash .ROOT_DIR}}\{{.BIN_DIR}}\{{.APP_NAME}}.exe" project.nsi
         {{else}}
         makensis {{if eq .INSTALL_SCOPE "user"}}-DWAILS_INSTALL_SCOPE=user -DREQUEST_EXECUTION_LEVEL=user {{end}}-DARG_WAILS_{{.ARG_FLAG}}_BINARY="{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" project.nsi
         {{end}}
