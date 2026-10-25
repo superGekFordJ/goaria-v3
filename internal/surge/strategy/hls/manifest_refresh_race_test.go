@@ -43,7 +43,9 @@ func TestHLSSegmentRetryRefresh_AttemptSnapshot(t *testing.T) {
 	var startOnce, release0Once sync.Once
 	// Unblock the parked seg0 handler on any failure path, or the
 	// fixture's httptest.Server.Close wedges until the test timeout.
-	t.Cleanup(func() { release0Once.Do(func() { close(release0) }) })
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer release0Once.Do(func() { close(release0) })
 	playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n" +
 		"#EXT-X-KEY:METHOD=AES-128,URI=\"key2.bin\"\n" +
 		"#EXTINF:4.0,\nv2/seg0\n#EXTINF:4.0,\nv2/seg1\n#EXT-X-ENDLIST\n"
@@ -109,8 +111,10 @@ func TestHLSSegmentRetryRefresh_CallerCancellation(t *testing.T) {
 	var enteredOnce, releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseManifest) }) }
 	// Unblock the parked manifest handler on any failure path, or the
-	// fixture's httptest.Server.Close wedges until the test timeout.
-	t.Cleanup(release)
+	// fixture's httptest.Server.Close wedges until the test timeout;
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer release()
 	playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n" +
 		"#EXTINF:4.0,\nv2/seg0\n#EXTINF:4.0,\nv2/seg1\n#EXT-X-ENDLIST\n"
 	f := newHLSFixture(t, bodies, fixtureOpts{
