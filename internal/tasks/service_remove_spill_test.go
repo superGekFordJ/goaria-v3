@@ -3,6 +3,7 @@ package tasks
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,8 @@ func TestSurgeSpillID(t *testing.T) {
 		{"sg_id ", "id", true},
 		{"sg_id.", "", false},
 		{"sg_a..b", "", false},
+		{"sg_" + strings.Repeat("a", 200), strings.Repeat("a", 200), true},
+		{"sg_" + strings.Repeat("a", 201), "", false},
 		{"sg_a/b", "", false},
 		{`sg_a\b`, "", false},
 		{"sg_a:b", "", false},

@@ -239,8 +239,9 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 
 // surgeSpillID extracts the raw Surge download ID from a "sg_" GID — the
 // only producer of ".<id>.spill" sidecars — and refuses anything that could
-// escape the destination directory or form an illegal filename. Non-Surge
-// GIDs and unsafe IDs delete nothing.
+// escape the destination directory, form an illegal filename, or exceed the
+// engine-side arena's 200-byte ceiling. Non-Surge GIDs and unsafe IDs
+// delete nothing.
 func surgeSpillID(gid string) (string, bool) {
 	gid = strings.TrimSpace(gid)
 	if !strings.HasPrefix(gid, "sg_") {
@@ -248,6 +249,9 @@ func surgeSpillID(gid string) (string, bool) {
 	}
 	rawID := strings.TrimPrefix(gid, "sg_")
 	if rawID == "" {
+		return "", false
+	}
+	if len(rawID) > 200 {
 		return "", false
 	}
 	if strings.Contains(rawID, "..") {
