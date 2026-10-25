@@ -22,12 +22,14 @@ type hlsMount struct {
 }
 
 // mount performs R1 file preparation: open the .surge without truncating
-// first, align it to the provable merged prefix, demote every legacy spill
-// claim, remove the stale same-ID arena, fetch the init segment when
-// needed, then construct the window — with exactly one controlled
-// zero-and-refetch fallback when the prepared seed still fails the window
-// contract for a non-I/O reason. Failures leave no half-claimed file
-// resources.
+// first, align it to the provable merged prefix, fetch the init segment
+// when needed, then hand the seed to the window — which either adopts a
+// fully validated spill ledger from the canonical same-ID arena or demotes
+// it to a prefix-only restart (missing/short/ledger-invalid claims degrade
+// locally; they never abort the mount). Exactly one controlled
+// zero-and-refetch fallback remains for a prepared seed that still fails
+// the window contract for a non-I/O reason. Failures leave no half-claimed
+// file resources.
 func (d *HlsDownloader) mount(ctx context.Context, destPath string, seed *types.HLSResumeState) (*hlsMount, error) {
 	surgePath := destPath + types.IncompleteSuffix
 	if err := validateSpillID(d.ID); err != nil {
@@ -87,21 +89,29 @@ func (d *HlsDownloader) mount(ctx context.Context, destPath string, seed *types.
 		}
 	}
 
-	// Spill is never re-mounted: demote all >= MergedSegments claims to a
-	// prefix-only restart and re-derive verified from merged.
-	demoteSpill(prepared)
-
-	// Remove the stale same-ID arena before any new arena can be created;
-	// prefix-only seeds still carry this requirement.
-	if err := os.Remove(mnt.spillPath); err != nil && !os.IsNotExist(err) {
-		return fail(newStorageError("spill remove", mnt.spillPath, err))
-	}
-
-	mnt.resumeBaseline = prepared.VerifiedBytes
-
-	// Init must be physically present before the window opens.
+	// Init must be physically present before the window opens; its length
+	// may re-anchor or even wipe the media claims, so the spill decision
+	// happens after it. fetchedInit is what this run fetched (0 = none) —
+	// the resume baseline must exclude bytes produced this run.
+	needInit := prepared.InitSegmentURI != "" && (!prepared.InitCompleted || prepared.InitBytes == 0)
 	if err := d.prepareInitSegment(ctx, mnt); err != nil {
 		return fail(err)
+	}
+	var fetchedInit int64
+	if needInit {
+		fetchedInit = prepared.InitBytes
+	}
+
+	// Only a ledger that survives full checkpoint validation may adopt the
+	// canonical arena. Everything else — no entries, stray bits, bad ledger,
+	// or an init rewrite that cleared the claims — demotes to a prefix-only
+	// restart, and the stale file is removed so a later first overflow can
+	// still O_EXCL-create the arena.
+	if len(prepared.SpillEntries) == 0 || ValidateCheckpointSeed(prepared) != nil {
+		demoteSpill(prepared)
+		if err := os.Remove(mnt.spillPath); err != nil && !os.IsNotExist(err) {
+			return fail(newStorageError("spill remove", mnt.spillPath, err))
+		}
 	}
 
 	window, err := NewReorderWindow(out, surgePath, d.ID, prepared)
@@ -109,14 +119,18 @@ func (d *HlsDownloader) mount(ctx context.Context, destPath string, seed *types.
 		// One controlled fallback: zero the prefix, refetch init, rebuild.
 		// I/O faults never take this branch.
 		resetProgress(prepared)
-		// The sampled baseline is stale after the reset — a fresh start
-		// must not look like a resume (it would suppress FirstByte).
-		mnt.resumeBaseline = prepared.VerifiedBytes
 		if terr := out.Truncate(0); terr != nil {
 			return fail(newStorageError("truncate", surgePath, terr))
 		}
+		if rerr := os.Remove(mnt.spillPath); rerr != nil && !os.IsNotExist(rerr) {
+			return fail(newStorageError("spill remove", mnt.spillPath, rerr))
+		}
+		fetchedInit = 0
 		if rerr := d.prepareInitSegment(ctx, mnt); rerr != nil {
 			return fail(rerr)
+		}
+		if prepared.InitSegmentURI != "" {
+			fetchedInit = prepared.InitBytes
 		}
 		window, err = NewReorderWindow(out, surgePath, d.ID, prepared)
 	}
@@ -124,6 +138,12 @@ func (d *HlsDownloader) mount(ctx context.Context, destPath string, seed *types.
 		return fail(err)
 	}
 	mnt.window = window
+	// The window is the adoption authority: its live snapshot reflects any
+	// frontier replay or physical demotion decided at open time. The
+	// baseline is the verified history before this run's init fetch so a
+	// resume keeps suppressing the FirstByte signal.
+	mnt.seed = window.Snapshot()
+	mnt.resumeBaseline = mnt.seed.VerifiedBytes - fetchedInit
 	return mnt, nil
 }
 
@@ -216,9 +236,11 @@ func clearMediaPrefix(s *types.HLSResumeState) {
 
 // demoteSpill converts legacy spill bookkeeping into a prefix-only seed:
 // every bit at or beyond the merged frontier is cleared, spill fields are
-// dropped, and verified collapses to merged.
+// dropped, and verified collapses to merged. It tolerates malformed claim
+// sets — out-of-range indexes and short bitmaps simply clear less, which is
+// fine because every demotion caller re-validates the result.
 func demoteSpill(s *types.HLSResumeState) {
-	for i := s.MergedSegments; i < s.TotalSegments; i++ {
+	for i := s.MergedSegments; i >= 0 && i < s.TotalSegments && i>>3 < len(s.CompletedBitmap); i++ {
 		s.CompletedBitmap[i>>3] &^= 1 << uint(i&7)
 	}
 	s.SpillPath = ""

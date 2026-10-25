@@ -179,11 +179,11 @@ func (d *HlsDownloader) run(ctx context.Context, manifestURL, destPath string) e
 
 	prepared, err := d.bootstrap(ctx, seed, credBase, headers, runCfg)
 	if err != nil {
-		return err
+		return d.pausedEarlyExit(ctx, err)
 	}
 	mnt, err := d.mount(ctx, destPath, prepared)
 	if err != nil {
-		return err
+		return d.pausedEarlyExit(ctx, err)
 	}
 	d.publishMount(mnt)
 
@@ -211,7 +211,7 @@ func (d *HlsDownloader) run(ctx context.Context, manifestURL, destPath string) e
 
 	e, err := d.startEngine(ctx, mnt, prog, runCfg, headers)
 	if err != nil {
-		return err
+		return d.pausedEarlyExit(ctx, err)
 	}
 
 	err = d.controlLoop(ctx, e)
@@ -226,7 +226,28 @@ func (d *HlsDownloader) run(ctx context.Context, manifestURL, destPath string) e
 	d.joinHealth()
 	prog.SetWorkerStats(nil)
 
-	return d.settleRun(ctx, mnt, prog, werr, err)
+	return d.settleRun(ctx, e, mnt, prog, werr, err)
+}
+
+// pausedEarlyExit converts a pre-engine early return into the pause product
+// when the user pause canceled this run — i.e. the error itself carries the
+// cancel identity. A genuine bootstrap/mount failure keeps its cause even
+// when the pause fired concurrently. No validated mount means no full
+// checkpoint exists: the scheduler publishes a sparse EventPaused and keeps
+// the last durable detail. Fresh-run counters are zeroed so the sparse
+// event never advertises phantom bytes; a persisted resume claim keeps its
+// historical verified bytes.
+func (d *HlsDownloader) pausedEarlyExit(ctx context.Context, err error) error {
+	ps := d.State
+	if ps == nil || !ps.IsPaused() || ctx.Err() == nil || !errors.Is(err, ctx.Err()) {
+		return err
+	}
+	ps.SetPendingResumeState(nil)
+	if d.HLSResume == nil || d.HLSResume.VerifiedBytes <= 0 {
+		ps.Bytes.Downloaded.Store(0)
+		ps.Bytes.VerifiedProgress.Store(0)
+	}
+	return errors.Join(types.ErrPaused, err)
 }
 
 // publishMount registers the mounted artifacts for bridge/callback access.
@@ -380,13 +401,18 @@ func (d *HlsDownloader) controlLoop(ctx context.Context, e *segmentEngine) error
 	}
 }
 
-// settleRun is the post-wait funnel: physical success verification, the
-// non-cancel error checkpoint path, or the cancel path (no new writes).
-func (d *HlsDownloader) settleRun(ctx context.Context, mnt *hlsMount, prog *progress.DownloadProgress, werr, cerr error) error {
+// settleRun is the post-wait funnel: physical success verification, pause
+// capture, the non-cancel error checkpoint path, or the plain-cancel path
+// (no new writes). Every branch runs strictly after the last worker and the
+// health watchdog joined, so the mount is already static.
+func (d *HlsDownloader) settleRun(ctx context.Context, e *segmentEngine, mnt *hlsMount, prog *progress.DownloadProgress, werr, cerr error) error {
 	if ctx.Err() == nil && werr == nil && cerr == nil {
 		return d.finishPhysical(mnt)
 	}
 	if ctx.Err() != nil {
+		if prog != nil && prog.IsPaused() {
+			return d.handlePause(mnt, prog, e != nil && e.admissionOpen.Load())
+		}
 		// Cancel path: keep only what was already durably synced.
 		d.realignProgress(prog)
 		if werr != nil {
@@ -408,9 +434,105 @@ func (d *HlsDownloader) settleRun(ctx context.Context, mnt *hlsMount, prog *prog
 	if werr == nil {
 		werr = newHLSContractError("engine drained without a terminal cause")
 	}
-	// Non-cancel error path: capture the durable prefix, sync, persist.
-	d.checkpointOnError(ctx, mnt, prog, &werr)
+	// Non-cancel error path: capture the durable checkpoint, sync, persist.
+	d.checkpointOnError(ctx, e, mnt, prog, &werr)
 	return werr
+}
+
+// handlePause produces the pause product for a settled run. Two shapes:
+//   - provable progress exists (first segment checkpointed this run, or a
+//     non-zero verified baseline was adopted at mount): capture the static
+//     full checkpoint — pending flushed to spill, synced, ledger-validated —
+//     and stash its record for the scheduler's fenced pause publication.
+//   - a fresh task paused before any provable byte: publish the zeroed
+//     descriptor — no new detail — so copy-back cannot resurrect this run's
+//     init fetch as durable progress.
+//
+// Pause never saves the detail here and never sends on the event channel —
+// that is the scheduler's claim-fenced publisher. Storage faults during the
+// capture are joined onto the pause identity so they stay diagnosable
+// without revoking the pause.
+func (d *HlsDownloader) handlePause(mnt *hlsMount, prog *progress.DownloadProgress, firstVerified bool) error {
+	d.ctrlMu.Lock()
+	baseline := d.resumeBaseline
+	d.ctrlMu.Unlock()
+	if !firstVerified && baseline <= 0 {
+		prog.FinalizePauseSession(0)
+		prog.SetPendingResumeState(nil)
+		// The persisted detail is untouched; the live durable projection is
+		// zeroed so a late copy-back cannot resurrect unprovable counters.
+		if snap := d.ResumeSnapshot(); snap != nil {
+			resetProgress(snap)
+			d.setDurable(snap)
+		}
+		return types.ErrPaused
+	}
+	snap, cause := d.captureStoppedCheckpoint(mnt)
+	var verified int64
+	if snap != nil {
+		verified = snap.VerifiedBytes
+	}
+	elapsed := prog.FinalizePauseSession(verified)
+	if snap != nil {
+		prog.SetPendingResumeState(d.buildCheckpointRecord(snap, elapsed.Nanoseconds()))
+		d.setDurable(snap)
+	} else {
+		prog.SetPendingResumeState(nil)
+	}
+	if cause != nil {
+		return errors.Join(types.ErrPaused, cause)
+	}
+	return types.ErrPaused
+}
+
+// captureStoppedCheckpoint assembles the best provable snapshot after all
+// producers joined:
+//  1. flush pending payloads into the arena in index order, sync out and
+//     arena, project, and validate the complete ledger;
+//  2. on any failure demote to the merged prefix — its own out-only sync
+//     must succeed and the result must still validate;
+//  3. otherwise fall back to the previously persisted prefix projection
+//     with spill claims stripped (arena offsets may already be recycled).
+//
+// A non-nil state is always data-synced. The returned error reports the
+// demotion cause for diagnostics — never revoking pause/error identity.
+func (d *HlsDownloader) captureStoppedCheckpoint(mnt *hlsMount) (*types.HLSResumeState, error) {
+	window := mnt.window
+	if window == nil {
+		return nil, nil
+	}
+	var cause error
+	if ferr := window.FlushPending(); ferr != nil {
+		cause = ferr
+	} else if serr := window.Sync(); serr != nil {
+		cause = serr
+	} else {
+		if snap := window.Snapshot(); snap != nil {
+			if verr := ValidateCheckpointSeed(snap); verr == nil {
+				return snap, nil
+			} else {
+				cause = errors.Join(errIncompletePrefix, verr)
+			}
+		}
+	}
+	if snap := window.SnapshotMergedPrefix(); snap != nil {
+		if serr := window.ops.syncFn(window.out); serr != nil {
+			cause = errors.Join(cause, serr)
+		} else if verr := validateSeed(snap); verr != nil {
+			cause = errors.Join(cause, errIncompletePrefix, verr)
+		} else {
+			return snap, cause
+		}
+	}
+	if prev := d.ResumeSnapshot(); prev != nil {
+		demoteSpill(prev)
+		if verr := validateSeed(prev); verr != nil {
+			cause = errors.Join(cause, verr)
+		} else {
+			return prev, cause
+		}
+	}
+	return nil, cause
 }
 
 // finishPhysical verifies the terminal invariants and commits success.
@@ -456,38 +578,83 @@ func (d *HlsDownloader) finishPhysical(mnt *hlsMount) error {
 	return nil
 }
 
-// checkpointOnError preserves the last provable prefix on a non-cancel
-// failure so the scheduler retry/paused-resume can rebuild from it.
-func (d *HlsDownloader) checkpointOnError(ctx context.Context, mnt *hlsMount, prog *progress.DownloadProgress, werr *error) {
+// checkpointOnError preserves the best provable checkpoint on a non-cancel
+// failure so the scheduler retry/paused-resume can rebuild from it. The
+// captured snapshot (pending flushed to spill) is persisted via the shared
+// save path and stashed as the pending event record; every fallback keeps
+// the last durable prefix — never a fabricated byte. A pause arriving
+// mid-capture converts to the pause product; a plain cancel keeps only
+// what was already synced.
+func (d *HlsDownloader) checkpointOnError(ctx context.Context, e *segmentEngine, mnt *hlsMount, prog *progress.DownloadProgress, werr *error) {
 	window := mnt.window
 	out := mnt.out
 	if window == nil || out == nil {
 		d.realignProgress(prog)
 		return
 	}
-	snap := window.SnapshotMergedPrefix()
-	if err := validateSeed(snap); err != nil {
-		*werr = errors.Join(*werr, err)
-		d.realignProgress(prog)
+	firstVerified := e != nil && e.admissionOpen.Load()
+	d.ctrlMu.Lock()
+	baseline := d.resumeBaseline
+	d.ctrlMu.Unlock()
+	if !firstVerified && baseline <= 0 {
+		// Fresh, pre-first-segment failure: nothing was provable — zero the
+		// counters, keep the persisted detail untouched, and publish the
+		// prepared descriptor as a zeroed projection so copy-back cannot
+		// resurrect this run's init fetch as durable progress.
+		prog.Bytes.Downloaded.Store(0)
+		prog.Bytes.VerifiedProgress.Store(0)
+		prog.SetPendingResumeState(nil)
+		if snap := d.ResumeSnapshot(); snap != nil {
+			resetProgress(snap)
+			d.setDurable(snap)
+		}
 		return
 	}
-	if err := window.Sync(); err != nil {
-		// Keep the previous durable checkpoint; report alongside the cause.
-		*werr = errors.Join(*werr, err)
+	snap, cause := d.captureStoppedCheckpoint(mnt)
+	if snap == nil {
+		// No provable progress at all: keep whatever prior durable exists
+		// and publish nothing new.
+		prog.SetPendingResumeState(nil)
+		if cause != nil {
+			*werr = errors.Join(*werr, cause)
+		}
 		d.realignProgress(prog)
 		return
 	}
 	if ctx.Err() != nil {
-		// A cancel landed mid-checkpoint: a fresh detail save now would
-		// race the caller's teardown — keep the last synced prefix only.
+		// A cancel landed mid-checkpoint: a pause converts to the pause
+		// product (its own capture is idempotent and cheap now), a plain
+		// cancel keeps only the synced prefix — no fresh save races the
+		// caller's teardown.
+		if prog != nil && prog.IsPaused() {
+			*werr = d.handlePause(mnt, prog, firstVerified)
+			return
+		}
+		if cause != nil {
+			*werr = errors.Join(*werr, cause)
+		}
 		d.realignProgress(prog)
 		return
 	}
 	if err := d.saveCheckpoint(snap); err != nil {
 		*werr = errors.Join(*werr, err)
+		// The save failed — the adopted ledger may describe offsets that
+		// will be recycled; demote the live durable to its provable prefix
+		// so copy-back never claims dead spill ranges.
+		if prev := d.ResumeSnapshot(); prev != nil {
+			demoteSpill(prev)
+			d.setDurable(prev)
+		}
+		prog.SetPendingResumeState(nil)
 		d.realignProgress(prog)
 		return
 	}
+	if cause != nil {
+		// The checkpoint fell back to the merged prefix — surface the
+		// demotion reason without revoking the persisted result.
+		*werr = errors.Join(*werr, cause)
+	}
+	prog.SetPendingResumeState(d.buildCheckpointRecord(snap, d.currentElapsed()))
 	d.setDurable(snap)
 	d.realignProgress(prog)
 }
@@ -503,23 +670,17 @@ func (d *HlsDownloader) realignProgress(prog *progress.DownloadProgress) {
 	prog.Bytes.VerifiedProgress.Store(snap.VerifiedBytes)
 }
 
-// saveCheckpoint writes the full task-backed record for a synced prefix.
-func (d *HlsDownloader) saveCheckpoint(snap *types.HLSResumeState) error {
-	if err := validateSeed(snap); err != nil {
-		return errors.Join(errIncompletePrefix, err)
-	}
-	prog := d.runProg
-	var elapsed int64
-	if prog != nil {
-		_, totalElapsed, _ := prog.Session.GetElapsed(prog.IsPaused())
-		elapsed = totalElapsed.Nanoseconds()
-	}
+// buildCheckpointRecord assembles the full task-backed record for a synced
+// checkpoint snapshot: HLS strategy, Downloaded == VerifiedBytes exactly,
+// cloned resume state, and the task identity/runtimes the resume path
+// needs. The caller owns the record; HLSResume is already isolated.
+func (d *HlsDownloader) buildCheckpointRecord(snap *types.HLSResumeState, elapsedNs int64) *types.DownloadRecord {
 	var rate int64
 	var set bool
-	if prog != nil {
+	if prog := d.runProg; prog != nil {
 		rate, set = prog.GetRateLimit()
 	}
-	rec := &types.DownloadRecord{
+	return &types.DownloadRecord{
 		ID:           d.ID,
 		URL:          d.manifestURL,
 		URLHash:      store.URLHash(d.manifestURL),
@@ -529,7 +690,7 @@ func (d *HlsDownloader) saveCheckpoint(snap *types.HLSResumeState) error {
 		TotalSize:    0,
 		Downloaded:   snap.VerifiedBytes,
 		HLSResume:    snap.Clone(),
-		Elapsed:      elapsed,
+		Elapsed:      elapsedNs,
 		Headers:      maps.Clone(d.Headers),
 		Mirrors:      append([]string(nil), d.Mirrors...),
 		RateLimit:    rate,
@@ -538,7 +699,24 @@ func (d *HlsDownloader) saveCheckpoint(snap *types.HLSResumeState) error {
 		MinChunkSize: d.runCfg.MinChunkSize,
 		CreatedAt:    d.CreatedAt,
 	}
-	return store.SaveStateWithOptions(d.manifestURL, d.destPath, rec, store.SaveStateOptions{SkipFileHash: true})
+}
+
+func (d *HlsDownloader) currentElapsed() int64 {
+	if prog := d.runProg; prog != nil {
+		_, totalElapsed, _ := prog.Session.GetElapsed(prog.IsPaused())
+		return totalElapsed.Nanoseconds()
+	}
+	return 0
+}
+
+// saveCheckpoint validates the full checkpoint contract and writes the
+// task-backed record for a synced snapshot.
+func (d *HlsDownloader) saveCheckpoint(snap *types.HLSResumeState) error {
+	if err := ValidateCheckpointSeed(snap); err != nil {
+		return errors.Join(errIncompletePrefix, err)
+	}
+	return store.SaveStateWithOptions(d.manifestURL, d.destPath,
+		d.buildCheckpointRecord(snap, d.currentElapsed()), store.SaveStateOptions{SkipFileHash: true})
 }
 
 // onSegmentAccepted is the single-flight acceptance gate: the first

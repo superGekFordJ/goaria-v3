@@ -35,7 +35,14 @@ type hlsE2EStack struct {
 
 func newHLSE2EStack(t *testing.T, slots int) *hlsE2EStack {
 	t.Helper()
-	store.Configure(filepath.Join(t.TempDir(), "state.db"))
+	return newHLSE2EStackAt(t, slots, filepath.Join(t.TempDir(), "state.db"))
+}
+
+// newHLSE2EStackAt is newHLSE2EStack with an explicit state path so a second
+// stack can reopen the same store after a simulated process restart.
+func newHLSE2EStackAt(t *testing.T, slots int, dbPath string) *hlsE2EStack {
+	t.Helper()
+	store.Configure(dbPath)
 	t.Cleanup(store.CloseDB)
 
 	bus := NewEventBus()

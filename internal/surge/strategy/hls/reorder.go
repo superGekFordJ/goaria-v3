@@ -1,6 +1,7 @@
 package hls
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -71,9 +72,11 @@ type ReorderWindow struct {
 }
 
 // NewReorderWindow prepares a window over the prepared .surge file out at
-// destPath. seed must be a clean contiguous prefix; see the validation rules
-// on the internal constructor. The download ID names the hidden spill arena
-// file in destPath's directory only — never trust a stored spill path.
+// destPath. seed must satisfy ValidateCheckpointSeed: either a clean
+// contiguous prefix or a prefix plus a fully consistent spill ledger, which
+// the window then tries to adopt from the canonical arena file. The
+// download ID names that hidden spill arena in destPath's directory only —
+// never trust a stored spill path.
 func NewReorderWindow(out *os.File, destPath, downloadID string, seed *types.HLSResumeState) (*ReorderWindow, error) {
 	return newReorderWindow(out, destPath, downloadID, seed, nil)
 }
@@ -88,7 +91,7 @@ func newReorderWindow(out *os.File, destPath, downloadID string, seed *types.HLS
 	if err := validateSpillID(downloadID); err != nil {
 		return nil, err
 	}
-	if err := validateSeed(seed); err != nil {
+	if err := ValidateCheckpointSeed(seed); err != nil {
 		return nil, err
 	}
 	fi, err := out.Stat()
@@ -115,14 +118,44 @@ func newReorderWindow(out *os.File, destPath, downloadID string, seed *types.HLS
 		pending:    make(map[int][]byte),
 		bitmap:     slices.Clone(seed.CompletedBitmap),
 	}
+	if len(seed.SpillEntries) > 0 {
+		adopted, err := w.arena.adopt(seed.SpillFileSize, seed.SpillEntries)
+		if err != nil {
+			return nil, err
+		}
+		if !adopted {
+			// The ledger is consistent but the physical file no longer
+			// backs it: demote to the provable merged prefix and let the
+			// dropped segments re-fetch instead of trusting dead claims.
+			demoteSpill(w.seed)
+			for i := w.mergedSegs; i < w.total; i++ {
+				w.bitmap[i>>3] &^= 1 << uint(i&7)
+			}
+			w.verified = w.merged
+		} else if _, ok := w.arena.entries[w.mergedSegs]; ok {
+			// A frontier entry must replay before the window is published:
+			// otherwise a fully-spilled run would look complete to the
+			// queue while the merged prefix still lacks those bytes.
+			if err := w.drainLocked(); err != nil {
+				_ = w.arena.close()
+				return nil, err
+			}
+			if err := w.Sync(); err != nil {
+				_ = w.arena.close()
+				return nil, err
+			}
+		}
+	}
 	return w, nil
 }
 
 // validateSeed accepts only a prepared contiguous prefix: complete
 // Index-ordered segment table, exact bitmap length with clean tail bits,
 // set bits covering precisely [0, MergedSegments), VerifiedBytes==MergedBytes,
-// no spill bookkeeping (a fresh window never adopts old spill state), and a
-// merged byte range consistent with the init prefix.
+// no spill bookkeeping, and a merged byte range consistent with the init
+// prefix. Checkpoint seeds carrying a spill ledger go through
+// ValidateCheckpointSeed, which runs this prefix contract on a demoted
+// copy plus the ledger rules below.
 func validateSeed(seed *types.HLSResumeState) error {
 	if seed == nil {
 		return fmt.Errorf("%w: nil state", errDirtySeed)
@@ -201,6 +234,84 @@ func validateSeed(seed *types.HLSResumeState) error {
 	}
 	if seed.SpillPath != "" || seed.SpillFileSize != 0 || len(seed.SpillEntries) != 0 {
 		return fmt.Errorf("%w: residual spill bookkeeping", errDirtySeed)
+	}
+	return nil
+}
+
+// ValidateCheckpointSeed verifies a complete pause/error checkpoint seed:
+// the merged prefix must satisfy the same contract validateSeed enforces
+// (checked on a spill-demoted clone so ledger claims never relax prefix
+// rules) and, when SpillEntries is non-empty, the ledger must be a sorted,
+// non-overlapping, in-bounds claim set whose bitmap bits and byte totals
+// match exactly (VerifiedBytes == MergedBytes + Σentry lengths).
+// It performs no file I/O, so event-time consumers can reuse it without
+// owning an arena handle.
+func ValidateCheckpointSeed(seed *types.HLSResumeState) error {
+	if seed == nil {
+		return fmt.Errorf("%w: nil state", errDirtySeed)
+	}
+	demoted := seed.Clone()
+	demoteSpill(demoted)
+	if err := validateSeed(demoted); err != nil {
+		return err
+	}
+	entries := seed.SpillEntries
+	if len(entries) == 0 {
+		if seed.VerifiedBytes != seed.MergedBytes || seed.SpillPath != "" || seed.SpillFileSize != 0 {
+			return fmt.Errorf("%w: residual spill bookkeeping", errDirtySeed)
+		}
+		for i := seed.MergedSegments; i < seed.TotalSegments; i++ {
+			if seed.CompletedBitmap[i>>3]&(1<<uint(i&7)) != 0 {
+				return fmt.Errorf("%w: bitmap bit %d without spill entry", errDirtySeed, i)
+			}
+		}
+		return nil
+	}
+	if seed.SpillPath == "" || seed.SpillFileSize <= 0 {
+		return fmt.Errorf("%w: spill entries without a backing file claim", errDirtySeed)
+	}
+	var spillSum int64
+	for i, e := range entries {
+		if e.SegmentIndex < seed.MergedSegments || e.SegmentIndex >= seed.TotalSegments {
+			return fmt.Errorf("%w: spill entry index %d outside [%d,%d)", errDirtySeed, e.SegmentIndex, seed.MergedSegments, seed.TotalSegments)
+		}
+		if i > 0 && e.SegmentIndex <= entries[i-1].SegmentIndex {
+			return fmt.Errorf("%w: spill entries out of order", errDirtySeed)
+		}
+		if seed.CompletedBitmap[e.SegmentIndex>>3]&(1<<uint(e.SegmentIndex&7)) == 0 {
+			return fmt.Errorf("%w: spill entry %d lacks its bitmap bit", errDirtySeed, e.SegmentIndex)
+		}
+		if e.Offset < 0 || e.Length <= 0 || e.Length > seed.SpillFileSize || e.Offset > seed.SpillFileSize-e.Length {
+			return fmt.Errorf("%w: spill entry %d at %d len %d exceeds file size %d", errDirtySeed, e.SegmentIndex, e.Offset, e.Length, seed.SpillFileSize)
+		}
+		if e.Length > math.MaxInt64-spillSum {
+			return fmt.Errorf("%w: spill length sum overflow", errDirtySeed)
+		}
+		spillSum += e.Length
+	}
+	// Bits beyond the prefix must be exactly the entry set: every entry's
+	// bit was verified set and indexes are unique, so equal counts prove
+	// the 1:1 correspondence in both directions.
+	setBits := 0
+	for i := seed.MergedSegments; i < seed.TotalSegments; i++ {
+		if seed.CompletedBitmap[i>>3]&(1<<uint(i&7)) != 0 {
+			setBits++
+		}
+	}
+	if setBits != len(entries) {
+		return fmt.Errorf("%w: %d spill bitmap bits for %d entries", errDirtySeed, setBits, len(entries))
+	}
+	byOffset := slices.Clone(entries)
+	slices.SortFunc(byOffset, func(x, y types.HLSSpillEntry) int {
+		return cmp.Compare(x.Offset, y.Offset)
+	})
+	for i := 1; i < len(byOffset); i++ {
+		if byOffset[i].Offset < byOffset[i-1].Offset+byOffset[i-1].Length {
+			return fmt.Errorf("%w: spill entries overlap physically", errDirtySeed)
+		}
+	}
+	if spillSum > math.MaxInt64-seed.MergedBytes || seed.VerifiedBytes != seed.MergedBytes+spillSum {
+		return fmt.Errorf("%w: verified %d != merged %d + spill %d", errDirtySeed, seed.VerifiedBytes, seed.MergedBytes, spillSum)
 	}
 	return nil
 }
@@ -335,6 +446,48 @@ func (w *ReorderWindow) drainLocked() error {
 	}
 }
 
+// FlushPending appends every retained pending payload to the spill arena in
+// segment-index order under the window lock: each payload becomes a durable
+// spill entry (bit set, verified grown) — never merged out of order, never
+// synthesized. It is intended for the stopped-engine checkpoint boundary
+// only: callers must have joined every producer first. A storage fault
+// latches storeErr so later observes the same failure.
+func (w *ReorderWindow) FlushPending() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return errWindowClosed
+	}
+	if w.storeErr != nil {
+		return w.storeErr
+	}
+	if len(w.pending) == 0 {
+		return nil
+	}
+	idxs := make([]int, 0, len(w.pending))
+	for idx := range w.pending {
+		idxs = append(idxs, idx)
+	}
+	slices.Sort(idxs)
+	for _, idx := range idxs {
+		payload := w.pending[idx]
+		l := int64(len(payload))
+		if l > math.MaxInt64-w.verified {
+			return fmt.Errorf("hls: %w growing verified by %d", errOffsetOverflow, l)
+		}
+		entry, err := w.arena.append(idx, payload)
+		if err != nil {
+			w.storeErr = err
+			return err
+		}
+		w.setBit(idx)
+		w.verified += entry.Length
+		w.pendingBytes -= l
+		delete(w.pending, idx)
+	}
+	return nil
+}
+
 // Snapshot returns the live on-disk truth under the lock (merged prefix plus
 // durable spill, never pending) with physically isolated slices. It is a
 // read-out, not a crash-safe checkpoint.
@@ -346,6 +499,8 @@ func (w *ReorderWindow) Snapshot() *types.HLSResumeState {
 	s.MergedBytes = w.merged
 	s.VerifiedBytes = w.verified
 	s.CompletedBitmap = slices.Clone(w.bitmap)
+	s.SpillPath = ""
+	s.SpillFileSize = 0
 	s.SpillEntries = w.arena.sortedEntries()
 	if w.arena.tail > 0 {
 		s.SpillPath = w.arena.path
@@ -364,6 +519,9 @@ func (w *ReorderWindow) SnapshotMergedPrefix() *types.HLSResumeState {
 	s.MergedSegments = w.mergedSegs
 	s.MergedBytes = w.merged
 	s.VerifiedBytes = w.merged
+	s.SpillPath = ""
+	s.SpillFileSize = 0
+	s.SpillEntries = nil
 	s.CompletedBitmap = slices.Clone(w.bitmap)
 	for i := w.mergedSegs; i < w.total; i++ {
 		s.CompletedBitmap[i>>3] &^= 1 << uint(i&7)

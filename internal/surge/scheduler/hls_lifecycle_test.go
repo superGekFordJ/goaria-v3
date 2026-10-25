@@ -429,11 +429,18 @@ func TestScheduler_HLSCancelCrossesBlockedErrorSend(t *testing.T) {
 		t.Fatal("Add refused")
 	}
 
+	// The claim outlives the downloads entry here: the worker removes
+	// downloads[id] before the wedged terminal send, so the busy slot is the
+	// only reliable handle while the send blocks.
 	var ad *activeDownload
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) && ad == nil {
 		pool.mu.RLock()
-		ad = pool.downloads[id]
+		for _, slot := range pool.busy {
+			if slot.ad != nil && slot.ad.config.ID == id {
+				ad = slot.ad
+			}
+		}
 		pool.mu.RUnlock()
 		if ad == nil {
 			time.Sleep(time.Millisecond)

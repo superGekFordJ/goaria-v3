@@ -209,6 +209,55 @@ func spillPathFor(destPath, id string) string {
 	return filepath.Join(filepath.Dir(destPath), "."+id+".spill")
 }
 
+// adopt remounts an existing canonical arena for a ledger-validated seed:
+// it opens the file read-write without O_CREATE (a vanished file is a
+// downgrade, never a fabricated recovery), verifies the declared tail,
+// truncates a crash-dirty long tail back to the declared size, and copies
+// the declared entries into its own index. adopted=false on a missing or
+// short file — the caller then demotes to the merged prefix and re-fetches
+// the spilled segments; a non-nil *storageError covers genuine I/O faults.
+func (a *spillArena) adopt(declared int64, entries []types.HLSSpillEntry) (adopted bool, err error) {
+	f, err := a.ops.open(a.path, os.O_RDWR, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, newStorageError("spill adopt open", a.path, err)
+	}
+	fail := func(op string, cause error) (bool, error) {
+		_ = a.ops.close(f)
+		return false, newStorageError(op, a.path, cause)
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return fail("spill adopt stat", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fail("spill adopt stat", errors.New("not a regular file"))
+	}
+	if fi.Size() < declared {
+		if cerr := a.ops.close(f); cerr != nil {
+			return false, newStorageError("spill adopt close", a.path, cerr)
+		}
+		if rerr := os.Remove(a.path); rerr != nil && !os.IsNotExist(rerr) {
+			return false, newStorageError("spill remove", a.path, rerr)
+		}
+		return false, nil
+	}
+	if fi.Size() > declared {
+		if terr := a.ops.truncate(f, declared); terr != nil {
+			return fail("spill adopt truncate", terr)
+		}
+	}
+	a.file = f
+	a.tail = declared
+	a.entries = make(map[int]types.HLSSpillEntry, len(entries))
+	for _, e := range entries {
+		a.entries[e.SegmentIndex] = e
+	}
+	return true, nil
+}
+
 // append lazily creates the arena (O_EXCL — an existing file is never taken
 // over or truncated) and writes the full payload at the confirmed tail. Only
 // a complete write registers the entry and advances tail; a partial write

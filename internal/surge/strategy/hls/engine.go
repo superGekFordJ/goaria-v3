@@ -98,10 +98,11 @@ func newSegmentEngine(p segmentEngineParams) (*segmentEngine, error) {
 	if p.Seed == nil || p.Seed.TotalSegments <= 0 {
 		return nil, newHLSContractError("seed is not a prepared media table")
 	}
-	// The seed must satisfy the same prepared-prefix contract the window
-	// enforces — segment count, ordered Index and an exact bitmap — or the
-	// queue would lease phantom/duplicate work at construction.
-	if err := validateSeed(p.Seed); err != nil {
+	// The seed must satisfy the same contract the window enforces —
+	// segment count, ordered Index, an exact bitmap, and (when claimed) a
+	// consistent spill ledger — or the queue would lease phantom/duplicate
+	// work at construction. The adopted-arena form is the checkpoint shape.
+	if err := ValidateCheckpointSeed(p.Seed); err != nil {
 		return nil, err
 	}
 	if p.Window == nil {

@@ -1404,13 +1404,26 @@ func (p *Scheduler) worker() {
 		}
 
 		isPaused := localCfg.ProgressState != nil && progress.CfgProgress(&localCfg).IsPaused()
+		hlsTask := localCfg.Strategy == types.StrategyHLS
 
-		// Clear "Pausing" transition state now that worker has exited
-		if localCfg.ProgressState != nil {
-			progress.CfgProgress(&localCfg).SetPausing(false)
+		// FORK-PATCH: take the HLS pause/error checkpoint exactly once, while
+		// the run is already static — pause publication, terminal-error
+		// attach and retry all consume the same snapshot and a requeue never
+		// re-reads a half-spent slot.
+		var hlsPending *types.DownloadRecord
+		if hlsTask && localCfg.ProgressState != nil {
+			hlsPending = progress.CfgProgress(&localCfg).TakePendingResumeState()
 		}
 
 		isPauseResult := errors.Is(err, types.ErrPaused) || (isPaused && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)))
+
+		// Clear "Pausing" transition state now that the worker exited — except
+		// the HLS pause result, which clears the gate inside the claim fence
+		// after the checkpoint save attempt so a Resume cannot hydrate a
+		// stale detail before the snapshot exists.
+		if localCfg.ProgressState != nil && (!isPauseResult || !hlsTask) {
+			progress.CfgProgress(&localCfg).SetPausing(false)
+		}
 
 		if err == nil {
 			// Physical success takes precedence over late-arriving pause signals.
@@ -1431,47 +1444,82 @@ func (p *Scheduler) worker() {
 			p.mu.Unlock()
 		} else if isPauseResult {
 			utils.Debug("Scheduler: Download %s paused cleanly", localCfg.ID)
-			// The concurrent downloader sends DownloadPausedMsg itself via handlePause().
-			// When a single-threaded download is paused, RunDownload returns an error,
-			// and the pool fills the gap.
-			if !errors.Is(err, types.ErrPaused) && localCfg.ProgressCh != nil {
-				var downloaded int64
-				var rateLimit int64
-				var rateLimitSet bool
-				var workers int
-				var minChunkSize int64
-				if localCfg.ProgressState != nil {
-					downloaded = progress.CfgProgress(&localCfg).Bytes.Downloaded.Load()
-				}
-				if localCfg.Runtime != nil {
-					workers = localCfg.Runtime.Workers
-					minChunkSize = localCfg.Runtime.MinChunkSize
-				}
-				rateLimit, rateLimitSet = localCfg.RateLimit, localCfg.RateLimitSet
-				pausedEv := types.DownloadEvent{
-					Type:         types.EventPaused,
-					DownloadID:   localCfg.ID,
-					Filename:     localCfg.Filename,
-					Downloaded:   downloaded,
-					RateLimit:    rateLimit,
-					RateLimitSet: rateLimitSet,
-					Workers:      workers,
-					MinChunkSize: minChunkSize,
-				}
-				if localCfg.Strategy == types.StrategyHLS {
-					// FORK-PATCH: publish through the claim fence — a Cancel
-					// marking this claim before the send suppresses the sparse
-					// pause event; a send that already won lands ahead of
-					// EventRemoved. The claim ctx is already canceled on a
-					// legitimate pause, so the send only obeys the
-					// shutdown/timeout bound.
-					ad.hlsEventMu.Lock()
-					if !ad.hlsRemoved.Load() {
-						safeSendProgress(localCfg.ProgressCh, pausedEv, p.progressDone)
+			if hlsTask {
+				// FORK-PATCH: HLS pause publication lives entirely inside the
+				// claim fence: (a) save the captured checkpoint while the
+				// removal marker is clear — a Cancel winning first suppresses
+				// the whole publication; (b) recheck the marker after the
+				// save before sending; (c) open the Pausing gate after the
+				// save attempt but before the event leaves, so a Resume
+				// triggered by EventPaused can hydrate the detail while one
+				// triggered only by the gate cannot race it.
+				var pausedState *types.DownloadRecord
+				ad.hlsEventMu.Lock()
+				if !ad.hlsRemoved.Load() && hlsPending != nil && hlsPending.HLSResume != nil {
+					snap := *hlsPending
+					snap.HLSResume = hlsPending.HLSResume.Clone()
+					snap.ProgressState = nil
+					snap.ProgressCh = nil
+					snap.Downloaded = snap.HLSResume.VerifiedBytes
+					if serr := store.SaveStateWithOptions(snap.URL, snap.DestPath, &snap, store.SaveStateOptions{SkipFileHash: true}); serr != nil {
+						utils.Debug("Scheduler: HLS pause checkpoint save for %s failed: %v 2014 the event still publishes the synced state", localCfg.ID, serr)
 					}
-					ad.hlsEventMu.Unlock()
-				} else {
-					safeSendProgress(localCfg.ProgressCh, pausedEv, p.progressDone)
+					pausedState = &snap
+				}
+				if localCfg.ProgressState != nil {
+					progress.CfgProgress(&localCfg).SetPausing(false)
+				}
+				if !ad.hlsRemoved.Load() && localCfg.ProgressCh != nil {
+					var downloaded int64
+					if pausedState != nil {
+						downloaded = pausedState.Downloaded
+					} else if localCfg.ProgressState != nil {
+						downloaded = progress.CfgProgress(&localCfg).Bytes.Downloaded.Load()
+					}
+					var workers int
+					var minChunkSize int64
+					if localCfg.Runtime != nil {
+						workers = localCfg.Runtime.Workers
+						minChunkSize = localCfg.Runtime.MinChunkSize
+					}
+					safeSendProgress(localCfg.ProgressCh, types.DownloadEvent{
+						Type:         types.EventPaused,
+						DownloadID:   localCfg.ID,
+						Filename:     localCfg.Filename,
+						Downloaded:   downloaded,
+						RateLimit:    localCfg.RateLimit,
+						RateLimitSet: localCfg.RateLimitSet,
+						Workers:      workers,
+						MinChunkSize: minChunkSize,
+						State:        pausedState,
+					}, p.progressDone)
+				}
+				ad.hlsEventMu.Unlock()
+			} else {
+				// The concurrent downloader sends DownloadPausedMsg itself via handlePause().
+				// When a single-threaded download is paused, RunDownload returns an error,
+				// and the pool fills the gap.
+				if !errors.Is(err, types.ErrPaused) && localCfg.ProgressCh != nil {
+					var downloaded int64
+					var workers int
+					var minChunkSize int64
+					if localCfg.ProgressState != nil {
+						downloaded = progress.CfgProgress(&localCfg).Bytes.Downloaded.Load()
+					}
+					if localCfg.Runtime != nil {
+						workers = localCfg.Runtime.Workers
+						minChunkSize = localCfg.Runtime.MinChunkSize
+					}
+					safeSendProgress(localCfg.ProgressCh, types.DownloadEvent{
+						Type:         types.EventPaused,
+						DownloadID:   localCfg.ID,
+						Filename:     localCfg.Filename,
+						Downloaded:   downloaded,
+						RateLimit:    localCfg.RateLimit,
+						RateLimitSet: localCfg.RateLimitSet,
+						Workers:      workers,
+						MinChunkSize: minChunkSize,
+					}, p.progressDone)
 				}
 			}
 		} else {
@@ -1492,7 +1540,6 @@ func (p *Scheduler) worker() {
 			// FORK-PATCH: a cancel that already claimed this HLS ad (removal
 			// marker or fired parent ctx) owns the lifecycle — no retry, no
 			// error publish, no SetError may follow.
-			hlsTask := localCfg.Strategy == types.StrategyHLS
 			hlsClaimed := hlsTask && (ad.hlsRemoved.Load() || ctx.Err() != nil)
 
 			// A requeue mints a fresh opportunity token: the old admission must
@@ -1660,17 +1707,26 @@ func (p *Scheduler) worker() {
 					Err:        err,
 				}
 				if hlsTask {
-					// FORK-PATCH: the HLS error snapshot is the durable
-					// copy-back record — never a live in-flight projection.
-					if localCfg.HLSResume != nil {
-						snap := localCfg
-						snap.HLSResume = localCfg.HLSResume.Clone()
+					// FORK-PATCH: the error snapshot prefers the run's captured
+					// pending checkpoint (pending already flushed into spill);
+					// otherwise the durable copy-back record — never a live
+					// in-flight projection. Downloaded always mirrors the
+					// checkpoint's VerifiedBytes, including zero.
+					var snap *types.DownloadRecord
+					if hlsPending != nil && hlsPending.HLSResume != nil {
+						cp := *hlsPending
+						cp.HLSResume = hlsPending.HLSResume.Clone()
+						snap = &cp
+					} else if localCfg.HLSResume != nil {
+						cp := localCfg
+						cp.HLSResume = localCfg.HLSResume.Clone()
+						snap = &cp
+					}
+					if snap != nil {
 						snap.ProgressState = nil
 						snap.ProgressCh = nil
-						errEvent.State = &snap
-						if snap.Downloaded > 0 {
-							errEvent.Downloaded = snap.Downloaded
-						}
+						errEvent.State = snap
+						errEvent.Downloaded = snap.HLSResume.VerifiedBytes
 					}
 				} else if localCfg.ProgressState != nil {
 					if pending := progress.CfgProgress(&localCfg).TakePendingResumeState(); pending != nil {

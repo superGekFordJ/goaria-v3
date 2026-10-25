@@ -9,6 +9,7 @@ import (
 
 	"goaria-v3/internal/surge/config"
 	"goaria-v3/internal/surge/store"
+	"goaria-v3/internal/surge/strategy/hls"
 	"goaria-v3/internal/surge/types"
 	"goaria-v3/internal/surge/utils"
 )
@@ -51,23 +52,16 @@ func advanceRemainingTasks(tasks []types.Task, consumed int64) []types.Task {
 // not required (saveStateSnapshot uses max(VerifiedProgress, TotalSize-remaining)).
 func isTaskBackedResumeSnapshot(rec types.DownloadRecord) bool {
 	// FORK-PATCH: an HLS snapshot is authoritative only when its resume
-	// checkpoint satisfies the strict invariants; sparse lifecycle events
-	// must not overwrite the durable checkpoint with partial data.
+	// checkpoint satisfies the full pause/error seed contract — complete
+	// table, exact bitmap, valid merged counters, consistent spill ledger —
+	// with Downloaded == VerifiedBytes. Sparse lifecycle events must not
+	// overwrite the durable checkpoint with partial data.
 	if rec.Strategy == types.StrategyHLS {
 		hr := rec.HLSResume
-		if hr == nil || hr.TotalSegments <= 0 {
+		if hr == nil || rec.Downloaded != hr.VerifiedBytes {
 			return false
 		}
-		if len(hr.Segments) != hr.TotalSegments || len(hr.CompletedBitmap) != (hr.TotalSegments+7)/8 {
-			return false
-		}
-		if hr.MergedSegments < 0 || hr.MergedSegments > hr.TotalSegments {
-			return false
-		}
-		if hr.MergedBytes < 0 || hr.VerifiedBytes < hr.MergedBytes || rec.Downloaded != hr.VerifiedBytes {
-			return false
-		}
-		return true
+		return hls.ValidateCheckpointSeed(hr) == nil
 	}
 	if len(rec.Tasks) == 0 || rec.TotalSize <= 0 {
 		return false
@@ -107,6 +101,55 @@ func loadValidHLSCheckpoint(id string) *types.HLSResumeState {
 		return nil
 	}
 	return rec.HLSResume.Clone()
+}
+
+// FORK-PATCH: normalizeHLSEventSnapshot enforces checkpoint authority on a
+// non-sparse EventPaused/EventError state before it reaches master/detail
+// persistence. A record is HLS-classified when Strategy==StrategyHLS or it
+// carries any HLSResume (a non-empty checkpoint implies the strategy — the
+// field is written back). Rules, in order:
+//  1. A valid attached checkpoint is cloned in, Downloaded is pinned to
+//     VerifiedBytes exactly (zero and below-master values both valid), and
+//     the record may overwrite the detail gob.
+//  2. An invalid/absent checkpoint falls back to the task's durable detail
+//     checkpoint; on recovery the same pinning applies.
+//  3. When neither is usable the malformed claim is dropped, Downloaded is
+//     pinned to the master row (0 when no master exists) so master progress
+//     cannot regress — and the caller MUST NOT overwrite the detail gob,
+//     or a record stripped of its checkpoint would erase the durable one.
+//
+// The return value reports whether SaveStateWithOptions may run.
+func normalizeHLSEventSnapshot(m *types.DownloadEvent, snapshot *types.DownloadRecord, existing *types.DownloadRecord) (detailWritable bool) {
+	if snapshot == nil || (snapshot.Strategy != types.StrategyHLS && snapshot.HLSResume == nil) {
+		return true
+	}
+	snapshot.Strategy = types.StrategyHLS
+	if snapshot.HLSResume != nil {
+		hr := snapshot.HLSResume.Clone()
+		candidate := *snapshot
+		candidate.Downloaded = hr.VerifiedBytes
+		if isTaskBackedResumeSnapshot(candidate) {
+			snapshot.HLSResume = hr
+			snapshot.Downloaded = hr.VerifiedBytes
+			return true
+		}
+	}
+	checkpointID := m.DownloadID
+	if checkpointID == "" {
+		checkpointID = snapshot.ID
+	}
+	if recovered := loadValidHLSCheckpoint(checkpointID); recovered != nil {
+		snapshot.HLSResume = recovered
+		snapshot.Downloaded = recovered.VerifiedBytes
+		return true
+	}
+	snapshot.HLSResume = nil
+	if existing != nil {
+		snapshot.Downloaded = existing.Downloaded
+	} else {
+		snapshot.Downloaded = 0
+	}
+	return false
 }
 
 // FORK-PATCH: AddToMasterList replaces the whole record. Sparse lifecycle
@@ -312,25 +355,11 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				copyRangeAcquisition(&snapshot, existing)
 			}
 
-			// FORK-PATCH: detach an event-carried checkpoint, then recover the
-			// durable one when a sparse event carried strategy but no resume.
-			// The checkpoint's VerifiedBytes is the only authoritative progress
-			// — adopting it as Downloaded keeps the persisted record internally
-			// consistent and entry.Downloaded honest, instead of mixing
-			// Downloaded and VerifiedBytes from two different sources.
-			if snapshot.HLSResume != nil {
-				snapshot.HLSResume = snapshot.HLSResume.Clone()
-			}
-			if snapshot.Strategy == types.StrategyHLS && snapshot.HLSResume == nil {
-				checkpointID := m.DownloadID
-				if checkpointID == "" {
-					checkpointID = snapshot.ID
-				}
-				if recovered := loadValidHLSCheckpoint(checkpointID); recovered != nil {
-					snapshot.HLSResume = recovered
-					snapshot.Downloaded = recovered.VerifiedBytes
-				}
-			}
+			// FORK-PATCH: checkpoint authority — validate/detach/recover the
+			// HLS resume state and pin Downloaded to its VerifiedBytes; a
+			// snapshot that cannot prove a checkpoint must not overwrite the
+			// detail gob at all.
+			detailWritable := normalizeHLSEventSnapshot(&m, &snapshot, existing)
 
 			// Downloaded: task-backed keeps snapshot exactly (incl. first-pause 0);
 			// taskless/invalid with master uses max so sparse zeros cannot wipe progress.
@@ -396,14 +425,18 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 			}
 
 			// Persist enough chunk metadata for resume, but only once we have the same
-			// destPath/url pair used everywhere else as the state DB key.
-			if destPath != "" && url != "" {
+			// destPath/url pair used everywhere else as the state DB key — and only
+			// when the snapshot still holds a writable checkpoint (SaveStateWithOptions
+			// replaces the whole detail record; a stripped HLSResume would erase it).
+			if destPath != "" && url != "" && detailWritable {
 				// Keep pause persistence fast so lifecycle events don't back up and get dropped.
 				if err := store.SaveStateWithOptions(url, destPath, &snapshot, store.SaveStateOptions{
 					SkipFileHash: true,
 				}); err != nil {
 					utils.Debug("Lifecycle: Failed to save pause state: %v", err)
 				}
+			} else if !detailWritable {
+				utils.Debug("Lifecycle: Skipping pause detail write for %s: no valid HLS checkpoint", m.DownloadID)
 			} else {
 				utils.Debug("Lifecycle: Skipping SaveState for %s: destPath=%q url=%q", m.DownloadID, destPath, url)
 			}
@@ -569,25 +602,11 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					copyRangeAcquisition(&snapshot, existing)
 				}
 
-				// FORK-PATCH: same HLS checkpoint protection as EventPaused —
-				// detach an event-carried checkpoint, then recover the durable
-				// one when a sparse event carried strategy but no resume. The
-				// checkpoint's VerifiedBytes is adopted as Downloaded so the
-				// persisted record stays internally consistent instead of
-				// mixing progress sources.
-				if snapshot.HLSResume != nil {
-					snapshot.HLSResume = snapshot.HLSResume.Clone()
-				}
-				if snapshot.Strategy == types.StrategyHLS && snapshot.HLSResume == nil {
-					checkpointID := m.DownloadID
-					if checkpointID == "" {
-						checkpointID = snapshot.ID
-					}
-					if recovered := loadValidHLSCheckpoint(checkpointID); recovered != nil {
-						snapshot.HLSResume = recovered
-						snapshot.Downloaded = recovered.VerifiedBytes
-					}
-				}
+				// FORK-PATCH: same checkpoint authority as EventPaused —
+				// validate/detach/recover the HLS resume state, pin
+				// Downloaded to its VerifiedBytes, and forbid the detail
+				// overwrite when no checkpoint survived normalization.
+				detailWritable := normalizeHLSEventSnapshot(&m, &snapshot, existing)
 
 				// Resume-authority Downloaded: task-backed keeps snapshot exactly
 				// (including 0 / values below master); taskless/invalid uses max.
@@ -644,12 +663,14 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 					utils.Debug("Lifecycle: Failed to persist error state: %v", err)
 				}
 
-				if destPath != "" && url != "" {
+				if destPath != "" && url != "" && detailWritable {
 					if err := store.SaveStateWithOptions(url, destPath, &snapshot, store.SaveStateOptions{
 						SkipFileHash: true,
 					}); err != nil {
 						utils.Debug("Lifecycle: Failed to save error state: %v", err)
 					}
+				} else if !detailWritable {
+					utils.Debug("Lifecycle: Skipping error detail write for %s: no valid HLS checkpoint", m.DownloadID)
 				} else {
 					utils.Debug("Lifecycle: Skipping SaveState on error for %s: destPath=%q url=%q", m.DownloadID, destPath, url)
 				}

@@ -472,16 +472,20 @@ func TestIsTaskBackedResumeSnapshot_HLSMatrix(t *testing.T) {
 	t.Parallel()
 
 	validResume := func() *types.HLSResumeState {
+		segs := make([]types.HLSSegmentState, 9)
+		for i := range segs {
+			segs[i] = types.HLSSegmentState{Index: i}
+		}
 		return &types.HLSResumeState{
 			ManifestURL:         "https://hls.example.com/index.m3u8",
 			MediaPlaylistURL:    "https://hls.example.com/media.m3u8",
 			ManifestFingerprint: "fp",
 			TotalSegments:       9,
-			CompletedBitmap:     []byte{0xFF, 0x01},
+			CompletedBitmap:     []byte{0x0F, 0x00},
 			MergedSegments:      4,
-			MergedBytes:         400,
+			MergedBytes:         500,
 			VerifiedBytes:       500,
-			Segments:            make([]types.HLSSegmentState, 9),
+			Segments:            segs,
 		}
 	}
 
@@ -575,17 +579,23 @@ func TestEventLifecycle_PreservesHLSStrategyAndResumeState(t *testing.T) {
 	url := "https://hls.example.com/index.m3u8"
 	id := "hls-lifecycle"
 
+	segs := make([]types.HLSSegmentState, 9)
+	for i := range segs {
+		segs[i] = types.HLSSegmentState{Index: i}
+	}
 	resume := &types.HLSResumeState{
 		ManifestURL:         url,
 		MediaPlaylistURL:    "https://hls.example.com/media.m3u8",
 		ManifestFingerprint: "fp-life",
 		TotalSegments:       9,
-		CompletedBitmap:     []byte{0x0F, 0x00},
+		CompletedBitmap:     []byte{0x1F, 0x00},
 		MergedSegments:      4,
 		MergedBytes:         400,
 		VerifiedBytes:       500,
-		SpillPath:           filepath.Join(tmpDir, "video.ts.spill"),
-		Segments:            make([]types.HLSSegmentState, 9),
+		SpillPath:           filepath.Join(tmpDir, ".video.spill"),
+		SpillFileSize:       100,
+		SpillEntries:        []types.HLSSpillEntry{{SegmentIndex: 4, Offset: 0, Length: 100}},
+		Segments:            segs,
 	}
 
 	testutil.SeedMasterList(t, types.DownloadRecord{
@@ -677,16 +687,23 @@ func TestEventLifecycle_PreservesHLSStrategyAndResumeState(t *testing.T) {
 	}
 }
 
+// hlsCheckpoint builds a strict-valid prefix-only checkpoint: an
+// Index-ordered segment table, prefix bitmap, and MergedBytes ==
+// VerifiedBytes == verified.
 func hlsCheckpoint(url string, verified int64) *types.HLSResumeState {
+	segs := make([]types.HLSSegmentState, 4)
+	for i := range segs {
+		segs[i] = types.HLSSegmentState{Index: i}
+	}
 	return &types.HLSResumeState{
 		ManifestURL:      url,
 		MediaPlaylistURL: url,
 		TotalSegments:    4,
 		CompletedBitmap:  []byte{0x07},
 		MergedSegments:   3,
-		MergedBytes:      300,
+		MergedBytes:      verified,
 		VerifiedBytes:    verified,
-		Segments:         make([]types.HLSSegmentState, 4),
+		Segments:         segs,
 	}
 }
 
@@ -835,12 +852,16 @@ func TestEventPaused_HLSZeroCheckpoint_IsAuthoritative(t *testing.T) {
 	})
 	seedHLSDetail(t, id, url, destPath, "hls_zero.ts", 500, hlsCheckpoint(url, 500))
 
+	zeroSegs := make([]types.HLSSegmentState, 4)
+	for i := range zeroSegs {
+		zeroSegs[i] = types.HLSSegmentState{Index: i}
+	}
 	zeroResume := &types.HLSResumeState{
 		ManifestURL:     url,
 		TotalSegments:   4,
 		CompletedBitmap: []byte{0x00},
 		VerifiedBytes:   0,
-		Segments:        make([]types.HLSSegmentState, 4),
+		Segments:        zeroSegs,
 	}
 
 	ch := make(chan types.DownloadEvent, 1)
