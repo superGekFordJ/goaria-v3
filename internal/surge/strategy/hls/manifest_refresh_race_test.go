@@ -40,7 +40,10 @@ func TestHLSSegmentRetryRefresh_AttemptSnapshot(t *testing.T) {
 	ct1 := encryptTestCBC(t, key, iv1, plain1)
 	release0 := make(chan struct{})
 	seg0Started := make(chan struct{})
-	var startOnce sync.Once
+	var startOnce, release0Once sync.Once
+	// Unblock the parked seg0 handler on any failure path, or the
+	// fixture's httptest.Server.Close wedges until the test timeout.
+	t.Cleanup(func() { release0Once.Do(func() { close(release0) }) })
 	playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n" +
 		"#EXT-X-KEY:METHOD=AES-128,URI=\"key2.bin\"\n" +
 		"#EXTINF:4.0,\nv2/seg0\n#EXTINF:4.0,\nv2/seg1\n#EXT-X-ENDLIST\n"
@@ -82,7 +85,7 @@ func TestHLSSegmentRetryRefresh_AttemptSnapshot(t *testing.T) {
 	// adoption, so its fetch proves the generation flipped mid-attempt.
 	waitFor(t, "refresh adoption", 10*time.Second,
 		func() bool { return f.requests.count("/key2.bin") > 0 })
-	close(release0)
+	release0Once.Do(func() { close(release0) })
 	if err := engineWait(t, e, 30*time.Second); err != nil {
 		t.Fatalf("wait = %v", err)
 	}
@@ -103,7 +106,11 @@ func TestHLSSegmentRetryRefresh_CallerCancellation(t *testing.T) {
 	bodies := [][]byte{[]byte("aa"), []byte("bb")}
 	releaseManifest := make(chan struct{})
 	manifestEntered := make(chan struct{})
-	var enteredOnce sync.Once
+	var enteredOnce, releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseManifest) }) }
+	// Unblock the parked manifest handler on any failure path, or the
+	// fixture's httptest.Server.Close wedges until the test timeout.
+	t.Cleanup(release)
 	playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n" +
 		"#EXTINF:4.0,\nv2/seg0\n#EXTINF:4.0,\nv2/seg1\n#EXT-X-ENDLIST\n"
 	f := newHLSFixture(t, bodies, fixtureOpts{
@@ -136,6 +143,19 @@ func TestHLSSegmentRetryRefresh_CallerCancellation(t *testing.T) {
 	if len(ids) != 2 {
 		t.Fatalf("live sessions = %v, want 2", ids)
 	}
+	// manifestEntered only pins the fetch itself — the losing worker may
+	// still be cycling its 403 through settle/backoff with no published
+	// attempt, and cancelAttemptKill correctly refuses that state. Wait
+	// for every session to park an attempt in the refresh wait first.
+	waitFor(t, "all workers parked on the refresh wait", 5*time.Second, func() bool {
+		waiting := 0
+		for _, v := range e.sessionViews() {
+			if v.AttemptGen != 0 && v.Phase == hlsPhaseWait {
+				waiting++
+			}
+		}
+		return waiting == len(ids)
+	})
 	attemptGenOf := func(id int) uint64 {
 		for _, v := range e.sessionViews() {
 			if v.ID == id {
@@ -163,7 +183,7 @@ func TestHLSSegmentRetryRefresh_CallerCancellation(t *testing.T) {
 		func() bool { return len(e.liveSessionIDs()) == 1 })
 	// The fetch still owns the flight; releasing it finishes the refresh
 	// and the surviving worker drains both segments on the new URIs.
-	close(releaseManifest)
+	release()
 	if err := engineWait(t, e, 30*time.Second); err != nil {
 		t.Fatalf("wait = %v", err)
 	}
