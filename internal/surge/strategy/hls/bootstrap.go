@@ -2,75 +2,97 @@ package hls
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 	"slices"
 	"strings"
 
 	"goaria-v3/internal/surge/types"
+	"goaria-v3/internal/surge/utils"
 )
 
-// bootstrap resolves the prepared media table for this run. A seed that
-// already carries a complete, well-formed table is used as an immutable
-// clone — no re-fetch and no fingerprint compare (signed-URL refresh is a
-// later slice). A nil, degraded (fallback-preflight), or rebase-invalidated
-// seed re-walks the manifest chain under one shared PreflightTimeout
-// budget: start at the still-usable MediaPlaylistURL when present,
-// otherwise the manifest anchor; a master document selects the best muxed
-// variant and fetches its media playlist under the same budget. The
-// credential anchor stays the parsed original ManifestURL.
+// bootstrap resolves the prepared media table for this run. A prepared
+// table with no resume footprint is used as an immutable clone — it just
+// came out of a manifest fetch, so a second GET is never paid for it. A
+// prepared table that does carry resume footprint (explicit resume flag,
+// merged prefix, verified bytes, a spill ledger or a completed init) may
+// hold expired signatures, so the manifest is re-walked once under the
+// shared PreflightTimeout budget: the refreshed playlist must validate as
+// the same VOD (structure and, when stored, the exact fingerprint) before
+// its signed URIs are patched onto a clone bounded by the merged prefix.
+// A transient fetch failure degrades to the unchanged clone — the old
+// URIs retry inside the ordinary budget — while a parent cancel, a
+// permanent gate or a metadata mismatch always propagates. A nil,
+// degraded (fallback-preflight), or rebase-invalidated seed re-walks the
+// chain the same way and builds a zero-progress table. The credential
+// anchor stays the parsed original ManifestURL throughout.
 func (d *HlsDownloader) bootstrap(ctx context.Context, seed *types.HLSResumeState, credBase *url.URL, headers map[string]string, runCfg *types.RuntimeConfig) (*types.HLSResumeState, error) {
 	if hasPreparedTable(seed) {
-		return seed.Clone(), nil
+		prepared := seed.Clone()
+		if !d.resumeRefreshRequired(seed) {
+			return prepared, nil
+		}
+		mediaPl, _, err := d.fetchPlaylistUnderBudget(ctx, seed, credBase, headers, runCfg)
+		if err != nil {
+			if perr := ctx.Err(); perr != nil {
+				// A pause/cancel can never degrade into a stale-table run.
+				return nil, perr
+			}
+			if fatal := refreshFatalCause(err); fatal != nil {
+				return nil, fatal
+			}
+			// Transient fetch failure — the persisted table stays the best
+			// provable seed; its old URIs retry inside the normal budget.
+			utils.Debug("hls: resume manifest refresh degraded, keeping persisted URIs: %v", err)
+			return prepared, nil
+		}
+		if err := validateRefreshPlaylist(seed, mediaPl); err != nil {
+			return nil, err
+		}
+		// Only the clone is patched — every failure path above leaves the
+		// checkpointed seed untouched so a mount-time refusal can never
+		// half-rewrite it. Segments at or beyond MergedSegments (the spill
+		// ledger indexes included) move to the new URIs; the merged prefix
+		// is never fetched again and keeps its recorded URIs.
+		applyManifestURIs(prepared, mediaPl, prepared.MergedSegments)
+		return prepared, nil
 	}
 
-	start := strings.TrimSpace(seed.MediaPlaylistURL)
-	if u, err := url.Parse(start); err != nil || u == nil || u.Host == "" ||
-		(!strings.EqualFold(u.Scheme, "http") && !strings.EqualFold(u.Scheme, "https")) {
-		start = seed.ManifestURL
+	mediaPl, bandwidth, err := d.fetchPlaylistUnderBudget(ctx, seed, credBase, headers, runCfg)
+	if err != nil {
+		return nil, err
 	}
+	return zeroProgressResumeState(seed.ManifestURL, mediaPl, bandwidth), nil
+}
 
+// resumeRefreshRequired reports whether a prepared table may carry stale
+// signatures: the explicit resume flag also covers the zero-byte auto
+// retry (a failed run leaves progress counters at zero but its URIs aged
+// out), and every progress marker — merged prefix, verified bytes, spill
+// ledger, completed init — means the run lived long enough for URIs to
+// expire.
+func (d *HlsDownloader) resumeRefreshRequired(seed *types.HLSResumeState) bool {
+	if seed.MergedSegments >= seed.TotalSegments && seed.VerifiedBytes == seed.MergedBytes {
+		// Everything is already merged on disk — no segment URI will ever
+		// be fetched, so a dead signature can not matter and the manifest
+		// is not needed.
+		return false
+	}
+	return d.IsResume || seed.MergedSegments > 0 || seed.VerifiedBytes > 0 ||
+		len(seed.SpillEntries) > 0 || seed.InitCompleted
+}
+
+// fetchPlaylistUnderBudget walks the manifest chain under the shared
+// PreflightTimeout budget with the run's gated client, returning the
+// selected media playlist and its declared bandwidth (zero when the entry
+// itself was a media document).
+func (d *HlsDownloader) fetchPlaylistUnderBudget(ctx context.Context, seed *types.HLSResumeState, credBase *url.URL, headers map[string]string, runCfg *types.RuntimeConfig) (*MediaPlaylist, int64, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, PreflightTimeout)
 	defer cancel()
-
 	client, release := newHLSClient(d.Client, runCfg, credBase)
 	if release != nil {
 		defer release()
 	}
-
-	text, finalURL, _, err := fetchManifestText(fetchCtx, client, start, headers, credBase, runCfg)
-	if err != nil {
-		return nil, err
-	}
-	kind, masterPl, mediaPl, err := ParsePlaylist(text, finalURL)
-	if err != nil {
-		return nil, err
-	}
-
-	var bandwidth int64
-	if kind == PlaylistKindMaster {
-		best, serr := SelectBestVariant(masterPl)
-		if serr != nil {
-			return nil, serr
-		}
-		bandwidth = best.Bandwidth
-		body, mediaFinal, _, ferr := fetchManifestText(fetchCtx, client, best.URI, headers, credBase, runCfg)
-		if ferr != nil {
-			return nil, ferr
-		}
-		kind2, _, mediaPl2, perr := ParsePlaylist(body, mediaFinal)
-		if perr != nil {
-			return nil, perr
-		}
-		if kind2 != PlaylistKindMedia {
-			return nil, fmt.Errorf("%w: nested master playlist is not allowed", types.ErrHLSInvalidManifest)
-		}
-		mediaPl = mediaPl2
-	}
-	if mediaPl == nil {
-		return nil, fmt.Errorf("%w: no media playlist", types.ErrHLSInvalidManifest)
-	}
-	return zeroProgressResumeState(seed.ManifestURL, mediaPl, bandwidth), nil
+	return fetchRefreshPlaylist(fetchCtx, client, seed, headers, credBase, runCfg)
 }
 
 // hasPreparedTable reports whether the seed carries a complete,

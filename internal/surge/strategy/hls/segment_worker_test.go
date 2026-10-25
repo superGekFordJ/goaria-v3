@@ -124,6 +124,7 @@ func newHLSFixture(t *testing.T, bodies [][]byte, opts fixtureOpts) *hlsFixture 
 		ManifestURL:     f.srv.URL + "/media.m3u8",
 		TotalSegments:   n,
 		CompletedBitmap: make([]byte, (n+7)/8),
+		ContainerFormat: "ts",
 	}
 	if opts.key != nil {
 		f.seed.Keys = []types.HLSKeyInfo{{Method: "AES-128", URI: f.srv.URL + "/key.bin"}}
@@ -134,7 +135,7 @@ func newHLSFixture(t *testing.T, bodies [][]byte, opts fixtureOpts) *hlsFixture 
 	segs := make([]types.HLSSegmentState, n)
 	for i := range segs {
 		segs[i] = types.HLSSegmentState{
-			Index: i, Sequence: int64(i),
+			Index: i, Sequence: int64(i), DurationMicros: 4_000_000,
 			URI: fmt.Sprintf("%s/seg%d", f.srv.URL, i),
 		}
 		if opts.key != nil {

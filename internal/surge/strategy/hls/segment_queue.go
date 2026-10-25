@@ -16,7 +16,13 @@ type segmentTask struct {
 	retries         int  // generic retry budget consumed (cap hlsMaxSegmentRetries)
 	notFoundRetries int  // 404 short-retry count (cap 2)
 	genericAttempt  int  // connection-class failures, projected to RetryCount
-	refreshRequired bool // 403/410 under open admission — HLS-4 consumer seam
+	refreshRequired bool // 403/410 under open admission — consumed by the shared manifest refresh
+	// lastSeenRefreshGen records which refresh generation produced the URI
+	// snapshot this task's last request actually used. Stamped at attempt
+	// snapshot time and cleared lazily — the refresh publisher never moves
+	// it, so a late old-generation 403 can not be misread as the new URI
+	// failing. Guarded by q.mu together with seg.URI and refreshRequired.
+	lastSeenRefreshGen uint64
 }
 
 type segLeaseState int

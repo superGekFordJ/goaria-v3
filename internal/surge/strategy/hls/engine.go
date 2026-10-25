@@ -91,6 +91,19 @@ type segmentEngine struct {
 	fatalMu sync.Mutex
 	fatal   error
 
+	// Shared manifest refresh (singleflight). refreshMu guards the flight
+	// bookkeeping, the generation, the cooldown timestamp and every
+	// hot-mutable URI inside seed; the queue lock nests inside it and the
+	// window lock inside that — never the reverse. refreshWG joins a
+	// flight that outlives the last worker before the transport lease
+	// releases at wait().
+	refreshMu       sync.Mutex
+	refreshInFlight bool
+	refreshDone     chan struct{}
+	refreshGen      uint64
+	lastRefreshAt   time.Time
+	refreshWG       sync.WaitGroup
+
 	execAttempt func(sess *hlsWorkerSession, at *hlsAttempt) error
 }
 
@@ -464,6 +477,12 @@ func (e *segmentEngine) wait() error {
 		}
 		<-done
 	}
+	// A shared manifest refresh is engine-owned and may outlive the last
+	// worker — cancel its e.ctx-bound fetch and join it before the
+	// transport lease is released. Flight state and the wait live in
+	// separate lock scopes, and wait() never runs inside a flight.
+	e.cancel()
+	e.refreshWG.Wait()
 	e.lifeMu.Lock()
 	release := e.release
 	e.release = nil

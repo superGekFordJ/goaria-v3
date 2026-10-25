@@ -571,3 +571,22 @@ func (w *ReorderWindow) Close() error {
 // the file may not exist (lazy creation). arena.path is set at construction
 // and never mutated, so it is safe to read without the lock.
 func (w *ReorderWindow) SpillPath() string { return w.arena.path }
+
+// refreshManifestURIs adopts a validated manifest's URI surface into the
+// window's seed — and, when given, a sibling engine seed whose refresh
+// generation must stay atomic with the queue patch the caller performs
+// under the same refreshMu hold. The segment-URI lower bound is the live
+// merged frontier w.mergedSegs, never the seed's recorded MergedSegments:
+// every index at or beyond it may still be fetched, including indexes
+// already parked in the spill ledger. Only URI/fingerprint metadata
+// moves — bitmap, pending, merged/verified counters and the ledger are
+// progress state and stay untouched. The caller must hold refreshMu (and
+// q.mu) so the whole adoption publishes under one critical section.
+func (w *ReorderWindow) refreshManifestURIs(engineSeed *types.HLSResumeState, mediaPl *MediaPlaylist) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	applyManifestURIs(w.seed, mediaPl, w.mergedSegs)
+	if engineSeed != nil {
+		applyManifestURIs(engineSeed, mediaPl, w.mergedSegs)
+	}
+}

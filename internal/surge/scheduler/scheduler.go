@@ -984,25 +984,31 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 		delete(p.downloads, downloadID)
 	}
 
-	// FORK-PATCH: mark every unsettled HLS claim for this ID — the downloads
-	// slot plus any busy claim whose registered ad still names it — so a
-	// late worker error can never publish after EventRemoved. The
-	// barrier/cancel happens after p.mu is released below.
+	// FORK-PATCH: collect every HLS claim for this ID — the downloads slot
+	// plus any busy claim whose registered ad still names it — so a late
+	// worker error can never publish after EventRemoved and a second
+	// concurrent Cancel can never outrun the first one's file teardown.
+	// A claim another Cancel already marked still joins the wait set; the
+	// dedup is by ad pointer, not by the marker. The cancel/done barrier
+	// happens after p.mu is released below.
 	var hlsClaims []*activeDownload
-	markHLS := func(a *activeDownload) {
+	hlsSeen := make(map[*activeDownload]struct{})
+	collectHLS := func(a *activeDownload) {
 		if a == nil || a.config.Strategy != types.StrategyHLS {
 			return
 		}
-		if a.hlsRemoved.CompareAndSwap(false, true) {
+		a.hlsRemoved.Store(true)
+		if _, dup := hlsSeen[a]; !dup {
+			hlsSeen[a] = struct{}{}
 			hlsClaims = append(hlsClaims, a)
 		}
 	}
 	if activeExists {
-		markHLS(ad)
+		collectHLS(ad)
 	}
 	for _, slot := range p.busy {
 		if slot.ad != nil && slot.ad.config.ID == downloadID {
-			markHLS(slot.ad)
+			collectHLS(slot.ad)
 		}
 	}
 
@@ -1042,9 +1048,13 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 			ad.cancel()
 		}
 
-		// Best effort: wait for worker to exit so delete cleanup doesn't race with
-		// downloader startup that can recreate the .surge file after removal.
-		if ad.running.Load() {
+		// Best effort: wait for a non-HLS worker to exit so delete cleanup
+		// doesn't race with downloader startup recreating the .surge file
+		// after removal. A stuck non-HLS worker must never hold removal —
+		// the bounded wait stays. HLS claims wait unbounded on done below:
+		// a pause-time Flush/close must land before the caller deletes the
+		// .surge/.spill files, so no fixed timeout applies there.
+		if ad.config.Strategy != types.StrategyHLS && ad.running.Load() {
 			deadline := time.NewTimer(cancelStopWaitTimeout)
 			select {
 			case <-ad.done:
@@ -1060,16 +1070,25 @@ func (p *Scheduler) Cancel(downloadID string) types.CancelResult {
 		result.DestPath = resolveDestPath(&queuedCfg)
 	}
 
-	// FORK-PATCH: HLS terminal fence — cancel every marked claim's ctx (the
-	// active ad already fired above; busy claims with a different ad cancel
-	// here), then acquire/release each claim's event mutex as a barrier so
-	// any error send already inside the mutex completes before Cancel
-	// returns and EventRemoved is published.
+	// FORK-PATCH: HLS terminal fence — cancel every collected claim's ctx
+	// (the active ad already fired above; busy claims with a different ad
+	// cancel here), then wait on each claim's done for the whole
+	// RunDownload teardown: stop/Flush/close file must land before the
+	// caller deletes the .surge/.spill files, so no fixed timeout applies.
+	// A claim that already exited passes instantly; a queued task never
+	// mints a claim, and every registered claim's worker always reaches
+	// close(ad.done), so the wait cannot hang on an unstarted done.
 	for _, a := range hlsClaims {
 		if a != ad && a.cancel != nil {
 			a.cancel()
 		}
 	}
+	for _, a := range hlsClaims {
+		<-a.done
+	}
+	// Cross the event fence only after the writers exit: any terminal
+	// publication already inside the claim mutex completes before
+	// EventRemoved follows Cancel's return.
 	for _, a := range hlsClaims {
 		a.hlsEventMu.Lock()
 		// The acquire is the barrier; the read keeps the section non-empty.
@@ -1565,6 +1584,13 @@ func (p *Scheduler) worker() {
 				// Detach the checkpoint so the requeued entry cannot alias
 				// the worker-local slices the next run may still mutate.
 				localCfg.HLSResume = localCfg.HLSResume.Clone()
+				if hlsTask {
+					// An HLS auto-retry may resume a zero-byte prepared
+					// table whose signatures died with the first run — the
+					// flag lets bootstrap re-resolve them without doubling
+					// every fresh enqueue's manifest fetches.
+					localCfg.IsResume = true
+				}
 				qt.cfg = localCfg
 				qt.token = newToken
 				qt.admitted = false

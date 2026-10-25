@@ -219,10 +219,11 @@ func TestHLSDownloader_RunResumesMergedPrefix(t *testing.T) {
 		MergedBytes:      int64(len(segs[0])),
 		VerifiedBytes:    int64(len(segs[0])),
 		RecordEligible:   true,
+		ContainerFormat:  "ts",
 		Segments: []types.HLSSegmentState{
-			{Index: 0, Sequence: 0, URI: o.url("/s0.ts")},
-			{Index: 1, Sequence: 1, URI: o.url("/s1.ts")},
-			{Index: 2, Sequence: 2, URI: o.url("/s2.ts")},
+			{Index: 0, Sequence: 0, DurationMicros: 4_000_000, URI: o.url("/s0.ts")},
+			{Index: 1, Sequence: 1, DurationMicros: 4_000_000, URI: o.url("/s1.ts")},
+			{Index: 2, Sequence: 2, DurationMicros: 4_000_000, URI: o.url("/s2.ts")},
 		},
 	}
 

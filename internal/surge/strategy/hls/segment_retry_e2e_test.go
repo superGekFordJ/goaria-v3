@@ -142,21 +142,20 @@ func TestHLSSegmentRetryTooManyRequestsHonorsRetryAfter(t *testing.T) {
 	}
 }
 
-func TestHLSSegmentRetryGateOpen403RetriesOriginalURI(t *testing.T) {
-	body := []byte("after-refresh-candidate")
-	var calls atomic.Int64
-	var pathsMu sync.Mutex
-	var paths []string
+func TestHLSSegmentRetryGateOpen403RefreshesURI(t *testing.T) {
+	body := []byte("after-refresh")
 	f := newHLSFixture(t, [][]byte{body}, fixtureOpts{
 		handler: func(w http.ResponseWriter, r *http.Request) {
-			pathsMu.Lock()
-			paths = append(paths, r.URL.Path)
-			pathsMu.Unlock()
-			if calls.Add(1) <= 2 {
+			switch r.URL.Path {
+			case "/media.m3u8":
+				_, _ = w.Write([]byte("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:4.0,\nv2/seg0\n#EXT-X-ENDLIST\n"))
+			case "/seg0":
 				w.WriteHeader(http.StatusForbidden)
-				return
+			case "/v2/seg0":
+				_, _ = w.Write(body)
+			default:
+				w.WriteHeader(http.StatusNotFound)
 			}
-			_, _ = w.Write(body)
 		},
 	})
 	clk := newFakeClock()
@@ -168,18 +167,20 @@ func TestHLSSegmentRetryGateOpen403RetriesOriginalURI(t *testing.T) {
 	if err := e.wait(); err != nil {
 		t.Fatalf("wait = %v", err)
 	}
-	if got := calls.Load(); got != 3 {
-		t.Fatalf("requests = %d, want 3", got)
+	if n := f.requests.count("/media.m3u8"); n != 1 {
+		t.Fatalf("manifest requests = %d, want exactly one shared refresh", n)
 	}
-	pathsMu.Lock()
-	defer pathsMu.Unlock()
-	for _, p := range paths {
-		if p != "/seg0" {
-			t.Fatalf("gate-open retry hit %q — only the original URI retries", p)
-		}
+	if n := f.requests.count("/seg0"); n != 1 {
+		t.Fatalf("/seg0 requests = %d, want the single expired 403", n)
 	}
-	if !e.queue.tasks[0].refreshRequired {
-		t.Fatal("403 under open admission did not mark refreshRequired")
+	if n := f.requests.count("/v2/seg0"); n != 1 {
+		t.Fatalf("/v2/seg0 requests = %d, want exactly one refreshed fetch", n)
+	}
+	if got := f.output(t); !bytes.Equal(got, body) {
+		t.Fatalf("output = %q", got)
+	}
+	if e.refreshGen != 1 {
+		t.Fatalf("refreshGen = %d, want 1 after one adoption", e.refreshGen)
 	}
 }
 

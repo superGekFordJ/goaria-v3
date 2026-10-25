@@ -141,7 +141,8 @@ func (e *segmentEngine) settleOutcome(
 		errors.Is(err, types.ErrMaxRedirects),
 		errors.Is(err, errRedirectUserinfo),
 		errors.Is(err, errDirtySeed),
-		errors.Is(err, errOffsetOverflow):
+		errors.Is(err, errOffsetOverflow),
+		types.IsPermanentHLSError(err):
 		return attemptOutcome{action: outcomeFatal, err: err}
 	}
 	if errors.Is(err, errWindowClosed) {
@@ -240,7 +241,11 @@ func (e *segmentEngine) consumeRetry(task *segmentTask, generic bool, err error)
 func (e *segmentEngine) classifyStatus(task *segmentTask, se *hlsStatusError) attemptOutcome {
 	host := se.host
 	if host == "" {
+		// seg.URI may have moved under the refresh publisher — read it
+		// under the queue lock so the host can never tear.
+		e.queue.mu.Lock()
 		host = transport.MirrorHost(task.seg.URI)
+		e.queue.mu.Unlock()
 	}
 	permanent := func() attemptOutcome {
 		// Join keeps the typed status error reachable through errors.As —
@@ -283,9 +288,12 @@ func (e *segmentEngine) classifyStatus(task *segmentTask, se *hlsStatusError) at
 			return permanent()
 		}
 		// Admission open: the URI may carry an expired signature — mark a
-		// refresh-required candidate for a future consumer while still
-		// retrying the original URI inside the ordinary budget.
+		// refresh-required candidate under q.mu (the publisher and the
+		// reader both serialize on it) while still retrying inside the
+		// ordinary budget.
+		e.queue.mu.Lock()
 		task.refreshRequired = true
+		e.queue.mu.Unlock()
 		task.retries++
 		if task.retries > hlsMaxSegmentRetries {
 			return permanent()
@@ -331,17 +339,22 @@ func (e *segmentEngine) classifyStatus(task *segmentTask, se *hlsStatusError) at
 // deadline) — never two sequential sleeps. The wait is session-visible
 // (protected) and wakes on drain/stop/ctx.
 func (e *segmentEngine) waitRetry(sess *hlsWorkerSession, task *segmentTask, outcome attemptOutcome) error {
-	deadline := e.now().Add(outcome.delay)
+	// Sample once: the queue-lock host lookup between two real-clock reads
+	// must not eat into the requested delay.
+	now := e.now()
+	deadline := now.Add(outcome.delay)
 	host := outcome.retryHost
 	if host == "" {
+		e.queue.mu.Lock()
 		host = transport.MirrorHost(task.seg.URI)
+		e.queue.mu.Unlock()
 	}
-	if until := e.hostLimiter.BlockedUntil(host, e.now()); until.After(deadline) {
+	if until := e.hostLimiter.BlockedUntil(host, now); until.After(deadline) {
 		deadline = until
 	}
 	sess.protWait.Store(true)
 	sess.markActivity(e.now())
-	err := e.sleep(sess.ctx, deadline.Sub(e.now()))
+	err := e.sleep(sess.ctx, deadline.Sub(now))
 	sess.protWait.Store(false)
 	sess.markActivity(e.now())
 	return err

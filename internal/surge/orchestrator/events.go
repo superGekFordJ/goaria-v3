@@ -739,6 +739,13 @@ func (mgr *LifecycleManager) StartEventWorker(ch <-chan types.DownloadEvent) {
 				utils.Debug("Lifecycle: Failed to delete state: %v", err)
 			}
 
+			// A leftover spill arena is a run-scoped temporary either way —
+			// it is removed independent of the completed flag while the
+			// .surge rule below stays completion-gated.
+			if err := RemoveSpillFile(m.DestPath, m.DownloadID); err != nil {
+				utils.Debug("Lifecycle: Failed to remove spill file: %v", err)
+			}
+
 			// Only incomplete working files should be removed here; completed files have
 			// already been promoted to their final name by the completion path.
 			if m.DestPath != "" && !m.Completed {

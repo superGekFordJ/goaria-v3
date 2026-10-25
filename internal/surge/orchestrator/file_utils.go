@@ -210,3 +210,44 @@ func RemoveIncompleteFile(destPath string) error {
 	}
 	return nil
 }
+
+// RemoveSpillFile drops the canonical HLS spill arena ".<id>.spill" sitting
+// next to destPath. The id is the raw download ID — never the value a
+// persisted checkpoint claims — and must form one legal filename
+// component, mirroring the arena-side validateSpillID rules so an
+// actionable error replaces any accidental traversal. An empty or "."
+// destination and a missing file are success; every other failure
+// surfaces to the caller so repeated removal stays idempotent without
+// hiding real errors. RemoveAll is never used — only the enumerated file.
+func RemoveSpillFile(destPath, id string) error {
+	if destPath == "" || destPath == "." || id == "" {
+		return nil
+	}
+	if err := validateSpillFileID(id); err != nil {
+		return err
+	}
+	spillPath := filepath.Join(filepath.Dir(destPath), "."+id+".spill")
+	if err := retryRemove(spillPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// validateSpillFileID mirrors the HLS arena's download-ID rules: the ID
+// becomes the whole middle of ".<id>.spill", so it must be a single
+// non-empty filename component — no traversal, no separators, no control
+// or Windows-invalid characters, no leading/trailing dot-space form.
+func validateSpillFileID(id string) error {
+	if strings.Contains(id, "..") {
+		return fmt.Errorf("spill id %q contains traversal", id)
+	}
+	for _, r := range id {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`/\:?"<>|*`, r) {
+			return fmt.Errorf("spill id %q has illegal filename character %q", id, r)
+		}
+	}
+	if id[len(id)-1] == '.' || id[len(id)-1] == ' ' || id[0] == ' ' {
+		return fmt.Errorf("spill id %q has trailing/leading dot-space form", id)
+	}
+	return nil
+}

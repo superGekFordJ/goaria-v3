@@ -164,6 +164,12 @@ func (s *LocalDownloadService) Purge(id string) error {
 		if err := utils.RemoveFile(destPath + types.IncompleteSuffix); err != nil && !os.IsNotExist(err) {
 			errs = append(errs, err.Error())
 		}
+		// A leftover HLS spill arena is removed on its own — one deletion
+		// failure above must never skip the attempt here, and its result
+		// joins the same aggregation.
+		if err := orchestrator.RemoveSpillFile(destPath, id); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err.Error())
+		}
 		if len(errs) > 0 {
 			return fmt.Errorf("failed to delete files: %s", strings.Join(errs, ", "))
 		}

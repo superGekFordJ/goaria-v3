@@ -1066,6 +1066,17 @@ func ValidateIntegrity() (int, error) {
 		}
 	}
 
+	// FORK-PATCH: live spill arenas belong to surviving non-completed rows
+	// only — error, paused, queued and every other unfinished status all
+	// protect theirs. Rows dropped above (missing .surge, hash mismatch)
+	// lost that protection, so their spill files join the orphan sweep.
+	activeIDs := make(map[string]struct{}, len(out))
+	for _, e := range out {
+		if e.Status != "completed" {
+			activeIDs[e.ID] = struct{}{}
+		}
+	}
+
 	// Remove orphan .surge files that no longer have matching entries.
 	for dir := range candidateDirs {
 		files, err := os.ReadDir(dir)
@@ -1080,15 +1091,32 @@ func ValidateIntegrity() (int, error) {
 				continue
 			}
 			name := f.Name()
-			if !strings.HasSuffix(name, types.IncompleteSuffix) {
+			if strings.HasSuffix(name, types.IncompleteSuffix) {
+				surgePath := filepath.Join(dir, name)
+				if _, ok := expectedSurgePaths[surgePath]; ok {
+					continue
+				}
+				_ = utils.RemoveFile(surgePath)
+				utils.Debug("Integrity: removed orphan .surge file %s", surgePath)
 				continue
 			}
-			surgePath := filepath.Join(dir, name)
-			if _, ok := expectedSurgePaths[surgePath]; ok {
+			// Orphan HLS spill arena: ".<raw id>.spill" whose exact id has
+			// no surviving non-completed row. The match is exact — no
+			// trimming, no prefix rules — and only the enumerated basename
+			// inside a candidate directory is ever removed.
+			if !strings.HasPrefix(name, ".") || !strings.HasSuffix(name, ".spill") ||
+				len(name) <= len(".spill")+1 {
 				continue
 			}
-			_ = utils.RemoveFile(surgePath)
-			utils.Debug("Integrity: removed orphan .surge file %s", surgePath)
+			if _, ok := activeIDs[name[1:len(name)-len(".spill")]]; ok {
+				continue
+			}
+			spillPath := filepath.Join(dir, name)
+			if err := utils.RemoveFile(spillPath); err != nil {
+				utils.Debug("Integrity: failed to remove orphan spill file %s: %v", spillPath, err)
+				continue
+			}
+			utils.Debug("Integrity: removed orphan spill file %s", spillPath)
 		}
 	}
 

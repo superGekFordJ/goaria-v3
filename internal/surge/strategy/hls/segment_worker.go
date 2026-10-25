@@ -134,14 +134,19 @@ func parseContentRange(v string) (unit string, start, end, total int64, ok bool)
 	return unit, start, end, total, true
 }
 
-// execMediaAttempt is the production per-attempt body: host-penalty wait,
-// one gated GET, strict status/headers validation, streaming body reads
-// into a pooled growable buffer with the 64KiB/50ms dual-counter ledger,
-// private key table + in-place decrypt, pad correction, then the commit
-// gate and Accepted settlement.
+// execMediaAttempt is the production per-attempt body: consume any pending
+// manifest-refresh mark first (the attempt's own segCtx bounds that wait),
+// one locked URI/key-table snapshot, host-penalty wait, one gated GET,
+// strict status/headers validation, streaming body reads into a pooled
+// growable buffer with the 64KiB/50ms dual-counter ledger, private key
+// table + in-place decrypt, pad correction, then the commit gate and
+// Accepted settlement. The attempt never re-reads task.seg or e.seed.Keys
+// after the snapshot — a mid-attempt refresh adoption can never mix
+// generations inside this attempt.
 func (e *segmentEngine) execMediaAttempt(sess *hlsWorkerSession, at *hlsAttempt) error {
-	seg := &at.task.seg
-	br, err := hlsSegmentByteRange(seg)
+	e.refreshManifestOnAuthExpired(sess, at)
+	seg, keys := e.attemptURISnapshot(at.task)
+	br, err := hlsSegmentByteRange(&seg)
 	if err != nil {
 		return err
 	}
@@ -270,7 +275,7 @@ func (e *segmentEngine) execMediaAttempt(sess *hlsWorkerSession, at *hlsAttempt)
 	// Private key table — the fetch closure flips back to the interruptible
 	// network phase so a key miss stays stall-visible.
 	sess.setPhase(hlsPhaseDecrypt)
-	keyTable, kerr := e.keys.keyTable(seg, e.seed.Keys, func(uri string) ([aes.BlockSize]byte, error) {
+	keyTable, kerr := e.keys.keyTable(&seg, keys, func(uri string) ([aes.BlockSize]byte, error) {
 		var zero [aes.BlockSize]byte
 		if err := e.waitHostPenalty(sess, at, uri); err != nil {
 			return zero, err
@@ -287,7 +292,7 @@ func (e *segmentEngine) execMediaAttempt(sess *hlsWorkerSession, at *hlsAttempt)
 	if kerr != nil {
 		return kerr
 	}
-	plain, padLen, derr := decryptSegmentInPlace(buf, seg, keyTable)
+	plain, padLen, derr := decryptSegmentInPlace(buf, &seg, keyTable)
 	if derr != nil {
 		return derr
 	}
