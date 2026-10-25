@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,6 +18,13 @@ func TestHLSCheckpoint_FirstSegmentPersisted(t *testing.T) {
 	configureTestStore(t)
 	o := newRunOrigin(t)
 	gate := make(chan struct{})
+	var gateOnce sync.Once
+	// Unblock the parked s1 handler on any failure path, or the origin's
+	// httptest.Server.Close wedges until the test timeout — the run uses
+	// context.Background, so r.Context().Done() can never release it;
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer gateOnce.Do(func() { close(gate) })
 	seg0, seg1 := []byte("seg-0"), []byte("seg-1")
 	o.serveBody("/s0.ts", seg0)
 	o.mux.HandleFunc("/s1.ts", func(w http.ResponseWriter, r *http.Request) {
@@ -80,7 +88,7 @@ func TestHLSCheckpoint_FirstSegmentPersisted(t *testing.T) {
 	if hr.VerifiedBytes != hr.MergedBytes {
 		t.Fatalf("checkpoint verified %d != merged %d", hr.VerifiedBytes, hr.MergedBytes)
 	}
-	close(gate)
+	gateOnce.Do(func() { close(gate) })
 	if err := <-done; err != nil {
 		t.Fatalf("Run = %v", err)
 	}

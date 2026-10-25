@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -540,6 +541,13 @@ func TestHLSDownloader_WorkerBridgesDuringRun(t *testing.T) {
 	configureTestStore(t)
 	o := newRunOrigin(t)
 	gate := make(chan struct{})
+	var gateOnce sync.Once
+	// Unblock the parked s1 handler on any failure path, or the origin's
+	// httptest.Server.Close wedges until the test timeout — the run uses
+	// context.Background, so r.Context().Done() can never release it;
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer gateOnce.Do(func() { close(gate) })
 	o.serveBody("/s0.ts", []byte("s0"))
 	o.mux.HandleFunc("/s1.ts", func(w http.ResponseWriter, r *http.Request) {
 		select {
@@ -587,7 +595,7 @@ func TestHLSDownloader_WorkerBridgesDuringRun(t *testing.T) {
 	d.SetSlowWorkerThreshold(0.5)
 	d.SetSlowWorkerThreshold(-1)   // out of range — ignored, must not panic
 	d.SetSlowWorkerThreshold(1e99) // >1 — ignored
-	close(gate)
+	gateOnce.Do(func() { close(gate) })
 	if err := <-done; err != nil {
 		t.Fatalf("Run = %v", err)
 	}

@@ -125,6 +125,11 @@ func TestHLSEngineCompletesAll(t *testing.T) {
 
 func TestHLSEngineSpawnGate(t *testing.T) {
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Release the parked attempt on any failure path — a bare close after
+	// fallible assertions would strand the worker goroutine for the rest
+	// of the package run.
+	defer releaseOnce.Do(func() { close(release) })
 	e := testEngine(t, 1, func(sess *hlsWorkerSession, at *hlsAttempt) error {
 		select {
 		case <-release:
@@ -145,7 +150,7 @@ func TestHLSEngineSpawnGate(t *testing.T) {
 	if !e.spawnWorker() {
 		t.Fatal("spawnWorker refused with admission open")
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	if err := e.wait(); err != nil {
 		t.Fatalf("wait = %v", err)
 	}
@@ -160,6 +165,11 @@ func TestHLSEngineKillRequeuesFree(t *testing.T) {
 	var attempts atomic.Int64
 	killed := make(chan struct{})
 	releaseSecond := make(chan struct{})
+	var releaseOnce sync.Once
+	// The second attempt parks on releaseSecond with no ctx escape — a
+	// bare close after fallible assertions would strand the worker
+	// goroutine for the rest of the package run.
+	defer releaseOnce.Do(func() { close(releaseSecond) })
 	e := testEngine(t, 1, func(sess *hlsWorkerSession, at *hlsAttempt) error {
 		n := attempts.Add(1)
 		if n == 1 {
@@ -184,7 +194,7 @@ func TestHLSEngineKillRequeuesFree(t *testing.T) {
 	}
 	// Let the second attempt land.
 	time.Sleep(30 * time.Millisecond)
-	close(releaseSecond)
+	releaseOnce.Do(func() { close(releaseSecond) })
 	if err := e.wait(); err != nil {
 		t.Fatalf("wait = %v", err)
 	}
@@ -296,6 +306,11 @@ func TestHLSEngineFatalStopsPeers(t *testing.T) {
 func TestHLSEngineSnapshotDuringRun(t *testing.T) {
 	published := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Release the parked attempt on any failure path — a bare close after
+	// fallible assertions would strand the worker goroutine for the rest
+	// of the package run.
+	defer releaseOnce.Do(func() { close(release) })
 	e := testEngine(t, 1, func(sess *hlsWorkerSession, at *hlsAttempt) error {
 		close(published)
 		select {
@@ -325,7 +340,7 @@ func TestHLSEngineSnapshotDuringRun(t *testing.T) {
 	if len(views) != 1 || views[0].AttemptGen == 0 || views[0].Index != 0 {
 		t.Fatalf("views = %+v", views)
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	if err := e.wait(); err != nil {
 		t.Fatalf("wait = %v", err)
 	}

@@ -42,6 +42,12 @@ func waitErrBounded(t *testing.T, e *segmentEngine, bound time.Duration) error {
 // observes the second epoch instead of returning early on the stale close.
 func TestHLSEngineRespawnAfterDrainToZero(t *testing.T) {
 	gate := make(chan struct{})
+	var gateOnce sync.Once
+	// Unblock the parked first-GET handler on any failure path, or the
+	// fixture's httptest.Server.Close wedges until the test timeout;
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer gateOnce.Do(func() { close(gate) })
 	var calls atomic.Int32
 	f := newHLSFixture(t, [][]byte{[]byte("respawn-payload")}, fixtureOpts{
 		handler: func(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +71,7 @@ func TestHLSEngineRespawnAfterDrainToZero(t *testing.T) {
 	if !e.markDraining(0) {
 		t.Fatal("markDraining refused")
 	}
-	close(gate)
+	gateOnce.Do(func() { close(gate) })
 	// wait() is terminal — observe drain-to-zero via the session registry,
 	// then respawn before waiting.
 	for len(e.liveSessionIDs()) != 0 {
@@ -340,6 +346,11 @@ func TestHLSKillDuringBackoffIsRefused(t *testing.T) {
 	var calls atomic.Int32
 	slept := make(chan struct{}, 1)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Release a worker parked in the backoff sleep on any failure path —
+	// a bare close after fallible assertions would strand it for the
+	// rest of the package run.
+	defer releaseOnce.Do(func() { close(release) })
 	f := newHLSFixture(t, [][]byte{[]byte("backoff-payload")}, fixtureOpts{
 		handler: func(w http.ResponseWriter, r *http.Request) {
 			if calls.Add(1) == 1 {
@@ -351,7 +362,12 @@ func TestHLSKillDuringBackoffIsRefused(t *testing.T) {
 	})
 	e := f.buildEngine(t, fixtureOpts{
 		sleep: func(ctx context.Context, d time.Duration) error {
-			slept <- struct{}{}
+			// A second backoff must not park on the full buffer and
+			// strand the worker — the first observation still counts.
+			select {
+			case slept <- struct{}{}:
+			default:
+			}
 			select {
 			case <-release:
 				return nil
@@ -374,7 +390,7 @@ func TestHLSKillDuringBackoffIsRefused(t *testing.T) {
 	if id := len(e.liveSessionIDs()); id != 1 {
 		t.Fatalf("live sessions = %d, want 1 (kill must not touch the session)", id)
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	if err := waitErrBounded(t, e, 3*time.Second); err != nil {
 		t.Fatalf("wait = %v — refused kill must leave the retry schedule intact", err)
 	}

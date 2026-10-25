@@ -60,7 +60,6 @@ func TestLocalDownloadService_AddWithID_UsesProvidedID(t *testing.T) {
 	t.Cleanup(func() { _ = svc.Shutdown() })
 
 	blockCh := make(chan struct{})
-	defer close(blockCh)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1024")
 		w.WriteHeader(http.StatusOK)
@@ -75,6 +74,9 @@ func TestLocalDownloadService_AddWithID_UsesProvidedID(t *testing.T) {
 		}
 	}))
 	defer ts.Close()
+	// Registered after ts.Close so it unwinds first: a still-parked
+	// payload handler must release before the server waits on it.
+	defer close(blockCh)
 
 	customID := "test-id-123"
 	id, err := svc.AddWithID(ts.URL, tmpDir, "test.txt", nil, nil, customID, false, 1, 0)

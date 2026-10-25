@@ -235,6 +235,12 @@ func TestHLSDrainDuringNetworkPhaseKeepsBudget(t *testing.T) {
 	release := make(chan struct{})
 	inflight := make(chan struct{})
 	var inflightOnce sync.Once
+	var releaseOnce sync.Once
+	// Unblock the parked segment handler on any failure path, or the
+	// fixture's httptest.Server.Close wedges until the test timeout;
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer releaseOnce.Do(func() { close(release) })
 	f := newHLSFixture(t, [][]byte{[]byte("x")}, fixtureOpts{
 		handler: func(w http.ResponseWriter, r *http.Request) {
 			inflightOnce.Do(func() { close(inflight) })
@@ -257,7 +263,7 @@ func TestHLSDrainDuringNetworkPhaseKeepsBudget(t *testing.T) {
 	if len(ids) != 1 || !e.markDraining(ids[0]) {
 		t.Fatalf("drain failed: sessions=%v", ids)
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	if err := e.wait(); !errors.Is(err, errEngineIncomplete) {
 		t.Fatalf("wait = %v, want errEngineIncomplete (lease requeued)", err)
 	}
