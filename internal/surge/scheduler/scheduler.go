@@ -255,7 +255,7 @@ func newScheduler(progressCh chan<- types.DownloadEvent, maxDownloads int, manag
 		downloadLimiters: make(map[string]*transport.RateLimiter),
 	}
 	pool.taskCond = sync.NewCond(&pool.mu)
-	for i := 0; i < maxDownloads; i++ {
+	for range maxDownloads {
 		go pool.worker()
 	}
 	return pool
@@ -1235,10 +1235,7 @@ func (p *Scheduler) armRetryTimerLocked(earliest time.Time) {
 	gen := p.retryTimerGeneration
 	p.retryWakeAt = earliest
 
-	delay := time.Until(earliest)
-	if delay < 0 {
-		delay = 0
-	}
+	delay := max(time.Until(earliest), 0)
 
 	p.retryTimer = time.AfterFunc(delay, func() {
 		p.mu.Lock()

@@ -48,7 +48,7 @@ func TestProbeRedirect_SameOriginPreservesAuthHeaders(t *testing.T) {
 	mux.HandleFunc("/final", func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		gotCookie = r.Header.Get("Cookie")
-		gotAPIKey = r.Header.Get("X-API-Key")
+		gotAPIKey = r.Header.Get("X-Api-Key")
 		gotRange = r.Header.Get("Range")
 		w.Header().Set("Content-Range", "bytes 0-0/1")
 		w.WriteHeader(http.StatusPartialContent)

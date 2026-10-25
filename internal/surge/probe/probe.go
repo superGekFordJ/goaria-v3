@@ -202,8 +202,8 @@ func ProbeServerWithProxy(ctx context.Context, rawurl string, filenameHint strin
 		contentRange := resp.Header.Get("Content-Range")
 		utils.Debug("Content-Range header: %s", contentRange)
 		if contentRange != "" {
-			if idx := strings.LastIndex(contentRange, "/"); idx != -1 {
-				sizeStr := contentRange[idx+1:]
+			if _, after, ok := strings.CutLast(contentRange, "/"); ok {
+				sizeStr := after
 				if sizeStr != "*" {
 					result.FileSize, _ = strconv.ParseInt(sizeStr, 10, 64)
 				}

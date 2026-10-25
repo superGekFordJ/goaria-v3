@@ -40,7 +40,7 @@ func newGatedSpillOrigin(t *testing.T, s1After func(w http.ResponseWriter, r *ht
 		o: newHLSOrigin(t), gate: make(chan struct{}),
 		bodies: make([][]byte, spillResumeSegs), refs: make([]string, spillResumeSegs),
 	}
-	for i := 0; i < spillResumeSegs; i++ {
+	for i := range spillResumeSegs {
 		g.bodies[i] = []byte(fmt.Sprintf("seg-%02d;", i))
 		g.refs[i] = fmt.Sprintf("s%d.ts", i)
 	}
@@ -102,7 +102,7 @@ func (g *gatedSpillOrigin) waitOutOfOrder(t *testing.T) {
 
 func (g *gatedSpillOrigin) dumpCounts(t *testing.T) {
 	t.Helper()
-	for i := 0; i < spillResumeSegs; i++ {
+	for i := range spillResumeSegs {
 		t.Logf("%s=%d", g.refs[i], g.o.count("/"+g.refs[i]))
 	}
 }
@@ -111,7 +111,7 @@ func (g *gatedSpillOrigin) dumpCounts(t *testing.T) {
 // s2..s19 payload — the checkpoint's VerifiedBytes while s1 is still missing.
 func (g *gatedSpillOrigin) spillPendingSum() int64 {
 	var sum int64
-	for i := 0; i < spillResumeSegs; i++ {
+	for i := range spillResumeSegs {
 		if i == 1 {
 			continue
 		}
