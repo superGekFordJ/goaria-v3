@@ -166,8 +166,9 @@ func (s *LocalDownloadService) Purge(id string) error {
 		}
 		// A leftover HLS spill arena is removed on its own — one deletion
 		// failure above must never skip the attempt here, and its result
-		// joins the same aggregation.
-		if err := orchestrator.RemoveSpillFile(destPath, id); err != nil && !os.IsNotExist(err) {
+		// joins the same aggregation. RemoveSpillFile already maps a
+		// missing arena to nil, so no IsNotExist gate is needed here.
+		if err := orchestrator.RemoveSpillFile(destPath, id); err != nil {
 			errs = append(errs, err.Error())
 		}
 		if len(errs) > 0 {

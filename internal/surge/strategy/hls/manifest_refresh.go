@@ -318,7 +318,10 @@ func (e *segmentEngine) adoptRefreshURIs(mediaPl *MediaPlaylist) {
 	defer e.queue.mu.Unlock()
 	e.window.refreshManifestURIs(e.seed, mediaPl)
 	for idx, task := range e.queue.tasks {
-		if e.queue.states[idx] != segDone {
+		// A task whose index escapes the playlist is corrupt state —
+		// keep its old URI rather than panic mid-adoption.
+		if e.queue.states[idx] != segDone && task.seg.Index >= 0 &&
+			task.seg.Index < len(mediaPl.Segments) {
 			task.seg.URI = mediaPl.Segments[task.seg.Index].URI
 		}
 		task.refreshRequired = false
