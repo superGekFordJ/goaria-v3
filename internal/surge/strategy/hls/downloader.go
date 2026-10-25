@@ -236,7 +236,10 @@ func (d *HlsDownloader) run(ctx context.Context, manifestURL, destPath string) e
 // checkpoint exists: the scheduler publishes a sparse EventPaused and keeps
 // the last durable detail. Fresh-run counters are zeroed so the sparse
 // event never advertises phantom bytes; a persisted resume claim keeps its
-// historical verified bytes.
+// historical verified bytes. When a mount already published its seed, the
+// live durable collapses to the same zeroed projection the settled pause
+// path uses — a provable baseline keeps its mounted seed — so copy-back
+// cannot resurrect this run's init fetch as durable progress.
 func (d *HlsDownloader) pausedEarlyExit(ctx context.Context, err error) error {
 	ps := d.State
 	if ps == nil || !ps.IsPaused() || ctx.Err() == nil || !errors.Is(err, ctx.Err()) {
@@ -246,6 +249,16 @@ func (d *HlsDownloader) pausedEarlyExit(ctx context.Context, err error) error {
 	if d.HLSResume == nil || d.HLSResume.VerifiedBytes <= 0 {
 		ps.Bytes.Downloaded.Store(0)
 		ps.Bytes.VerifiedProgress.Store(0)
+	}
+	ps.FinalizePauseSession(ps.Bytes.Downloaded.Load())
+	d.ctrlMu.Lock()
+	baseline := d.resumeBaseline
+	d.ctrlMu.Unlock()
+	if baseline <= 0 {
+		if snap := d.ResumeSnapshot(); snap != nil {
+			resetProgress(snap)
+			d.setDurable(snap)
+		}
 	}
 	return errors.Join(types.ErrPaused, err)
 }
@@ -411,7 +424,9 @@ func (d *HlsDownloader) settleRun(ctx context.Context, e *segmentEngine, mnt *hl
 	}
 	if ctx.Err() != nil {
 		if prog != nil && prog.IsPaused() {
-			return d.handlePause(mnt, prog, e != nil && e.admissionOpen.Load())
+			// Pause wins — the engine error stays joined for diagnostics,
+			// same as the plain-cancel branch below keeps werr whole.
+			return errors.Join(d.handlePause(mnt, prog, e != nil && e.admissionOpen.Load()), werr)
 		}
 		// Cancel path: keep only what was already durably synced.
 		d.realignProgress(prog)
@@ -627,7 +642,9 @@ func (d *HlsDownloader) checkpointOnError(ctx context.Context, e *segmentEngine,
 		// cancel keeps only the synced prefix — no fresh save races the
 		// caller's teardown.
 		if prog != nil && prog.IsPaused() {
-			*werr = d.handlePause(mnt, prog, firstVerified)
+			// Pause wins — keep the triggering engine error joined so the
+			// fatal that started this checkpoint stays diagnosable.
+			*werr = errors.Join(d.handlePause(mnt, prog, firstVerified), *werr)
 			return
 		}
 		if cause != nil {

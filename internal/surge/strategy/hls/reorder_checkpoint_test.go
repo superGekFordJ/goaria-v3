@@ -484,3 +484,65 @@ func TestSnapshot_IsolatesArenaAndBitmap(t *testing.T) {
 		t.Fatal("snapshot shares mutable state with the window")
 	}
 }
+
+// A mid-flush storage fault commits strictly in index order: earlier
+// entries stay in the ledger, unflushed payloads stay pending and
+// uncounted, and the latch rejects any retry — the partial result is still
+// a ledger-valid checkpoint, never a mixed or half-counted claim.
+func TestFlushPending_PartialFailureKeepsCommits(t *testing.T) {
+	fx := newWindowFixture(t, 5, 1, 0, []int64{10, 20, 30, 40, 50}, "test-dl")
+	for _, seq := range []struct {
+		idx int
+		b   byte
+	}{{4, 'e'}, {2, 'c'}, {3, 'd'}} {
+		res, err := fx.w.Ingest(seq.idx, segPayload(seq.b, int(fx.seed.Segments[seq.idx].ByteLength)))
+		if err != nil || !res.Buffered {
+			t.Fatalf("ingest %d: res=%+v err=%v", seq.idx, res, err)
+		}
+	}
+	boom := errors.New("disk gone")
+	var writes int
+	realWrite := fx.ops.write
+	fx.ops.write = func(f *os.File, b []byte) (int, error) {
+		writes++
+		if writes == 2 {
+			return 0, boom
+		}
+		return realWrite(f, b)
+	}
+	err := fx.w.FlushPending()
+	if err == nil || !errors.Is(err, boom) {
+		t.Fatalf("flush = %v, want the injected fault", err)
+	}
+	snap := fx.w.Snapshot()
+	if len(snap.SpillEntries) != 1 || snap.SpillEntries[0] != (types.HLSSpillEntry{SegmentIndex: 2, Offset: 0, Length: 30}) {
+		t.Fatalf("committed entries = %+v", snap.SpillEntries)
+	}
+	if snap.SpillFileSize != 30 || snap.VerifiedBytes != snap.MergedBytes+30 {
+		t.Fatalf("spill bookkeeping = %d verified %d", snap.SpillFileSize, snap.VerifiedBytes)
+	}
+	for idx, want := range map[int]bool{2: true, 3: false, 4: false} {
+		got := snap.CompletedBitmap[idx>>3]&(1<<uint(idx&7)) != 0
+		if got != want {
+			t.Fatalf("bit %d = %v, want %v", idx, got, want)
+		}
+	}
+	if err := ValidateCheckpointSeed(snap); err != nil {
+		t.Fatalf("partial flush left an invalid ledger: %v", err)
+	}
+	// The two unflushed payloads stay pending — never counted, never lost.
+	if len(fx.w.pending) != 2 || fx.w.pendingBytes != 90 {
+		t.Fatalf("pending = %d/%d, want 2/90", len(fx.w.pending), fx.w.pendingBytes)
+	}
+	raw, rerr := os.ReadFile(fx.spillFile())
+	if rerr != nil || !bytes.Equal(raw, segPayload('c', 30)) {
+		t.Fatalf("spill content = %d bytes %v", len(raw), rerr)
+	}
+	// The latched fault rejects the retry and keeps the same pending set.
+	if err := fx.w.FlushPending(); !errors.Is(err, boom) {
+		t.Fatalf("latched flush = %v", err)
+	}
+	if len(fx.w.pending) != 2 {
+		t.Fatal("latched retry mutated the pending set")
+	}
+}

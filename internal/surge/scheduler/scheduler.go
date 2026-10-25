@@ -1462,7 +1462,7 @@ func (p *Scheduler) worker() {
 					snap.ProgressCh = nil
 					snap.Downloaded = snap.HLSResume.VerifiedBytes
 					if serr := store.SaveStateWithOptions(snap.URL, snap.DestPath, &snap, store.SaveStateOptions{SkipFileHash: true}); serr != nil {
-						utils.Debug("Scheduler: HLS pause checkpoint save for %s failed: %v 2014 the event still publishes the synced state", localCfg.ID, serr)
+						utils.Debug("Scheduler: HLS pause checkpoint save for %s failed: %v; the event still publishes the synced state", localCfg.ID, serr)
 					}
 					pausedState = &snap
 				}

@@ -201,6 +201,126 @@ func TestScheduler_HLSPauseEventCarriesSpillCheckpoint(t *testing.T) {
 	}
 }
 
+// TestScheduler_HLSPauseSaveFailureStillPublishes pins the fenced pause
+// publisher's degraded path: when the detail save fails inside the claim
+// fence, EventPaused still carries the synced checkpoint (the lifecycle
+// consumer may persist it later) — and a repeated Pause stays a no-op so
+// the publication remains exactly-once.
+func TestScheduler_HLSPauseSaveFailureStillPublishes(t *testing.T) {
+	stateRoot := t.TempDir()
+	store.Configure(filepath.Join(stateRoot, "state.db"))
+	t.Cleanup(store.CloseDB)
+	gate := make(chan struct{})
+	o := newGatedHLSOrigin(t, blockedOnRequest(gate, []byte("seg-1")))
+	defer close(gate)
+
+	ch := make(chan types.DownloadEvent, 32)
+	pool := New(ch, 1)
+	t.Cleanup(pool.GracefulShutdown)
+
+	const id = "hls-pause-savefail"
+	destDir := t.TempDir()
+	rt := &types.RuntimeConfig{MaxConnectionsPerDownload: 4}
+	if !pool.Add(types.DownloadRecord{
+		ID: id, URL: o.srv.URL + "/media.m3u8", OutputPath: destDir, Filename: "v.ts",
+		ProgressState: progress.New(id, 0), Runtime: rt,
+		Strategy: types.StrategyHLS,
+	}) {
+		t.Fatal("Add refused")
+	}
+	waitPendingSettle(t, o)
+
+	// Break exactly this task's detail path: the atomic rename inside the
+	// fenced save cannot replace a directory, so the save fails for sure
+	// once the pause publisher reaches it.
+	gobPath := filepath.Join(stateRoot, "details", id+".gob")
+	if err := os.Remove(gobPath); err != nil {
+		t.Fatalf("first-segment detail gob missing: %v", err)
+	}
+	if err := os.Mkdir(gobPath, 0o700); err != nil {
+		t.Fatalf("block detail path: %v", err)
+	}
+
+	if r := pool.Pause(id); !r.Found {
+		t.Fatal("Pause found no claim")
+	}
+	// A repeated Pause while the flag is already set must stay a no-op —
+	// the publication below must still be exactly once.
+	if r := pool.Pause(id); !r.Found {
+		t.Fatal("second Pause found no claim")
+	}
+
+	var pausedEv *types.DownloadEvent
+	pausedCount := 0
+	deadline := time.After(6 * time.Second)
+	for pausedEv == nil {
+		select {
+		case ev := <-ch:
+			if ev.DownloadID != id {
+				continue
+			}
+			switch ev.Type {
+			case types.EventPaused:
+				pausedCount++
+				if pausedEv == nil {
+					e := ev
+					pausedEv = &e
+				}
+			case types.EventError:
+				t.Fatalf("pause leaked EventError: %v", ev.Err)
+			case types.EventQueued:
+				t.Fatal("paused task requeued")
+			}
+		case <-deadline:
+			t.Fatal("EventPaused never arrived")
+		}
+	}
+	drainTimer := time.NewTimer(300 * time.Millisecond)
+	for draining := true; draining; {
+		select {
+		case ev := <-ch:
+			if ev.DownloadID == id && ev.Type == types.EventPaused {
+				pausedCount++
+			}
+		case <-drainTimer.C:
+			draining = false
+		}
+	}
+	if pausedCount != 1 {
+		t.Fatalf("EventPaused count = %d, want exactly 1", pausedCount)
+	}
+	// The save failed — yet the event still carries the synced checkpoint.
+	if pausedEv.State == nil || pausedEv.State.HLSResume == nil {
+		t.Fatal("EventPaused carried no checkpoint state")
+	}
+	hr := pausedEv.State.HLSResume
+	wantV := int64(len("seg-0") + len("seg-2") + len("seg-3"))
+	if pausedEv.State.Downloaded != hr.VerifiedBytes || pausedEv.Downloaded != hr.VerifiedBytes {
+		t.Fatalf("event D=%d state D=%d V=%d", pausedEv.Downloaded, pausedEv.State.Downloaded, hr.VerifiedBytes)
+	}
+	if hr.VerifiedBytes != wantV || len(hr.SpillEntries) != 2 {
+		t.Fatalf("checkpoint V=%d entries=%d, want V=%d + 2 entries", hr.VerifiedBytes, len(hr.SpillEntries), wantV)
+	}
+	// The detail gob was never written — the blocked path is still a dir.
+	if fi, err := os.Lstat(gobPath); err != nil || !fi.IsDir() {
+		t.Fatalf("detail path state = %v — the failed save must not have landed", err)
+	}
+	states, _ := store.LoadStates([]string{id})
+	if rec := states[id]; rec != nil {
+		t.Fatalf("detail persisted despite the forced failure: %+v", rec)
+	}
+	// The Pausing transition gate must be open again even after a failed save.
+	pool.mu.RLock()
+	ad := pool.downloads[id]
+	pool.mu.RUnlock()
+	if ad == nil {
+		t.Fatal("paused claim vanished")
+	}
+	if progress.CfgProgress(&ad.config).IsPausing() {
+		t.Fatal("Pausing gate never cleared after the failed save")
+	}
+}
+
 func TestScheduler_HLSErrorEventCarriesPendingCheckpoint(t *testing.T) {
 	store.Configure(filepath.Join(t.TempDir(), "state.db"))
 	t.Cleanup(store.CloseDB)

@@ -91,7 +91,7 @@ func TestHLSCheckpointEvents_Error(t *testing.T) {
 func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatus string) {
 	t.Helper()
 
-	type seedSpec struct {
+	type seedCase struct {
 		master           bool
 		masterDownloaded int64
 		detail           *types.HLSResumeState
@@ -101,7 +101,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 
 	cases := []struct {
 		name               string
-		seed               seedSpec
+		seed               seedCase
 		eventState         func(url, dest string) *types.DownloadRecord
 		wantMaster         int64
 		wantDetailV        int64 // -1 → expect no valid checkpoint in detail
@@ -111,7 +111,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 	}{
 		{
 			name: "lying_downloaded_above_V_pins_to_V",
-			seed: seedSpec{master: true, masterDownloaded: 700, detail: hlsCheckpoint("", 500), detailDownloaded: 500},
+			seed: seedCase{master: true, masterDownloaded: 700, detail: hlsCheckpoint("", 500), detailDownloaded: 500},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest, Strategy: types.StrategyHLS,
@@ -125,7 +125,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 		},
 		{
 			name: "lying_downloaded_below_V_pins_to_V",
-			seed: seedSpec{master: true, masterDownloaded: 700, detail: hlsCheckpoint("", 500), detailDownloaded: 500},
+			seed: seedCase{master: true, masterDownloaded: 700, detail: hlsCheckpoint("", 500), detailDownloaded: 500},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest, Strategy: types.StrategyHLS,
@@ -139,7 +139,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 		},
 		{
 			name: "valid_zero_checkpoint_regresses_to_zero",
-			seed: seedSpec{master: true, masterDownloaded: 700},
+			seed: seedCase{master: true, masterDownloaded: 700},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest, Strategy: types.StrategyHLS,
@@ -153,7 +153,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 		},
 		{
 			name: "spill_ledger_checkpoint_pins_merged_plus_spill",
-			seed: seedSpec{master: true, masterDownloaded: 700},
+			seed: seedCase{master: true, masterDownloaded: 700},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest, Strategy: types.StrategyHLS,
@@ -167,7 +167,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 		},
 		{
 			name: "strategy_omitted_still_hls_classified",
-			seed: seedSpec{master: true, masterDownloaded: 700},
+			seed: seedCase{master: true, masterDownloaded: 700},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest,
@@ -181,7 +181,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 		},
 		{
 			name: "invalid_event_falls_back_to_disk_checkpoint",
-			seed: seedSpec{master: true, masterDownloaded: 700, detail: hlsCheckpoint("", 500), detailDownloaded: 500},
+			seed: seedCase{master: true, masterDownloaded: 700, detail: hlsCheckpoint("", 500), detailDownloaded: 500},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest, Strategy: types.StrategyHLS,
@@ -198,7 +198,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 			// 777 is the last-persisted figure; the dead snapshot must not
 			// regress it or rewrite the gob.
 			name: "both_invalid_never_overwrites_detail",
-			seed: seedSpec{master: true, masterDownloaded: 700, detail: corruptHLSCheckpoint("", 500), detailDownloaded: 777},
+			seed: seedCase{master: true, masterDownloaded: 700, detail: corruptHLSCheckpoint("", 500), detailDownloaded: 777},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest, Strategy: types.StrategyHLS,
@@ -213,7 +213,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 		},
 		{
 			name: "master_missing_writes_master_and_detail",
-			seed: seedSpec{},
+			seed: seedCase{},
 			eventState: func(url, dest string) *types.DownloadRecord {
 				return &types.DownloadRecord{
 					URL: url, DestPath: dest, Strategy: types.StrategyHLS,
@@ -227,7 +227,7 @@ func runHLSCheckpointEventMatrix(t *testing.T, evType types.EventType, wantStatu
 		},
 		{
 			name: "foreign_id_checkpoint_never_adopted",
-			seed: seedSpec{
+			seed: seedCase{
 				master: true, masterDownloaded: 700,
 				detail: hlsCheckpoint("", 500), detailDownloaded: 500, detailFor: "foreign-id",
 			},

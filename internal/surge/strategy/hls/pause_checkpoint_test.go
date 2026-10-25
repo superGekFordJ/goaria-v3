@@ -261,3 +261,87 @@ func TestHLSPlainCancel_NoNewCheckpoint(t *testing.T) {
 		t.Fatalf("cancel wrote a new checkpoint: %+v", rec)
 	}
 }
+
+// blockWindowSync installs a one-shot barrier inside the window's out sync:
+// the first syncFn call after installation signals `began` and parks on
+// `release`. The swap runs under the window lock so every Sync caller
+// observes it through the same mutex — and every call after the first
+// delegates to the real sync so a re-capture cannot deadlock.
+func blockWindowSync(t *testing.T, d *HlsDownloader) (began <-chan struct{}, release chan<- struct{}) {
+	t.Helper()
+	d.ctrlMu.Lock()
+	w := d.window
+	d.ctrlMu.Unlock()
+	if w == nil {
+		t.Fatal("window not mounted")
+	}
+	b := make(chan struct{})
+	r := make(chan struct{})
+	w.mu.Lock()
+	real := w.ops.syncFn
+	fired := false
+	w.ops.syncFn = func(f *os.File) error {
+		if !fired {
+			fired = true
+			close(b)
+			<-r
+		}
+		return real(f)
+	}
+	w.mu.Unlock()
+	return b, r
+}
+
+// A pause landing inside the error path's stopped-engine capture converts
+// the exit to the pause product: the pending flush still lands, the full
+// checkpoint is stashed for the fenced publisher, and the triggering fatal
+// stays joined under the pause identity instead of being replaced.
+func TestHLSError_PauseDuringCapture_ConvertsToPauseProduct(t *testing.T) {
+	gate := make(chan struct{})
+	failAfter := func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-gate:
+		case <-r.Context().Done():
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}
+	_, d, prog, _, done, lens, _ := pendingRun(t, "err-pause-mid", http.HandlerFunc(failAfter))
+
+	// Park the capture inside window.Sync so the pause lands after pending
+	// flushed but before the post-capture ctx recheck.
+	began, release := blockWindowSync(t, d)
+	close(gate) // s1 404s — a permanent engine error enters the capture path.
+	select {
+	case <-began:
+	case <-time.After(5 * time.Second):
+		t.Fatal("checkpoint capture never reached the window sync")
+	}
+	prog.Pause()
+	close(release)
+
+	err := <-done
+	if !errors.Is(err, types.ErrPaused) {
+		t.Fatalf("Run = %v, want ErrPaused", err)
+	}
+	// The pause product keeps the latched engine error diagnosable.
+	if !errors.Is(err, types.ErrPermanentHTTP) {
+		t.Fatalf("Run = %v, want the 404 fatal preserved", err)
+	}
+	pending := prog.TakePendingResumeState()
+	if pending == nil || pending.HLSResume == nil {
+		t.Fatal("pause-mid-capture stashed no pending record")
+	}
+	hr := pending.HLSResume
+	wantV := int64(lens[0] + lens[2] + lens[3])
+	if pending.Downloaded != hr.VerifiedBytes || hr.VerifiedBytes != wantV || len(hr.SpillEntries) != 2 {
+		t.Fatalf("record D=%d V=%d entries=%d, want D=V=%d + 2 entries",
+			pending.Downloaded, hr.VerifiedBytes, len(hr.SpillEntries), wantV)
+	}
+	// The pause path never saves the detail — the fenced publisher owns it.
+	states, _ := store.LoadStates([]string{"err-pause-mid"})
+	if rec := states["err-pause-mid"]; rec == nil || rec.HLSResume == nil ||
+		rec.HLSResume.VerifiedBytes != int64(lens[0]) {
+		t.Fatalf("detail state = %+v — the mid-capture pause must not write the detail", rec)
+	}
+}
