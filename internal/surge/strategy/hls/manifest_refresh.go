@@ -107,6 +107,12 @@ func validateRefreshPlaylist(seed *types.HLSResumeState, mediaPl *MediaPlaylist)
 	if len(mediaPl.Segments) != seed.TotalSegments {
 		return mismatch("segment count %d != %d", len(mediaPl.Segments), seed.TotalSegments)
 	}
+	// A seed whose table is shorter than its declared count is corrupt
+	// regardless of the fresh playlist — the per-segment loop below could
+	// never prove the missing tail.
+	if len(seed.Segments) != seed.TotalSegments {
+		return mismatch("seed segment table %d != %d", len(seed.Segments), seed.TotalSegments)
+	}
 	if mediaPl.ContainerFormat != seed.ContainerFormat {
 		return mismatch("container %q != %q", mediaPl.ContainerFormat, seed.ContainerFormat)
 	}

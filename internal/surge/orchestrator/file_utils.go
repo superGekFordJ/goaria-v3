@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -236,8 +237,17 @@ func RemoveSpillFile(destPath, id string) error {
 // validateSpillFileID mirrors the HLS arena's download-ID rules: the ID
 // becomes the whole middle of ".<id>.spill", so it must be a single
 // non-empty filename component — no traversal, no separators, no control
-// or Windows-invalid characters, no leading/trailing dot-space form.
+// or Windows-invalid characters, no leading/trailing dot-space form, and
+// no ID longer than the arena's own 200-byte ceiling. The empty check is
+// kept inside this function (not only at the caller) so an unsafe ID can
+// never panic on the first/last-byte reads below.
 func validateSpillFileID(id string) error {
+	if id == "" {
+		return errors.New("empty spill id")
+	}
+	if len(id) > 200 {
+		return fmt.Errorf("spill id %d bytes too long", len(id))
+	}
 	if strings.Contains(id, "..") {
 		return fmt.Errorf("spill id %q contains traversal", id)
 	}

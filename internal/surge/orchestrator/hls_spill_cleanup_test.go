@@ -1,8 +1,10 @@
 package orchestrator
 
 import (
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -148,7 +150,7 @@ func TestRemoveSpillFile(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.Remove(decoy) })
 
-		for _, id := range []string{"..", "a/b", `a\b`, "a..b", "id.", " id", "a:b"} {
+		for _, id := range []string{"..", "a/b", `a\b`, "a..b", "id.", " id", "a:b", strings.Repeat("a", 201)} {
 			if err := RemoveSpillFile(destPath, id); err == nil {
 				t.Fatalf("RemoveSpillFile accepted illegal id %q", id)
 			}
@@ -157,4 +159,89 @@ func TestRemoveSpillFile(t *testing.T) {
 			t.Fatalf("traversal deleted the decoy: %v", err)
 		}
 	})
+}
+
+// TestHLSCancelCompleted_RemovesSpillArena covers the unconditional arm of
+// EventRemoved's spill sweep: a completed task keeps its promoted file
+// and skips the .surge rule, yet a stray leftover arena beside it is
+// still deleted.
+func TestHLSCancelCompleted_RemovesSpillArena(t *testing.T) {
+	s := newHLSE2EStack(t, 1)
+	o := newHLSOrigin(t)
+	o.serve("/s0.ts", []byte("part-0"))
+	o.serve("/s1.ts", []byte("part-1"))
+	o.servePlaylist("/media.m3u8", []string{"s0.ts", "s1.ts"})
+
+	dir := t.TempDir()
+	id := e2eEnqueueHLS(t, s, o.url("/media.m3u8"), dir, "video.ts")
+	s.waitMasterStatus(t, id, "completed", 15*time.Second)
+
+	final := filepath.Join(dir, "video.ts")
+	if _, err := os.Stat(final); err != nil {
+		t.Fatalf("promoted file missing: %v", err)
+	}
+	// A stale arena from a crashed earlier run survived completion.
+	spill := spillArenaPath(dir, id)
+	if err := os.WriteFile(spill, []byte("stale-ledger"), 0o644); err != nil {
+		t.Fatalf("seed stale arena: %v", err)
+	}
+
+	if err := s.mgr.Cancel(id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitForCond(t, 10*time.Second, "EventRemoved observed", func() bool {
+		return s.countEvents(id, types.EventRemoved) >= 1
+	})
+	waitSpillArena(t, spill, false)
+	if _, err := os.Stat(final); err != nil {
+		t.Fatalf("completed file deleted by removal: %v", err)
+	}
+}
+
+// TestEventRemoved_RepeatIsIdempotent proves the removal handler tolerates
+// a duplicated EventRemoved for the same task — the second pass finds
+// every artifact already gone and is a pure no-op.
+func TestEventRemoved_RepeatIsIdempotent(t *testing.T) {
+	s := newHLSE2EStack(t, 1)
+	o := newHLSOrigin(t)
+	o.serve("/s0.ts", []byte("part-0"))
+	o.mux.HandleFunc("/s1.ts", func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	})
+	o.servePlaylist("/media.m3u8", []string{"s0.ts", "s1.ts"})
+
+	dir := t.TempDir()
+	id := e2eEnqueueHLS(t, s, o.url("/media.m3u8"), dir, "video.ts")
+	waitForCond(t, 10*time.Second, "s1 in flight", func() bool {
+		return o.count("/s1.ts") >= 1
+	})
+	if err := s.mgr.Cancel(id); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	waitForCond(t, 10*time.Second, "EventRemoved observed", func() bool {
+		return s.countEvents(id, types.EventRemoved) >= 1
+	})
+	waitSpillArena(t, spillArenaPath(dir, id), false)
+
+	// A redelivered event for the same ID must not fail, recreate, or
+	// block — every handler arm treats missing as success.
+	s.bus.Publish(types.DownloadEvent{
+		Type:       types.EventRemoved,
+		DownloadID: id,
+		Filename:   "video.ts",
+		DestPath:   filepath.Join(dir, "video.ts"),
+	})
+	waitForCond(t, 10*time.Second, "repeat EventRemoved observed", func() bool {
+		return s.countEvents(id, types.EventRemoved) >= 2
+	})
+	// Let the worker's second pass settle, then confirm nothing came back.
+	time.Sleep(150 * time.Millisecond)
+	for _, p := range []string{
+		filepath.Join(dir, "video.ts"+types.IncompleteSuffix),
+		spillArenaPath(dir, id),
+	} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("%s exists after repeated EventRemoved: %v", p, err)
+		}
+	}
 }
