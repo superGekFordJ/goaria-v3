@@ -31,6 +31,12 @@ func TestHLSSegmentRetryRefresh_Singleflight(t *testing.T) {
 	const n = 4
 	arrived := make(chan struct{}, n)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	// Unblock parked segment handlers on any failure path, or the
+	// fixture's httptest.Server.Close wedges until the test timeout;
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer releaseOnce.Do(func() { close(release) })
 	var listMu sync.Mutex
 	playlist := "#EXTM3U\n#EXT-X-TARGETDURATION:6\n" +
 		"#EXTINF:4.0,\nv2/seg0\n#EXTINF:4.0,\nv2/seg1\n#EXTINF:4.0,\nv2/seg2\n#EXTINF:4.0,\nv2/seg3\n#EXT-X-ENDLIST\n"
@@ -40,7 +46,13 @@ func TestHLSSegmentRetryRefresh_Singleflight(t *testing.T) {
 			case "/media.m3u8":
 				_, _ = w.Write([]byte(playlist))
 			case "/seg0", "/seg1", "/seg2", "/seg3":
-				arrived <- struct{}{}
+				// A surprise extra request must not park on a full
+				// buffer and wedge the server close — the request
+				// count assertions still catch it.
+				select {
+				case arrived <- struct{}{}:
+				default:
+				}
 				<-release
 				w.WriteHeader(http.StatusForbidden)
 			case "/v2/seg0", "/v2/seg1", "/v2/seg2", "/v2/seg3":
@@ -68,7 +80,7 @@ func TestHLSSegmentRetryRefresh_Singleflight(t *testing.T) {
 			t.Fatalf("only %d concurrent expired requests arrived", i)
 		}
 	}
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	if err := engineWait(t, e, 30*time.Second); err != nil {
 		t.Fatalf("wait = %v", err)
 	}
