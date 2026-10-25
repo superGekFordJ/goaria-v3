@@ -1,6 +1,7 @@
 package tasks
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,6 +217,16 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 
 		_ = os.Remove(absPath + ".aria2")
 
+		// An unfinished Surge HLS run also leaves a hidden ".<raw id>.spill"
+		// arena next to the target — the same class of temporary residue as
+		// .aria2, cleaned for keep-file and delete-file removals alike.
+		if rawID, ok := surgeSpillID(gid); ok {
+			spillPath := filepath.Join(filepath.Dir(absPath), "."+rawID+".spill")
+			if err := os.Remove(spillPath); err != nil && !os.IsNotExist(err) {
+				log.Printf("tasks: spill cleanup for gid %q failed: %v", gid, err)
+			}
+		}
+
 		if strings.HasSuffix(absPath, ".torrent") {
 			_ = os.Remove(absPath)
 		}
@@ -224,6 +235,33 @@ func cleanupRemovedTask(gid string, target removalTarget, deleteFile bool) {
 			mon.ScheduleIdleMemoryReclaim()
 		}
 	}(target.path, target.dir)
+}
+
+// surgeSpillID extracts the raw Surge download ID from a "sg_" GID — the
+// only producer of ".<id>.spill" sidecars — and refuses anything that could
+// escape the destination directory or form an illegal filename. Non-Surge
+// GIDs and unsafe IDs delete nothing.
+func surgeSpillID(gid string) (string, bool) {
+	gid = strings.TrimSpace(gid)
+	if !strings.HasPrefix(gid, "sg_") {
+		return "", false
+	}
+	rawID := strings.TrimPrefix(gid, "sg_")
+	if rawID == "" {
+		return "", false
+	}
+	if strings.Contains(rawID, "..") {
+		return "", false
+	}
+	for _, r := range rawID {
+		if r < 0x20 || r == 0x7f || strings.ContainsRune(`/\:?"<>|*`, r) {
+			return "", false
+		}
+	}
+	if rawID[len(rawID)-1] == '.' || rawID[len(rawID)-1] == ' ' || rawID[0] == ' ' {
+		return "", false
+	}
+	return rawID, true
 }
 
 func (s *Service) BatchRemove(gids []string, deleteFiles bool) {
