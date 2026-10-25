@@ -82,7 +82,11 @@ func TestHLSSegmentRetryRefresh_AttemptSnapshot(t *testing.T) {
 	if err := e.start(2); err != nil {
 		t.Fatalf("start = %v", err)
 	}
-	<-seg0Started
+	select {
+	case <-seg0Started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("seg0 request never started")
+	}
 	// Wait until the refresh published — the new key URI only exists after
 	// adoption, so its fetch proves the generation flipped mid-attempt.
 	waitFor(t, "refresh adoption", 10*time.Second,
@@ -142,7 +146,11 @@ func TestHLSSegmentRetryRefresh_CallerCancellation(t *testing.T) {
 		t.Fatalf("start = %v", err)
 	}
 	// The shared fetch is parked; every candidate is now waiting on done.
-	<-manifestEntered
+	select {
+	case <-manifestEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("manifest fetch never parked")
+	}
 	ids := e.liveSessionIDs()
 	if len(ids) != 2 {
 		t.Fatalf("live sessions = %v, want 2", ids)
@@ -203,7 +211,12 @@ func TestHLSSegmentRetryRefresh_EngineExitJoinsFlight(t *testing.T) {
 	releaseManifest := make(chan struct{})
 	manifestEntered := make(chan struct{})
 	manifestAborted := make(chan struct{})
-	var onceEntered, onceAborted sync.Once
+	var onceEntered, onceAborted, releaseOnce sync.Once
+	// Unblock a still-parked manifest handler on any failure path, or the
+	// fixture's httptest.Server.Close wedges until the test timeout;
+	// defer unwinds before any t.Cleanup, so the fixture's own
+	// registration order can never strand this behind srv.Close.
+	defer releaseOnce.Do(func() { close(releaseManifest) })
 	f := newHLSFixture(t, [][]byte{[]byte("aa")}, fixtureOpts{
 		handler: func(w http.ResponseWriter, r *http.Request) {
 			switch r.URL.Path {
@@ -228,7 +241,11 @@ func TestHLSSegmentRetryRefresh_EngineExitJoinsFlight(t *testing.T) {
 	if err := e.start(1); err != nil {
 		t.Fatalf("start = %v", err)
 	}
-	<-manifestEntered
+	select {
+	case <-manifestEntered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("manifest fetch never parked")
+	}
 	// Engine cancel must abort the engine-bound fetch and wait() must join
 	// the flight before returning — never leaving a dangling goroutine
 	// holding the transport lease.
@@ -245,5 +262,7 @@ func TestHLSSegmentRetryRefresh_EngineExitJoinsFlight(t *testing.T) {
 	if !errors.Is(err, context.Canceled) && !errors.Is(err, errEngineIncomplete) {
 		t.Fatalf("wait = %v, want cancel/incomplete identity", err)
 	}
-	close(releaseManifest) // let the handler fully unwind for the server close
+	// Let a still-parked handler fully unwind for the server close —
+	// an already cancel-aborted handler makes this Once call a no-op.
+	releaseOnce.Do(func() { close(releaseManifest) })
 }
