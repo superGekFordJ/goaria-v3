@@ -5,6 +5,7 @@ import { configState, MSG_TYPE_HLS } from '../stores/config.svelte'
 import { connectionState } from '../stores/connection.svelte'
 import { wsClient } from '../background/wsClient'
 import { getCookiesForUrl } from '../background/cookieCapture'
+import { sanitizePageTitle } from '../background/pageTitle'
 import { getDownloadPageUrl } from '../background/refererCapture'
 import type {
   DownloadHandoffMessage,
@@ -204,7 +205,7 @@ export abstract class DownloadLinkInterceptor {
   private async hlsPageTitle(tabId: number): Promise<string> {
     try {
       const tab = await browser.tabs.get(tabId)
-      return typeof tab?.title === 'string' ? tab.title : ''
+      return sanitizePageTitle(tab?.title) ?? ''
     } catch {
       return ''
     }

@@ -6,6 +6,7 @@ import { getScheme } from '../interceptors/DownloadLinkInterceptor'
 import type { DownloadHandoffMessage } from '../utils/messaging'
 import { t } from '../lib/i18n'
 import { urlPathIsM3uPlaylist, urlPathIsM3u8Playlist } from './domCanonicalUrl'
+import { sanitizePageTitle } from './pageTitle'
 import { handleCollectPageLinks } from './domFlow'
 import { hasCapability } from './capabilities'
 import { CAP_DOWNLOAD_BATCH, MSG_TYPE_HLS } from '../stores/config.svelte'
@@ -93,8 +94,14 @@ async function handleContextMenuClick(
   }
 
   try {
+    // Mirrors the interceptor's privacy boundary: incognito tabs get no
+    // Cookie, and a container tab reads its own cookie store.
+    const cookies =
+      tab?.incognito === true
+        ? Promise.resolve<string[]>([])
+        : getCookiesForUrl(url, tab?.cookieStoreId)
     const [headers, downloadPage] = await Promise.all([
-      getCookiesForUrl(url),
+      cookies,
       getDownloadPageUrl({ tabId: tab?.id, referrer: info.pageUrl }),
     ])
     const req: DownloadHandoffMessage = {
@@ -107,7 +114,7 @@ async function handleContextMenuClick(
       dedupKey: '',
       filename: '',
       downloadPage,
-      pageTitle: hls ? tab?.title : undefined,
+      pageTitle: hls ? sanitizePageTitle(tab?.title) : undefined,
     }
     await wsClient.sendDownloadRequest(req)
   } catch (err) {

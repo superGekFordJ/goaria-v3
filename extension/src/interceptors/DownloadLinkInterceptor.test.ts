@@ -387,4 +387,21 @@ describe('constructDownloadRequest', () => {
       'firefox-container-1',
     )
   })
+
+  it('sanitizes a page-controlled tab title on hls handoffs', async () => {
+    tabsApi.get.mockResolvedValue({ title: 'Live\nShow' })
+    const req = await interceptor.constructDownloadRequest(
+      ctx({ url: 'https://cdn.example.test/live.m3u8' }),
+    )
+    expect(req.type).toBe('hls')
+    expect(req.pageTitle).toBe('LiveShow')
+  })
+
+  it('truncates an oversized multibyte tab title instead of leaking it', async () => {
+    tabsApi.get.mockResolvedValue({ title: '€'.repeat(600) })
+    const req = await interceptor.constructDownloadRequest(
+      ctx({ url: 'https://cdn.example.test/live.m3u8' }),
+    )
+    expect(req.pageTitle).toBe('€'.repeat(341))
+  })
 })

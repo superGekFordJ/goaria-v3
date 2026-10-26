@@ -35,9 +35,24 @@ type FilenameSuggestion = {
   conflictAction?: 'uniquify' | 'overwrite' | 'prompt'
 }
 type SuggestFn = (suggestion?: FilenameSuggestion) => void
+
+// finalUrl is Chrome-specific and absent from @types/webextension-polyfill.
+// The polyfill forwards it at runtime; declare it for typed access.
+type DownloadItemWithFinalUrl = browser.Downloads.DownloadItem & {
+  finalUrl?: string
+}
+
 type OnDeterminingFilenameItem = Pick<
-  browser.Downloads.DownloadItem,
-  'id' | 'url' | 'filename' | 'fileSize' | 'totalBytes' | 'referrer' | 'byExtensionId' | 'mime'
+  DownloadItemWithFinalUrl,
+  | 'id'
+  | 'url'
+  | 'filename'
+  | 'fileSize'
+  | 'totalBytes'
+  | 'referrer'
+  | 'byExtensionId'
+  | 'mime'
+  | 'finalUrl'
 >
 type OnDeterminingFilenameListener = (
   item: OnDeterminingFilenameItem,
@@ -55,12 +70,6 @@ function getOnDeterminingFilename(): DownloadsDeterminingFilenameEvent | null {
     onDeterminingFilename?: DownloadsDeterminingFilenameEvent
   }
   return downloads.onDeterminingFilename ?? null
-}
-
-// finalUrl is Chrome-specific and absent from @types/webextension-polyfill.
-// The polyfill forwards it at runtime; declare it for typed access.
-type DownloadItemWithFinalUrl = browser.Downloads.DownloadItem & {
-  finalUrl?: string
 }
 
 /**
@@ -386,7 +395,9 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       size < SMALL_FILE_THRESHOLD_BYTES &&
       !isHLSDownloadContext({
         url: item.url ?? '',
-        finalUrl: '',
+        // Same finalUrl onCreated used — a redirect to .m3u8 must keep the
+        // HLS exemption here or the manifest escapes the hold.
+        finalUrl: item.finalUrl ?? '',
         tabId: -1,
         mimeType: extractMimeType(item.mime ?? ''),
         contentDisposition: '',

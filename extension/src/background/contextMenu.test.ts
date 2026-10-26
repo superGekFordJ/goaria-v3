@@ -104,6 +104,9 @@ vi.mock('../lib/i18n', () => ({
 }))
 
 import { initContextMenu } from './contextMenu'
+import { getCookiesForUrl } from './cookieCapture'
+
+const cookiesMock = vi.mocked(getCookiesForUrl)
 
 const tab = { id: 7, title: 'Live Show Page', url: 'https://example.test/page' }
 
@@ -136,6 +139,7 @@ describe('contextMenu', () => {
       success: true,
       gid: 'ar_ctx',
     })
+    cookiesMock.mockClear()
     initContextMenu()
   })
 
@@ -205,5 +209,32 @@ describe('contextMenu', () => {
       title: 'dom_missing_cap_title',
       message: 'dom_missing_cap_body',
     })
+  })
+
+  it('sanitizes a page-controlled tab title before the hls handoff', async () => {
+    await click(
+      { menuItemId: 'goaria-download-link', linkUrl: 'https://cdn.test/live.m3u8' },
+      { id: 7, title: 'Live\nShow' },
+    )
+    expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+    expect(lastRequest().pageTitle).toBe('LiveShow')
+  })
+
+  it('skips cookies for an incognito tab', async () => {
+    await click(
+      { menuItemId: 'goaria-download-link', linkUrl: 'https://cdn.test/file.bin' },
+      { id: 7, incognito: true },
+    )
+    expect(cookiesMock).not.toHaveBeenCalled()
+    expect(lastRequest().headers).toEqual([])
+  })
+
+  it('forwards the tab cookieStoreId to cookie collection', async () => {
+    await click(
+      { menuItemId: 'goaria-download-link', linkUrl: 'https://cdn.test/file.bin' },
+      { id: 7, cookieStoreId: 'firefox-container-1' },
+    )
+    expect(cookiesMock).toHaveBeenCalledWith('https://cdn.test/file.bin', 'firefox-container-1')
+    expect(lastRequest().headers).toEqual(['Cookie: sid=1'])
   })
 })

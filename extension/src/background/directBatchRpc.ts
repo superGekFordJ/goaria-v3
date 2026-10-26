@@ -1,3 +1,5 @@
+import { PAGE_TITLE_MAX_BYTES } from './pageTitle'
+
 export const DIRECT_BATCH_TYPE = 'download_batch'
 export const DIRECT_BATCH_STATUS_TYPE = 'download_batch_status'
 
@@ -115,6 +117,14 @@ export function buildDirectBatchPayload(input: Record<string, unknown>): DirectB
     if ('page_title' in rec) {
       if (typeof rec.page_title !== 'string') {
         return { error: 'page_title must be a string' }
+      }
+      // Same pre-check level as folder_name: a bad title must not take the
+      // whole batch down on the backend's strict parse.
+      if (/[\r\n\0]/.test(rec.page_title)) {
+        return { error: 'page_title is invalid' }
+      }
+      if (new TextEncoder().encode(rec.page_title).length > PAGE_TITLE_MAX_BYTES) {
+        return { error: 'page_title is invalid' }
       }
       item.page_title = rec.page_title
     }

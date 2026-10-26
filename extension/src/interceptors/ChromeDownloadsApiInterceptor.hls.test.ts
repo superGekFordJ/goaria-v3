@@ -435,6 +435,62 @@ describe('ChromeDownloadsApiInterceptor HLS', () => {
     expect(burst.recover).toHaveBeenCalledTimes(1)
   })
 
+  it('holds the filename suggestion when only finalUrl reveals the manifest', async () => {
+    const item = downloadItem({
+      url: 'https://cdn.example.test/get',
+      finalUrl: 'https://cdn.example.test/live.m3u8',
+      filename: 'get',
+      fileSize: 2_048,
+      totalBytes: 2_048,
+      mime: 'application/octet-stream',
+    })
+    downloads.items.set(1, item)
+    downloads.created[0](item)
+    // onCreated claims HLS via finalUrl; the filename listener must evaluate
+    // the same finalUrl or it releases the manifest before pause lands.
+    const suggest = vi.fn()
+    const held = downloads.filename[0](
+      {
+        id: 1,
+        url: item.url,
+        finalUrl: item.finalUrl,
+        filename: item.filename,
+        fileSize: item.fileSize,
+        totalBytes: item.totalBytes,
+        referrer: '',
+        mime: item.mime,
+      },
+      suggest,
+    )
+    expect(held).toBe(true)
+    expect(suggest).not.toHaveBeenCalled()
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+    })
+    expect(lastRequest().type).toBe('hls')
+  })
+
+  it('still releases a small non-HLS item at the filename listener', async () => {
+    const item = downloadItem({ fileSize: 2_048, totalBytes: 2_048 })
+    downloads.items.set(1, item)
+    downloads.created[0](item)
+    const suggest = vi.fn()
+    const held = downloads.filename[0](
+      {
+        id: 1,
+        url: item.url,
+        filename: item.filename,
+        fileSize: item.fileSize,
+        totalBytes: item.totalBytes,
+        referrer: item.referrer,
+        mime: item.mime,
+      },
+      suggest,
+    )
+    expect(held).toBeUndefined()
+    expect(suggest).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps cookies off an incognito pending_ recovery', async () => {
     pending.map.set(3, {
       url: 'https://cdn.example.test/live.m3u8',

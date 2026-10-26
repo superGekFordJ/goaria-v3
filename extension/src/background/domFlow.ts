@@ -21,6 +21,7 @@ import { broadcastDomClose } from './domHostDown'
 import { referrerResult } from './domReferrer'
 import { buildDirectBatchPayload } from './directBatchRpc'
 import { mintClientItemId, mintDirectBatchRequestId } from './mintRequestId'
+import { sanitizePageTitle } from './pageTitle'
 import { folderFieldForSubmit, filterFolderName } from './pickerFolder'
 import { resolveCookieStoreIdForTab } from './cookieCapture'
 import { wsClient } from './wsClient'
@@ -232,7 +233,7 @@ export async function handleCollectPageLinks(
       truncated: scan.truncated === true,
       items,
       folderPrefill,
-      pageTitle: typeof scan.title === 'string' && scan.title !== '' ? scan.title : undefined,
+      pageTitle: sanitizePageTitle(scan.title),
     })
     const projection = projectDomCatalog(catalog)
     try {

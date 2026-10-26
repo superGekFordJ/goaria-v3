@@ -605,4 +605,70 @@ describe('domFlow', () => {
     const items = harness.batch[0]?.payload.items as Record<string, unknown>[]
     expect(items[0]?.page_title).toBeUndefined()
   })
+
+  it('sanitizes a page-controlled title instead of failing the whole batch', async () => {
+    harness.scan.title = 'Live\nShow\tPage'
+    harness.scan.items = [
+      {
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: 'link',
+        filename: 'live.m3u8',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+      {
+        url: 'https://cdn.example.com/file.bin',
+        kind: 'link',
+        filename: 'file.bin',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+    ]
+    const catalogId = await openCatalog()
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0, 1] }, { tabId: 7 })
+    // The dirty title neither rejects the batch nor poisons the non-HLS item.
+    expect(reply.accepted).toBe(true)
+    const items = harness.batch[0]?.payload.items as Record<string, unknown>[]
+    expect(items[0]?.page_title).toBe('LiveShow\tPage')
+    expect(items[1]).not.toHaveProperty('page_title')
+  })
+
+  it('truncates an oversized multibyte title rather than rejecting the batch', async () => {
+    harness.scan.title = '€'.repeat(600)
+    harness.scan.items = [
+      {
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: 'link',
+        filename: 'live.m3u8',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+    ]
+    const catalogId = await openCatalog()
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(reply.accepted).toBe(true)
+    const items = harness.batch[0]?.payload.items as Record<string, unknown>[]
+    expect(items[0]?.page_title).toBe('€'.repeat(341))
+  })
+
+  it('omits page_title when the title cleans to nothing', async () => {
+    harness.scan.title = '\n\r'
+    harness.scan.items = [
+      {
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: 'link',
+        filename: 'live.m3u8',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+    ]
+    const catalogId = await openCatalog()
+    await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    const items = harness.batch[0]?.payload.items as Record<string, unknown>[]
+    expect(items[0]?.page_title).toBeUndefined()
+  })
 })

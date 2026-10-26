@@ -190,6 +190,27 @@ describe('buildDirectBatchPayload', () => {
     }
   })
 
+  it('rejects page_title with control characters or beyond the byte cap', () => {
+    for (const page_title of ['a\nb', 'x\ry', 'p\0q']) {
+      expect(
+        buildDirectBatchPayload({ items: [{ client_item_id: itemId, url, page_title }] }),
+      ).toEqual({ error: 'page_title is invalid' })
+    }
+    // 342 * 3-byte chars = 1026 bytes > cap; exactly 1024 bytes stays legal.
+    expect(
+      buildDirectBatchPayload({
+        items: [{ client_item_id: itemId, url, page_title: '€'.repeat(342) }],
+      }),
+    ).toEqual({ error: 'page_title is invalid' })
+    expect(
+      buildDirectBatchPayload({
+        items: [{ client_item_id: itemId, url, page_title: 'x'.repeat(1024) }],
+      }),
+    ).toEqual({
+      payload: { items: [{ client_item_id: itemId, url, page_title: 'x'.repeat(1024) }] },
+    })
+  })
+
   it('freezes allowlists', () => {
     expect(Object.isFrozen(DIRECT_BATCH_TOP_ALLOWLIST)).toBe(true)
     expect(Object.isFrozen(DIRECT_BATCH_ITEM_ALLOWLIST)).toBe(true)
