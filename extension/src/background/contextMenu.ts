@@ -110,7 +110,9 @@ async function handleContextMenuClick(
       finalUrl: '',
       headers,
       fileSize: 0,
-      skipHeadProbe: false,
+      // fileSize is never known here; mirror the interceptor rule so HLS
+      // still skips the backend HEAD probe.
+      skipHeadProbe: hls,
       dedupKey: '',
       filename: '',
       downloadPage,

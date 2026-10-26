@@ -229,6 +229,18 @@ describe('shouldIntercept', () => {
     // Attachment + strict whitelist miss still passes even with HLS evidence.
     config.registeredFileTypes = ['zip']
     expect(interceptor.shouldIntercept(attached)).toBe('pass')
+    // An extensionless attachment under the same whitelist must not promote
+    // the mpegurl MIME through the download-MIME fallback either.
+    expect(
+      interceptor.shouldIntercept(
+        ctx({
+          url: 'https://cdn.example.test/edge',
+          mimeType: 'application/x-mpegurl',
+          contentDisposition: 'attachment; filename="edge"',
+          filename: 'edge',
+        }),
+      ),
+    ).toBe('pass')
     // Whitelist hit intercepts and stays HLS.
     config.registeredFileTypes = ['m3u8']
     expect(interceptor.shouldIntercept(attached)).toBe('intercept')
