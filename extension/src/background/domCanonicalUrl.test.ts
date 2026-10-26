@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalizeDirectURL, urlPathIsM3uPlaylist } from './domCanonicalUrl'
+import { canonicalizeDirectURL, urlPathIsM3uPlaylist, urlPathIsM3u8Playlist } from './domCanonicalUrl'
 
 describe('canonicalizeDirectURL', () => {
   it('rejects userinfo', () => {
@@ -72,10 +72,33 @@ describe('canonicalizeDirectURL', () => {
   })
 })
 
+describe('urlPathIsM3u8Playlist', () => {
+  it('detects only the .m3u8 path suffix, case-insensitively', () => {
+    expect(urlPathIsM3u8Playlist('https://example.com/live.m3u8')).toBe(true)
+    expect(urlPathIsM3u8Playlist('https://example.com/live.M3U8')).toBe(true)
+    expect(urlPathIsM3u8Playlist('https://example.com/live.m3u8?token=1#f')).toBe(true)
+    expect(urlPathIsM3u8Playlist('https://example.com/live.bin')).toBe(false)
+    // .m3u is an ordinary playlist, never HLS.
+    expect(urlPathIsM3u8Playlist('https://example.com/live.m3u')).toBe(false)
+    // Text in the query or mid-path must not count.
+    expect(urlPathIsM3u8Playlist('https://example.com/live.bin?next=a.m3u8')).toBe(false)
+    expect(urlPathIsM3u8Playlist('https://example.com/a.m3u8/file.bin')).toBe(false)
+    // Non-http(s) and malformed URLs are not HLS.
+    expect(urlPathIsM3u8Playlist('ftp://example.com/live.m3u8')).toBe(false)
+    expect(urlPathIsM3u8Playlist('not a url')).toBe(false)
+    // Escaped suffix decodes like the Go detector.
+    expect(urlPathIsM3u8Playlist('https://example.com/live.m3u%38')).toBe(true)
+  })
+})
+
 describe('urlPathIsM3uPlaylist', () => {
-  it('detects m3u and m3u8 path suffixes case-insensitively', () => {
-    expect(urlPathIsM3uPlaylist('https://example.com/live.M3U8')).toBe(true)
+  it('detects only the .m3u path suffix now', () => {
     expect(urlPathIsM3uPlaylist('https://example.com/live.m3u')).toBe(true)
+    expect(urlPathIsM3uPlaylist('https://example.com/live.M3U')).toBe(true)
+    expect(urlPathIsM3uPlaylist('https://example.com/live.m3u?token=1')).toBe(true)
+    expect(urlPathIsM3uPlaylist('https://example.com/live.m3u8')).toBe(false)
     expect(urlPathIsM3uPlaylist('https://example.com/live.bin')).toBe(false)
+    expect(urlPathIsM3uPlaylist('ftp://example.com/live.m3u')).toBe(false)
+    expect(urlPathIsM3uPlaylist('not a url')).toBe(false)
   })
 })

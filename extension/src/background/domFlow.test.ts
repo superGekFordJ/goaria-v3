@@ -173,6 +173,7 @@ describe('domFlow', () => {
     harness.scan.document_nonce = 'nonce-a'
     harness.scan.page_href = 'https://example.com/page#frag'
     harness.scan.truncated = false
+    harness.scan.title = 'Example'
     harness.scan.items = [
       {
         url: 'https://example.com/a.bin',
@@ -500,5 +501,108 @@ describe('domFlow', () => {
     expect(harness.status[1]).toBe(harness.batch[0]?.requestId)
     expect(harness.batch).toHaveLength(1)
     expect(getDomCatalog(catalogId)).toBeUndefined()
+  })
+
+  it('stamps page_title only on .m3u8 items and never leaks it into the projection', async () => {
+    harness.scan.title = 'Live Show Page'
+    harness.scan.items = [
+      {
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: 'link',
+        filename: 'live.m3u8',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+      {
+        url: 'https://cdn.example.com/file.bin',
+        kind: 'link',
+        filename: 'file.bin',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+    ]
+    const catalogId = await openCatalog()
+    const open = harness.opens[0] as Record<string, unknown>
+    expect(open).not.toHaveProperty('page_title')
+    expect(open).not.toHaveProperty('title')
+    for (const row of (open.items as Record<string, unknown>[]) ?? []) {
+      expect(row).not.toHaveProperty('page_title')
+      expect(row).not.toHaveProperty('title')
+    }
+    const reply = await handleDomSubmit({ catalog_id: catalogId, indices: [0, 1] }, { tabId: 7 })
+    expect(reply.accepted).toBe(true)
+    const items = harness.batch[0]?.payload.items as Record<string, unknown>[]
+    expect(items[0]?.page_title).toBe('Live Show Page')
+    expect(items[1]?.page_title).toBeUndefined()
+  })
+
+  it('drops .m3u urls at the catalog layer even when the scan returns them', async () => {
+    harness.scan.items = [
+      {
+        url: 'https://cdn.example.com/list.m3u',
+        kind: 'link',
+        filename: 'list.m3u',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+      {
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: 'link',
+        filename: 'live.m3u8',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+    ]
+    const catalogId = await openCatalog()
+    expect(getDomCatalog(catalogId)?.items.map(i => i.url)).toEqual([
+      'https://cdn.example.com/live.m3u8',
+    ])
+  })
+
+  it('keeps page_title in the retried same-id payload after a busy ack', async () => {
+    harness.scan.title = 'Live Show Page'
+    harness.scan.items = [
+      {
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: 'link',
+        filename: 'live.m3u8',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+    ]
+    harness.sendDirectBatch = async (payload, requestId) => {
+      harness.batch.push({ payload, requestId })
+      throw new RpcRequestError('busy', requestId)
+    }
+    const catalogId = await openCatalog()
+    await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    expect(harness.batch).toHaveLength(2)
+    expect(harness.batch[0]?.requestId).toBe(harness.batch[1]?.requestId)
+    const items = harness.batch[1]?.payload.items as Record<string, unknown>[]
+    expect(items[0]?.page_title).toBe('Live Show Page')
+  })
+
+  it('omits page_title on .m3u8 items when the scan carried no title', async () => {
+    harness.scan.title = ''
+    harness.scan.items = [
+      {
+        url: 'https://cdn.example.com/live.m3u8',
+        kind: 'link',
+        filename: 'live.m3u8',
+        document_policy: '',
+        element_policy: '',
+        rel_noreferrer: false,
+      },
+    ]
+    const catalogId = await openCatalog()
+    await handleDomSubmit({ catalog_id: catalogId, indices: [0] }, { tabId: 7 })
+    const items = harness.batch[0]?.payload.items as Record<string, unknown>[]
+    expect(items[0]?.page_title).toBeUndefined()
   })
 })

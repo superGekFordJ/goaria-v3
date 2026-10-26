@@ -62,11 +62,35 @@ export function canonicalizeDirectURL(
   return out
 }
 
-export function urlPathIsM3uPlaylist(url: string): boolean {
+// Suffix check aligned with Go isHLSManifestURL: http(s) only, last path
+// suffix, case-insensitive, ignores query/fragment. Percent-escapes are
+// decoded when safe so ".m3u%38" matches like the backend; malformed escapes
+// fall back to the raw path.
+function urlPathHasSuffix(raw: string, suffix: string): boolean {
+  let parsed: URL
   try {
-    const path = new URL(url).pathname.toLowerCase()
-    return path.endsWith('.m3u8') || path.endsWith('.m3u')
+    parsed = new URL(raw)
   } catch {
     return false
   }
+  const scheme = parsed.protocol.replace(/:$/, '').toLowerCase()
+  if (scheme !== 'http' && scheme !== 'https') return false
+  if (parsed.host === '') return false
+  let path = parsed.pathname
+  try {
+    path = decodeURIComponent(path)
+  } catch {
+    // keep the raw path — a malformed escape simply cannot gain a suffix
+  }
+  return path.toLowerCase().endsWith(suffix)
+}
+
+/** HLS manifest: HTTP(S) URL path ending in .m3u8 (case-insensitive). */
+export function urlPathIsM3u8Playlist(url: string): boolean {
+  return urlPathHasSuffix(url, '.m3u8')
+}
+
+/** Ordinary playlist: HTTP(S) URL path ending in .m3u (not HLS). */
+export function urlPathIsM3uPlaylist(url: string): boolean {
+  return urlPathHasSuffix(url, '.m3u')
 }

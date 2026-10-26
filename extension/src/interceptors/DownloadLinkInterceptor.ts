@@ -1,7 +1,7 @@
 import { sendMessage } from 'webext-bridge/background'
 import browser from 'webextension-polyfill'
 import { isBootReady } from '../background/bootState'
-import { configState } from '../stores/config.svelte'
+import { configState, MSG_TYPE_HLS } from '../stores/config.svelte'
 import { connectionState } from '../stores/connection.svelte'
 import { wsClient } from '../background/wsClient'
 import { getCookiesForUrl } from '../background/cookieCapture'
@@ -13,6 +13,7 @@ import type {
   InterceptedReply,
 } from '../utils/messaging'
 import type { InterceptionContext, InterceptionDecision } from './LinkGrabberResponse'
+import { urlPathIsM3uPlaylist, urlPathIsM3u8Playlist } from '../background/domCanonicalUrl'
 import { t } from '../lib/i18n'
 
 // MIME types that are page/resource content, not downloads. Interception skips
@@ -25,6 +26,12 @@ const NON_DOWNLOAD_MIME_TYPES = new Set([
   'text/css',
   'application/javascript',
   'text/javascript',
+])
+
+// Playlist MIME types that signal an HLS stream (not a file payload) when no
+// .m3u8/.m3u URL suffix is present. Kept out of NON_DOWNLOAD so extensionless
+// manifests can be handed off; a plain .m3u still does not promote via MIME.
+const HLS_MIME_TYPES = new Set([
   'application/x-mpegurl',
   'application/vnd.apple.mpegurl',
 ])
@@ -117,7 +124,15 @@ export abstract class DownloadLinkInterceptor {
     //    pulled in just because the extension is registered.
     if (getDispositionType(ctx.contentDisposition) === 'inline') return 'pass'
 
-    // 3. Strict whitelist hit — override weak/misconfigured MIME (empty,
+    // 3. Explicit HLS context — a stream entry, not a user file type — so it
+    //    intercepts regardless of registeredFileTypes.
+    if (isHLSDownloadContext(ctx)) return 'intercept'
+
+    // 4. Non-HLS .m3u with a playlist MIME stays page content even when m3u
+    //    is whitelisted; keeps the old NON_DOWNLOAD behavior for that pair.
+    if (mime && HLS_MIME_TYPES.has(mime)) return 'pass'
+
+    // 5. Strict whitelist hit — override weak/misconfigured MIME (empty,
     //    text/plain, installer types), but never cancel NON_DOWNLOAD page
     //    or resource types other than text/plain (the classic misconfig).
     if (
@@ -128,10 +143,10 @@ export abstract class DownloadLinkInterceptor {
       return 'intercept'
     }
 
-    // 4. Non-download MIME types (text/html, text/css, etc.).
+    // 6. Non-download MIME types (text/html, text/css, etc.).
     if (mime && NON_DOWNLOAD_MIME_TYPES.has(mime)) return 'pass'
 
-    // 5. No strict whitelist: only intercept clear download MIME (or empty
+    // 7. No strict whitelist: only intercept clear download MIME (or empty
     //    MIME). Without this gate, Firefox main_frame would false-capture
     //    SVG/XML and other non-page, non-download types.
     if (!hasStrictWhitelist) {
@@ -139,7 +154,7 @@ export abstract class DownloadLinkInterceptor {
       return 'intercept'
     }
 
-    // 6. Strict whitelist, ext didn't match. Allow MIME-based fallback only
+    // 8. Strict whitelist, ext didn't match. Allow MIME-based fallback only
     //    when the file truly has no extension (e.g. an extension-less CDN
     //    URL serving application/zip). If there IS an extension, respect the
     //    user's whitelist — they chose not to include it.
@@ -153,6 +168,7 @@ export abstract class DownloadLinkInterceptor {
    * assemble the camelCase message the WS client converts to snake_case JSON.
    */
   async constructDownloadRequest(ctx: InterceptionContext): Promise<DownloadHandoffMessage> {
+    const hls = isHLSDownloadContext(ctx)
     const cookies =
       ctx.incognito === true
         ? []
@@ -163,10 +179,14 @@ export abstract class DownloadLinkInterceptor {
       initiator: ctx.initiator,
       originUrl: ctx.originUrl,
     })
+    // Best-effort page title for HLS naming only; never resolves the active
+    // tab or opener — the notification path keeps that job.
+    const pageTitle = hls && ctx.tabId >= 0 ? await this.hlsPageTitle(ctx.tabId) : ''
     // When the size is already known, skip the backend HEAD probe to avoid
-    // burning a presigned-CDN signature on an extra request.
-    const skipHeadProbe = ctx.fileSize > 0
-    return {
+    // burning a presigned-CDN signature on an extra request. HLS manifests
+    // skip unconditionally — the backend zeroes size and bypasses HEAD anyway.
+    const skipHeadProbe = ctx.fileSize > 0 || hls
+    const req: DownloadHandoffMessage = {
       url: ctx.url,
       finalUrl: ctx.finalUrl ?? '',
       headers: cookies,
@@ -175,6 +195,18 @@ export abstract class DownloadLinkInterceptor {
       dedupKey: '',
       filename: ctx.filename,
       downloadPage,
+    }
+    if (hls) req.type = MSG_TYPE_HLS
+    if (pageTitle) req.pageTitle = pageTitle
+    return req
+  }
+
+  private async hlsPageTitle(tabId: number): Promise<string> {
+    try {
+      const tab = await browser.tabs.get(tabId)
+      return typeof tab?.title === 'string' ? tab.title : ''
+    } catch {
+      return ''
     }
   }
 
@@ -289,6 +321,21 @@ export function showInterceptedNotification(msg: DownloadInterceptedMessage): vo
   } catch {
     // notifications API unavailable; nothing more we can do.
   }
+}
+
+/**
+ * Pure HLS context check shared by shouldIntercept and request construction.
+ * A .m3u8 suffix on url or finalUrl is decisive; without it, a .m3u suffix
+ * blocks MIME promotion; otherwise only the two application mpegurl types
+ * count (audio/mpegurl stays ordinary). Mirrors the backend's OR detection.
+ */
+export function isHLSDownloadContext(ctx: InterceptionContext): boolean {
+  const finalUrl = typeof ctx.finalUrl === 'string' ? ctx.finalUrl : ''
+  if (urlPathIsM3u8Playlist(ctx.url)) return true
+  if (finalUrl !== '' && urlPathIsM3u8Playlist(finalUrl)) return true
+  if (urlPathIsM3uPlaylist(ctx.url)) return false
+  if (finalUrl !== '' && urlPathIsM3uPlaylist(finalUrl)) return false
+  return HLS_MIME_TYPES.has(ctx.mimeType)
 }
 
 export function getScheme(url: string): string {

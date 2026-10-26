@@ -68,6 +68,19 @@ describe('domCatalog', () => {
     expect(getDomCatalog(catalog.catalogId, 1_000 + EXTRACTOR_LEASE_MS + 1)).toBeUndefined()
   })
 
+  it('stores the scan-time page title without projecting it to the content script', () => {
+    const catalog = put({ pageTitle: 'Live Show Page' })
+    expect(catalog.pageTitle).toBe('Live Show Page')
+    expect(getDomCatalog(catalog.catalogId)?.pageTitle).toBe('Live Show Page')
+    const projected = projectDomCatalog(catalog)
+    expect(JSON.stringify(projected)).not.toContain('Live Show Page')
+    expect('page_title' in projected).toBe(false)
+    expect('pageTitle' in projected).toBe(false)
+
+    const untitled = put({ catalogId: '33333333-3333-4333-8333-333333333333' })
+    expect(untitled.pageTitle).toBeUndefined()
+  })
+
   it('projects filename, origin, kind, and index without url, query, cookie, or download_page', () => {
     const catalog = put({
       items: [

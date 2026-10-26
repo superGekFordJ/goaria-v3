@@ -40,6 +40,7 @@ var directBatchItemAllowlist = map[string]struct{}{
 	"skip_head_probe": {},
 	"filename":        {},
 	"download_page":   {},
+	"page_title":      {},
 }
 
 var directBatchStatusAllowlist = map[string]struct{}{
@@ -275,6 +276,20 @@ func parseDirectBatchItem(raw json.RawMessage) (DirectBatchItem, int, string) {
 			return DirectBatchItem{}, 0, errCode
 		}
 		item.DownloadPage = canonPage
+	}
+
+	if rawTitle, present := fields["page_title"]; present {
+		if isJSONNull(rawTitle) {
+			return DirectBatchItem{}, 0, ErrCodeInvalidRequest
+		}
+		var title string
+		if err := json.Unmarshal(rawTitle, &title); err != nil {
+			return DirectBatchItem{}, 0, ErrCodeInvalidRequest
+		}
+		if hasCRLFOrNUL(title) || len(title) > maxDirectOptionalFieldBytes {
+			return DirectBatchItem{}, 0, ErrCodeInvalidRequest
+		}
+		item.PageTitle = title
 	}
 
 	return item, headerBytes, ""

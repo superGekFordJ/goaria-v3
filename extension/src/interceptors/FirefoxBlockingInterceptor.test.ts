@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { DownloadHandoffMessage, DownloadResponse } from '../utils/messaging'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -133,13 +134,21 @@ const tabs = vi.hoisted(() => {
 })
 
 const ws = vi.hoisted(() => ({
-  sendDownloadRequest: vi.fn(async () => ({ type: 'download_ack', success: true, gid: 'ar_test' })),
+  sendDownloadRequest: vi.fn(async (_req: DownloadHandoffMessage): Promise<DownloadResponse> => ({
+    type: 'download_ack',
+    success: true,
+    gid: 'ar_test',
+  })),
   sendDirectBatch: vi.fn(async () => ({
     succeeded_item_ids: [],
     duplicate_item_ids: [],
     errors_by_item_id: {},
   })),
   sendDirectBatchStatus: vi.fn(async () => ({ status: 'pending' })),
+}))
+
+const notifications = vi.hoisted(() => ({
+  create: vi.fn(async (_opts: unknown) => undefined),
 }))
 
 vi.mock('../stores/config.svelte', () => ({
@@ -154,6 +163,7 @@ vi.mock('../stores/config.svelte', () => ({
   STORAGE_KEY_BURST_WINDOW: 'bwin_window',
   PENDING_DECISION_TTL_MS: 30_000,
   STORAGE_KEY_PENDING_PREFIX: 'pending_',
+  MSG_TYPE_HLS: 'hls',
   configState: config,
 }))
 
@@ -203,7 +213,7 @@ vi.mock('webextension-polyfill', () => ({
     webRequest: webRequest.api,
     downloads: { search: vi.fn() },
     storage: { session: sessionStore.api },
-    notifications: { create: async () => undefined },
+    notifications: { create: notifications.create },
     cookies: { getAll: async () => [] },
     runtime: { getURL: (p: string) => p },
     tabs: tabs.api,
@@ -264,6 +274,7 @@ describe('FirefoxBlockingInterceptor', () => {
     tabs.reset()
     ws.sendDownloadRequest.mockReset()
     ws.sendDownloadRequest.mockResolvedValue({ type: 'download_ack', success: true, gid: 'ar_test' })
+    notifications.create.mockClear()
     interceptor = new FirefoxBlockingInterceptor()
     interceptor.register()
   })
@@ -375,11 +386,10 @@ describe('FirefoxBlockingInterceptor', () => {
 
   it('does not remove a blank tab during the eligible cancel turn', async () => {
     capture.session = { ...SESSION }
-    type Ack = { type: string; success: boolean; gid: string }
-    let release!: (value: Ack | PromiseLike<Ack>) => void
+    let release!: (value: DownloadResponse | PromiseLike<DownloadResponse>) => void
     ws.sendDownloadRequest.mockImplementation(
       () =>
-        new Promise<Ack>(resolve => {
+        new Promise<DownloadResponse>(resolve => {
           release = resolve
         }),
     )
@@ -493,6 +503,86 @@ describe('FirefoxBlockingInterceptor', () => {
       expect(ws.sendDownloadRequest).toHaveBeenCalled()
     })
     expect(tabs.removed).toEqual([])
+  })
+
+  it('routes .m3u8 to the single-item path even during an armed session', async () => {
+    capture.session = { ...SESSION }
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({
+          url: 'https://cdn.example.test/live.m3u8',
+          initiator: 'https://example.test/page',
+        }),
+      ),
+    )
+    expect(reply).toEqual({ cancel: true })
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+    })
+    const req = ws.sendDownloadRequest.mock.calls[0]?.[0]
+    expect(req.type).toBe('hls')
+    expect([...sessionStore.data.keys()].some(k => k.startsWith('bhold_'))).toBe(false)
+  })
+
+  it('routes MIME-only HLS through the single-item path without a suffix', async () => {
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({
+          url: 'https://cdn.example.test/live/edge',
+          responseHeaders: [{ name: 'Content-Type', value: 'application/x-mpegurl' }],
+        }),
+      ),
+    )
+    expect(reply).toEqual({ cancel: true })
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+    })
+    expect(ws.sendDownloadRequest.mock.calls[0]?.[0].type).toBe('hls')
+  })
+
+  it('does not promote a .m3u playlist MIME to HLS', async () => {
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({
+          url: 'https://cdn.example.test/list.m3u',
+          responseHeaders: [{ name: 'Content-Type', value: 'application/x-mpegurl' }],
+        }),
+      ),
+    )
+    expect(reply).toEqual({})
+    expect(ws.sendDownloadRequest).not.toHaveBeenCalled()
+  })
+
+  it('sends an attached .m3u as an ordinary download', async () => {
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(interceptDetails({ url: 'https://cdn.example.test/list.m3u' })),
+    )
+    expect(reply).toEqual({ cancel: true })
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+    })
+    expect(ws.sendDownloadRequest.mock.calls[0]?.[0].type).toBeUndefined()
+  })
+
+  it('still notifies when the HLS handoff fails', async () => {
+    ws.sendDownloadRequest.mockResolvedValue({
+      type: 'download_ack',
+      success: false,
+      gid: '',
+      error: 'busy',
+    })
+    const reply = await Promise.resolve(
+      webRequest.headers[0].listener(
+        interceptDetails({ url: 'https://cdn.example.test/live.m3u8' }),
+      ),
+    )
+    expect(reply).toEqual({ cancel: true })
+    await vi.waitFor(() => {
+      expect(ws.sendDownloadRequest).toHaveBeenCalledTimes(1)
+      expect(notifications.create).toHaveBeenCalled()
+    })
+    const opts = notifications.create.mock.calls.at(-1)?.[0] as { title?: string } | undefined
+    expect(opts?.title).toBe('interceptor_notif_title_failed')
   })
 })
 

@@ -409,6 +409,7 @@ export class WsClient {
       dedup_key: req.dedupKey,
       filename: req.filename,
       download_page: req.downloadPage,
+      ...(req.pageTitle ? { page_title: req.pageTitle } : {}),
     }
     return new Promise<DownloadResponse>((resolve, reject) => {
       const tracked = this.trackPending(

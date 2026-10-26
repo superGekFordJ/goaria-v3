@@ -5,10 +5,10 @@ import { getDownloadPageUrl } from './refererCapture'
 import { getScheme } from '../interceptors/DownloadLinkInterceptor'
 import type { DownloadHandoffMessage } from '../utils/messaging'
 import { t } from '../lib/i18n'
-import { urlPathIsM3uPlaylist } from './domCanonicalUrl'
+import { urlPathIsM3uPlaylist, urlPathIsM3u8Playlist } from './domCanonicalUrl'
 import { handleCollectPageLinks } from './domFlow'
 import { hasCapability } from './capabilities'
-import { CAP_DOWNLOAD_BATCH } from '../stores/config.svelte'
+import { CAP_DOWNLOAD_BATCH, MSG_TYPE_HLS } from '../stores/config.svelte'
 import { connectionState } from '../stores/connection.svelte'
 
 const MENU_ID = 'goaria-download-link'
@@ -86,7 +86,8 @@ async function handleContextMenuClick(
   const scheme = getScheme(url)
   if (scheme !== 'http:' && scheme !== 'https:') return
 
-  if (urlPathIsM3uPlaylist(url)) {
+  const hls = urlPathIsM3u8Playlist(url)
+  if (!hls && urlPathIsM3uPlaylist(url)) {
     showHlsUnsupportedPrompt()
     return
   }
@@ -97,7 +98,7 @@ async function handleContextMenuClick(
       getDownloadPageUrl({ tabId: tab?.id, referrer: info.pageUrl }),
     ])
     const req: DownloadHandoffMessage = {
-      type: 'download',
+      type: hls ? MSG_TYPE_HLS : 'download',
       url,
       finalUrl: '',
       headers,
@@ -106,6 +107,7 @@ async function handleContextMenuClick(
       dedupKey: '',
       filename: '',
       downloadPage,
+      pageTitle: hls ? tab?.title : undefined,
     }
     await wsClient.sendDownloadRequest(req)
   } catch (err) {

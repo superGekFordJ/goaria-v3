@@ -670,6 +670,12 @@ func (s *Server) handleDownload(req DownloadRequest) DownloadResponse {
 	if s.taskAdder == nil {
 		return DownloadResponse{Type: MsgTypeDownloadAck, Success: false, Error: "no task service"}
 	}
+	// Page title hygiene at the ingress edge: empty is a normal downgrade,
+	// control chars or oversized payloads reject without touching the adder
+	// or echoing the value back over the wire.
+	if hasCRLFOrNUL(req.PageTitle) || len(req.PageTitle) > maxDirectOptionalFieldBytes {
+		return DownloadResponse{Type: MsgTypeDownloadAck, Success: false, Error: "invalid page title"}
+	}
 	gid, err := s.taskAdder.AddUriFromExtension(req)
 	if err != nil {
 		return DownloadResponse{Type: MsgTypeDownloadAck, Success: false, Error: err.Error()}

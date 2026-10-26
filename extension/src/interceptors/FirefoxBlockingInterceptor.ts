@@ -3,6 +3,7 @@ import {
   DownloadLinkInterceptor,
   extractFilename,
   extractMimeType,
+  isHLSDownloadContext,
 } from './DownloadLinkInterceptor'
 import type { InterceptionContext } from './LinkGrabberResponse'
 import { getCaptureSession } from '../background/captureSession'
@@ -184,6 +185,9 @@ export class FirefoxBlockingInterceptor extends DownloadLinkInterceptor {
     details: browser.WebRequest.OnHeadersReceivedDetailsType,
     eventAt: number,
   ): Promise<CaptureRouteResult> {
+    // HLS keeps the single-item path: no synthetic hold, no coalescer — a
+    // download_batch payload cannot carry the manifest's HLS intent.
+    if (isHLSDownloadContext(ctx)) return { kind: 'unarmed' }
     const session = await resolveCoalescerAdmission(ctx)
     if (!session) return { kind: 'unarmed' }
     const downloadId = await nextSyntheticBurstHoldId()

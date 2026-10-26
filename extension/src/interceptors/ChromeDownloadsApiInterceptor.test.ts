@@ -146,6 +146,7 @@ vi.mock('../stores/config.svelte', () => ({
   SMALL_FILE_THRESHOLD_BYTES: 100 * 1024,
   PENDING_DECISION_TTL_MS: 30_000,
   STORAGE_KEY_PENDING_PREFIX: 'pending_',
+  MSG_TYPE_HLS: 'hls',
 }))
 
 vi.mock('../stores/connection.svelte', () => ({

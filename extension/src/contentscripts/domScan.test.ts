@@ -117,15 +117,20 @@ describe('collectDomLinks', () => {
     expect(result.items[0]?.kind).toBe('link')
   })
 
-  it('skips m3u playlists', () => {
+  it('skips ordinary m3u playlists but keeps m3u8 manifests', () => {
     const result = collectDomLinks(
       rootOf([
+        node({ tagName: 'A', attrs: { href: 'https://example.com/audio.m3u' } }),
         node({ tagName: 'A', attrs: { href: 'https://example.com/live.m3u8' } }),
+        node({ tagName: 'A', attrs: { href: 'https://example.com/upper.M3U8?x=1' } }),
         node({ tagName: 'A', attrs: { href: 'https://example.com/ok.bin' } }),
       ]),
     )
-    expect(result.items).toHaveLength(1)
-    expect(result.items[0]?.url).toBe('https://example.com/ok.bin')
+    expect(result.items.map(row => row.url)).toEqual([
+      'https://example.com/live.m3u8',
+      'https://example.com/upper.M3U8?x=1',
+      'https://example.com/ok.bin',
+    ])
   })
 
   it('does not walk a provided shadowRoot or iframe document', () => {

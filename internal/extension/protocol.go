@@ -9,6 +9,7 @@ const (
 	MsgTypeAuth        = "auth"
 	MsgTypeAuthAck     = "auth_ack"
 	MsgTypeDownload    = "download"
+	MsgTypeHLS         = "hls"
 	MsgTypeDownloadAck = "download_ack"
 	MsgTypePing        = "ping"
 
@@ -106,6 +107,9 @@ type DownloadRequest struct {
 	DedupKey      string   `json:"dedup_key"`
 	Filename      string   `json:"filename"`
 	DownloadPage  string   `json:"download_page"`
+	// PageTitle feeds HLS output naming; validated by handleDownload before
+	// the TaskAdder call. Empty stays the normal no-title downgrade.
+	PageTitle string `json:"page_title,omitempty"`
 }
 
 // DownloadResponse is the ack returned after a download request is processed.
@@ -164,6 +168,7 @@ type DirectBatchItem struct {
 	SkipHeadProbe bool
 	Filename      string
 	DownloadPage  string
+	PageTitle     string
 }
 
 // DirectBatchRequest is the parsed download_batch payload.

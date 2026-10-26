@@ -52,10 +52,11 @@ export type PongMessage = { pong: boolean }
 
 // Internal fields use camelCase (idiomatic TS). The Go DownloadRequest
 // (protocol.go) uses snake_case JSON tags (file_size, skip_head_probe,
-// dedup_key, download_page). The background must convert when forwarding.
+// dedup_key, download_page, page_title). The background must convert when
+// forwarding.
 // `type` aligns with Go DownloadRequest.Type (json:"type"): 'download' routes
-// to the normal download dispatch; 'hls' requires backend dispatch readiness
-// (not sent by this extension yet).
+// to the normal download dispatch; 'hls' pins the Surge HLS strategy. `pageTitle`
+// feeds HLS output naming and is only meaningful on 'hls' handoffs.
 export type DownloadHandoffMessage = {
   type?: 'download' | 'hls'
   url: string
@@ -66,6 +67,7 @@ export type DownloadHandoffMessage = {
   dedupKey: string
   filename: string
   downloadPage: string
+  pageTitle?: string
 }
 
 export type PairSecretMessage = {

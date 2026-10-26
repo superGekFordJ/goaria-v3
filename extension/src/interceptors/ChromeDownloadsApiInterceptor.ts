@@ -2,6 +2,7 @@ import browser from 'webextension-polyfill'
 import {
   DownloadLinkInterceptor,
   extractMimeType,
+  isHLSDownloadContext,
 } from './DownloadLinkInterceptor'
 import type { InterceptionContext } from './LinkGrabberResponse'
 import { SMALL_FILE_THRESHOLD_BYTES } from '../stores/config.svelte'
@@ -136,7 +137,7 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
         if (item.state === 'in_progress' && item.paused) {
           this.pausedIds.add(downloadId)
           this.statusMirror.set(downloadId, 'handing_off')
-          const ctx = this.contextFromDecision(decision)
+          const ctx = this.contextFromDecision(decision, item)
           void this.handlePausedDownload(downloadId, ctx)
         } else {
           await removePendingDecision(downloadId)
@@ -216,7 +217,11 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     // Small files: pause is ineffective and the download completes before the
     // ack can cancel it, causing a duplicate download. Skip early when the size
     // is known and below the threshold. Unknown size (0) still attempts takeover.
-    if (ctx.fileSize > 0 && ctx.fileSize < SMALL_FILE_THRESHOLD_BYTES) {
+    // HLS manifests are exempt: they are small by nature, the takeover value is
+    // the stream (not the manifest file), and saving the manifest text is the
+    // exact failure this path exists to prevent.
+    const hls = isHLSDownloadContext(ctx)
+    if (!hls && ctx.fileSize > 0 && ctx.fileSize < SMALL_FILE_THRESHOLD_BYTES) {
       return
     }
 
@@ -229,7 +234,10 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     try {
       await enqueueCaptureWork(async () => {
         if (!this.pausedIds.has(item.id)) return
-        const session = await resolveCoalescerAdmission(ctx)
+        // HLS keeps the single-item path: the implicit coalescer submits
+        // download_batch payloads that cannot carry HLS intent, and an
+        // extensionless manifest would lose its strategy pin in a burst hold.
+        const session = hls ? null : await resolveCoalescerAdmission(ctx)
         if (session) {
           const persisted = await saveBurstHold(item.id, {
             url: ctx.url,
@@ -372,7 +380,21 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
   ): boolean | void {
     const size = item.fileSize > 0 ? item.fileSize : item.totalBytes
     // Small files: pause is ineffective and takeover adds little value.
-    if (size > 0 && size < SMALL_FILE_THRESHOLD_BYTES) {
+    // Claimed HLS items are exempt so the manifest cannot escape our hold.
+    if (
+      size > 0 &&
+      size < SMALL_FILE_THRESHOLD_BYTES &&
+      !isHLSDownloadContext({
+        url: item.url ?? '',
+        finalUrl: '',
+        tabId: -1,
+        mimeType: extractMimeType(item.mime ?? ''),
+        contentDisposition: '',
+        fileSize: size,
+        filename: item.filename ?? '',
+        referrer: item.referrer ?? '',
+      })
+    ) {
       suggest()
       return
     }
@@ -434,7 +456,14 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
     }
   }
 
-  private contextFromDecision(decision: PendingDecision): InterceptionContext {
+  // The live DownloadItem is passed in when available (SW-restart recovery):
+  // its mime/finalUrl/incognito restore recognition metadata that the persisted
+  // decision deliberately does not store. Absent or bare items degrade to the
+  // legacy empty-string context.
+  private contextFromDecision(
+    decision: PendingDecision,
+    item?: browser.Downloads.DownloadItem,
+  ): InterceptionContext {
     let filename = decision.filename || ''
     if (!filename && decision.url) {
       try {
@@ -447,15 +476,17 @@ export class ChromeDownloadsApiInterceptor extends DownloadLinkInterceptor {
       }
     }
 
+    const live = item as DownloadItemWithFinalUrl | undefined
     return {
       url: decision.url,
-      finalUrl: '',
+      finalUrl: live?.finalUrl ?? '',
       tabId: -1,
-      mimeType: '',
+      mimeType: extractMimeType(live?.mime ?? ''),
       contentDisposition: '',
       fileSize: decision.fileSize,
       filename,
       referrer: decision.downloadPage ?? '',
+      incognito: live?.incognito === true,
     }
   }
 }

@@ -117,6 +117,139 @@ vi.mock('./browserHeaderCapture', () => ({
 }))
 
 import { WsClient } from './wsClient'
+import type { DownloadHandoffMessage } from '../utils/messaging'
+
+describe('WsClient download handoff', () => {
+  let sent: string[]
+
+  function attachSocket(client: WsClient): void {
+    sent = []
+    ;(
+      client as unknown as {
+        ws: { readyState: number; send(data: string): void }
+      }
+    ).ws = {
+      readyState: 1,
+      send(data: string) {
+        sent.push(data)
+      },
+    }
+  }
+
+  function feed(client: WsClient, msg: Record<string, unknown>): void {
+    ;(
+      client as unknown as { handleMessage: (ev: { data: string }) => void }
+    ).handleMessage({ data: JSON.stringify(msg) })
+  }
+
+  function lastSent(): Record<string, unknown> {
+    const raw = sent.at(-1)
+    expect(raw).toBeDefined()
+    return JSON.parse(raw as string) as Record<string, unknown>
+  }
+
+  function handoff(partial: Partial<DownloadHandoffMessage> = {}): DownloadHandoffMessage {
+    return {
+      url: 'https://cdn.fixture.test/live.m3u8',
+      finalUrl: '',
+      headers: [],
+      fileSize: 0,
+      skipHeadProbe: true,
+      dedupKey: '',
+      filename: 'live.m3u8',
+      downloadPage: 'https://example.test/page',
+      ...partial,
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', { OPEN: 1, CLOSED: 3 })
+    connection.capabilities = undefined
+    connection.status = 'disconnected'
+    connection.paired = false
+    sent = []
+  })
+
+  it('maps an explicit hls type and page_title onto the wire', async () => {
+    const client = new WsClient()
+    attachSocket(client)
+    const done = client.sendDownloadRequest(
+      handoff({ type: 'hls', pageTitle: 'Live Show Page' }),
+    )
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    const body = lastSent()
+    expect(body.type).toBe('hls')
+    expect(body.page_title).toBe('Live Show Page')
+    expect(body.url).toBe('https://cdn.fixture.test/live.m3u8')
+    expect(body.final_url).toBe('')
+    expect(body.skip_head_probe).toBe(true)
+    expect(body.download_page).toBe('https://example.test/page')
+    expect(body).not.toHaveProperty('pageTitle')
+    expect(typeof body.request_id).toBe('string')
+    feed(client, {
+      type: 'download_ack',
+      request_id: body.request_id,
+      success: true,
+      gid: 'ar_hls',
+    })
+    await expect(done).resolves.toMatchObject({ type: 'download_ack', success: true, gid: 'ar_hls' })
+  })
+
+  it('defaults a missing request type to download and omits an empty page_title', async () => {
+    const client = new WsClient()
+    attachSocket(client)
+    const done = client.sendDownloadRequest(handoff({ url: 'https://cdn.fixture.test/f.bin' }))
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    const body = lastSent()
+    expect(body.type).toBe('download')
+    expect(body).not.toHaveProperty('page_title')
+    feed(client, {
+      type: 'download_ack',
+      request_id: body.request_id,
+      success: true,
+      gid: 'ar_dl',
+    })
+    await expect(done).resolves.toMatchObject({ success: true })
+  })
+
+  it('rejects the in-flight hls request when an old host answers protocol_error', async () => {
+    const client = new WsClient()
+    attachSocket(client)
+    const hlsReq = client.sendDownloadRequest(handoff({ type: 'hls', pageTitle: 'Show' }))
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    feed(client, {
+      type: 'protocol_error',
+      request_id: lastSent().request_id,
+      error_code: 'unsupported',
+    })
+    await expect(hlsReq).rejects.toThrow('unsupported')
+    // The pending entry is cleared: a follow-up send still works and resolves.
+    const next = client.sendDownloadRequest(handoff({ url: 'https://cdn.fixture.test/f.bin' }))
+    await vi.waitFor(() => expect(sent).toHaveLength(2))
+    const body = lastSent()
+    feed(client, {
+      type: 'download_ack',
+      request_id: body.request_id,
+      success: true,
+      gid: 'ar_dl',
+    })
+    await expect(next).resolves.toMatchObject({ success: true })
+  })
+
+  it('surfaces a failed download_ack on an hls request', async () => {
+    const client = new WsClient()
+    attachSocket(client)
+    const hlsReq = client.sendDownloadRequest(handoff({ type: 'hls' }))
+    await vi.waitFor(() => expect(sent).toHaveLength(1))
+    feed(client, {
+      type: 'download_ack',
+      request_id: lastSent().request_id,
+      success: false,
+      error: 'engine busy',
+    })
+    await expect(hlsReq).rejects.toThrow('engine busy')
+  })
+})
 
 describe('WsClient direct batch', () => {
   beforeEach(() => {

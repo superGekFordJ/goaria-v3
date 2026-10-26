@@ -99,6 +99,13 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 	candidate.skipHeadProbe = req.SkipHeadProbe
 	candidate.externalDedupKey = req.DedupKey
 	candidate.finalURL = req.FinalURL
+	candidate.pageTitle = req.PageTitle
+	// An explicit hls handoff pins the strategy even when neither url nor
+	// finalURL carries a manifest suffix; URL-based detection stays the
+	// fallback for plain download requests.
+	if req.Type == extension.MsgTypeHLS {
+		candidate.strategy = surgetypes.StrategyHLS
+	}
 	if req.Filename != "" {
 		candidate.out = req.Filename
 	}

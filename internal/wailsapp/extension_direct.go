@@ -138,6 +138,7 @@ func (a *directBatchAdapter) HandleDirectBatch(ctx context.Context, env extensio
 			SkipHeadProbe: item.SkipHeadProbe,
 			Filename:      item.Filename,
 			DownloadPage:  item.DownloadPage,
+			PageTitle:     item.PageTitle,
 		}
 		items = append(items, prepared)
 	}

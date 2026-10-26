@@ -1,7 +1,7 @@
 import { onMessage, sendMessage } from 'webext-bridge/background'
 import browser from 'webextension-polyfill'
 import { hasCapability } from './capabilities'
-import { canonicalizeDirectURL, urlPathIsM3uPlaylist } from './domCanonicalUrl'
+import { canonicalizeDirectURL, urlPathIsM3uPlaylist, urlPathIsM3u8Playlist } from './domCanonicalUrl'
 import {
   getDomCatalog,
   invalidateAllDomCatalogs,
@@ -232,6 +232,7 @@ export async function handleCollectPageLinks(
       truncated: scan.truncated === true,
       items,
       folderPrefill,
+      pageTitle: typeof scan.title === 'string' && scan.title !== '' ? scan.title : undefined,
     })
     const projection = projectDomCatalog(catalog)
     try {
@@ -292,6 +293,7 @@ function buildItemsPayload(
   selected: DomCatalogItem[],
   pageHref: string,
   cookieLines: Array<string | undefined>,
+  pageTitle: string | undefined,
 ): Record<string, unknown>[] {
   const seenIds = new Set<string>()
   return selected.map((item, i) => {
@@ -303,6 +305,9 @@ function buildItemsPayload(
       url: item.url,
     }
     if (item.filename) rec.filename = item.filename
+    // Defense-in-depth: only .m3u8 items carry the page title as page_title;
+    // ordinary items never gain the key just because the catalog has one.
+    if (pageTitle && urlPathIsM3u8Playlist(item.url)) rec.page_title = pageTitle
     const cookie = cookieLines[i]
     if (cookie) rec.headers = [cookie]
     const page = referrerResult({
@@ -396,7 +401,7 @@ export async function handleDomSubmit(
         storeUnproven: !storeLiveOk,
         getAll: details => browser.cookies.getAll(details) as Promise<unknown[]>,
       })
-      const items = buildItemsPayload(mapped.items, catalog.pageHref, cookieLines)
+      const items = buildItemsPayload(mapped.items, catalog.pageHref, cookieLines, catalog.pageTitle)
       const built = buildDirectBatchPayload({
         items,
         ...fields,

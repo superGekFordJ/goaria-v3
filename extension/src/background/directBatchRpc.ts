@@ -16,6 +16,7 @@ export const DIRECT_BATCH_ITEM_ALLOWLIST = Object.freeze([
   'skip_head_probe',
   'filename',
   'download_page',
+  'page_title',
 ] as const)
 
 export type DirectBatchBuildResult = { payload: Record<string, unknown> } | { error: string }
@@ -110,6 +111,12 @@ export function buildDirectBatchPayload(input: Record<string, unknown>): DirectB
         return { error: 'download_page must be a string' }
       }
       item.download_page = rec.download_page
+    }
+    if ('page_title' in rec) {
+      if (typeof rec.page_title !== 'string') {
+        return { error: 'page_title must be a string' }
+      }
+      item.page_title = rec.page_title
     }
     items.push(item)
   }

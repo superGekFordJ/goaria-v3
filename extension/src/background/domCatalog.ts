@@ -40,6 +40,9 @@ export type DomCatalog = {
   truncated: boolean
   items: DomCatalogItem[]
   folderPrefill?: string
+  // Page title captured at collect time; background memory only — feeds
+  // page_title on .m3u8 batch items, never the picker projection or storage.
+  pageTitle?: string
   lastSubmit?: DomLastSubmit
 }
 
@@ -109,6 +112,7 @@ export type PutDomCatalogInput = {
   truncated: boolean
   items: DomCatalogItem[]
   folderPrefill?: string
+  pageTitle?: string
   now?: number
   catalogId?: string
   generation?: number
@@ -130,6 +134,7 @@ export function putDomCatalog(input: PutDomCatalogInput): DomCatalog {
     truncated: input.truncated,
     items: input.items.slice(0, EXTRACTOR_MAX_SESSION_ITEMS),
     folderPrefill: input.folderPrefill,
+    pageTitle: input.pageTitle,
   }
   byTab.set(catalog.tabId, catalog)
   byId.set(catalog.catalogId, catalog)

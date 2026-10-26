@@ -321,7 +321,7 @@ func (s *Server) handleConn(conn *websocket.Conn) {
 		}
 
 		switch env.Type {
-		case MsgTypeDownload:
+		case MsgTypeDownload, MsgTypeHLS:
 			s.dispatchDownload(sc, env, raw)
 		case MsgTypeExtractorResolve:
 			s.dispatchAsync(opCtx, connCtx, sc, env, raw, MsgTypeExtractorResolveAck, CapExtractorResolve, true)

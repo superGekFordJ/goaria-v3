@@ -26,6 +26,7 @@ describe('direct batch constants', () => {
       'skip_head_probe',
       'filename',
       'download_page',
+      'page_title',
     ])
   })
 })
@@ -145,6 +146,48 @@ describe('buildDirectBatchPayload', () => {
         folder_name: 1,
       }),
     ).toEqual({ error: 'folder_name must be a string' })
+  })
+
+  it('projects page_title only when supplied as a string', () => {
+    expect(
+      buildDirectBatchPayload({
+        items: [{ client_item_id: itemId, url: 'https://cdn.fixture.invalid/index.m3u8', page_title: 'Live Show' }],
+      }),
+    ).toEqual({
+      payload: {
+        items: [
+          {
+            client_item_id: itemId,
+            url: 'https://cdn.fixture.invalid/index.m3u8',
+            page_title: 'Live Show',
+          },
+        ],
+      },
+    })
+    // Absent keeps the item payload byte-identical to before.
+    expect(
+      buildDirectBatchPayload({ items: [{ client_item_id: itemId, url }] }),
+    ).toEqual({
+      payload: { items: [{ client_item_id: itemId, url }] },
+    })
+  })
+
+  it('rejects non-string page_title, camelCase, and strategy attempts', () => {
+    for (const bad of [
+      { page_title: 42 },
+      { page_title: null },
+      { page_title: ['x'] },
+      { page_title: { x: 1 } },
+    ]) {
+      expect(
+        buildDirectBatchPayload({ items: [{ client_item_id: itemId, url, ...bad }] }),
+      ).toEqual({ error: 'page_title must be a string' })
+    }
+    for (const bad of [{ pageTitle: 'x' }, { strategy: 'hls' }, { mime_type: 'application/x-mpegurl' }]) {
+      expect(
+        buildDirectBatchPayload({ items: [{ client_item_id: itemId, url, ...bad }] }),
+      ).toEqual({ error: 'unknown direct batch item field' })
+    }
   })
 
   it('freezes allowlists', () => {
