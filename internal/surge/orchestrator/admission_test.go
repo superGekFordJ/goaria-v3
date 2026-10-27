@@ -27,7 +27,17 @@ func TestEnqueue_RejectedAdmissionDoesNotPersistOrPublish(t *testing.T) {
 	bus := NewEventBus()
 	// Reliable feed: Shutdown drains every accepted lifecycle event before the
 	// stream closes, so "no EventQueued" below cannot pass on a dropped tail.
+	// The drain must run concurrently — a reliable out channel is unbuffered,
+	// so Shutdown would wedge waiting for a consumer that has not started.
 	events, _ := bus.SubscribeLifecycle()
+	drained := make(chan []types.DownloadEvent, 1)
+	go func() {
+		var got []types.DownloadEvent
+		for event := range events {
+			got = append(got, event)
+		}
+		drained <- got
+	}()
 	mgr := NewLifecycleManager(pool, bus, nil)
 	defer mgr.Shutdown()
 	const id = "rejected-admission"
@@ -52,7 +62,7 @@ func TestEnqueue_RejectedAdmissionDoesNotPersistOrPublish(t *testing.T) {
 		t.Fatalf("rejected working file remains: %v", err)
 	}
 	mgr.Shutdown() // Drain publications before inspecting the subscriber.
-	for event := range events {
+	for _, event := range <-drained {
 		if event.Type == types.EventQueued && event.DownloadID == id {
 			t.Fatal("rejected task published EventQueued")
 		}

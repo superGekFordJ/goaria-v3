@@ -128,17 +128,10 @@ func TestEventBus_Unsubscribe(t *testing.T) {
 
 	cleanup()
 
-	// Wait for the asynchronous unsubscribe to be processed by broadcastLoop
-	for range 10 {
-		eb.listenerMu.Lock()
-		count = len(eb.listeners)
-		eb.listenerMu.Unlock()
-		if count == 0 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
+	// Cleanup removes the listener synchronously — no broadcastLoop round-trip.
+	eb.listenerMu.Lock()
+	count = len(eb.listeners)
+	eb.listenerMu.Unlock()
 	if count != 0 {
 		t.Fatalf("expected 0 listeners after cleanup, got %d", count)
 	}
