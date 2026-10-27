@@ -212,6 +212,7 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 		// reconcile. Send is non-blocking and collapses to one pending flag.
 		select {
 		case m.surgeResyncChan <- struct{}{}:
+			log.Printf("[DEBUG] Surge resync requested: %s", ev.Message)
 		default:
 		}
 		return

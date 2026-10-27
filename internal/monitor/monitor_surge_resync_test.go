@@ -77,6 +77,33 @@ func TestSurgeResync_NonResyncSystemEventIgnored(t *testing.T) {
 	}
 }
 
+// A pending resync flag must not wedge poll-loop shutdown: once stopChan
+// closes the loop exits in bounded time, notification consumed or not.
+func TestSurgeResync_StopWithPendingNotification(t *testing.T) {
+	m, reader, _, _ := newReconcileTestMonitor(t)
+	resetCacheSg()
+
+	reader.setLists(nil, nil, nil)
+	m.surgePollStopChan = make(chan struct{})
+	m.surgeResyncChan = make(chan struct{}, 1)
+	m.surgePollInterval = time.Hour
+
+	done := make(chan struct{})
+	go func() {
+		m.surgePollLoop()
+		close(done)
+	}()
+
+	m.handleSurgeEvent(surgeEvents.DownloadEvent{Type: surgeEvents.EventSystem, ResyncRequired: true})
+	close(m.surgePollStopChan)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("poll loop wedged on stop with pending resync notification")
+	}
+}
+
 // A monitor without the resync channel (zero value / Aria2-only wiring) must
 // swallow resync events without blocking or panicking.
 func TestSurgeResync_NilChannelSafe(t *testing.T) {
