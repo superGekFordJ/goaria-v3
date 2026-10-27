@@ -25,7 +25,9 @@ func TestEnqueue_RejectedAdmissionDoesNotPersistOrPublish(t *testing.T) {
 	pool := scheduler.New(make(chan types.DownloadEvent, 16), 1)
 	pool.GracefulShutdown()
 	bus := NewEventBus()
-	events, _ := bus.Subscribe()
+	// Reliable feed: Shutdown drains every accepted lifecycle event before the
+	// stream closes, so "no EventQueued" below cannot pass on a dropped tail.
+	events, _ := bus.SubscribeLifecycle()
 	mgr := NewLifecycleManager(pool, bus, nil)
 	defer mgr.Shutdown()
 	const id = "rejected-admission"

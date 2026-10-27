@@ -48,12 +48,20 @@ func newHLSE2EStackAt(t *testing.T, slots int, dbPath string) *hlsE2EStack {
 	bus := NewEventBus()
 	pool := scheduler.New(bus.InputCh, slots)
 	mgr := NewLifecycleManager(pool, bus, config.DefaultSettings())
-	workerSub, _ := bus.Subscribe()
-	go mgr.StartEventWorker(workerSub)
+	// The persistence worker rides the reliable feed: lifecycle events must
+	// not be lost when an ordinary observer falls behind.
+	workerSub, workerCleanup := bus.SubscribeLifecycle()
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		mgr.StartEventWorker(workerSub)
+	}()
 
 	s := &hlsE2EStack{bus: bus, pool: pool, mgr: mgr}
 	sub, subCleanup := bus.Subscribe()
+	observerDone := make(chan struct{})
 	go func() {
+		defer close(observerDone)
 		for ev := range sub {
 			s.mu.Lock()
 			s.evs = append(s.evs, ev)
@@ -61,8 +69,13 @@ func newHLSE2EStackAt(t *testing.T, slots int, dbPath string) *hlsE2EStack {
 		}
 	}()
 	t.Cleanup(func() {
+		// Shutdown drains the reliable feed and closes workerSub, then the
+		// worker and the observer are joined so nothing outlives the test.
 		mgr.Shutdown()
+		<-workerDone
+		workerCleanup()
 		subCleanup()
+		<-observerDone
 	})
 	return s
 }

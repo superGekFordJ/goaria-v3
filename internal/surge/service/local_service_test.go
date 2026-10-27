@@ -38,10 +38,14 @@ func setupTestService(t *testing.T) (*LocalDownloadService, *httptest.Server, st
 
 	svc := NewLocalDownloadService(mgr)
 
-	// Mock event worker to handle EventRemoved
-	ch, cleanup := eb.Subscribe()
-	removed := make(chan string, cap(ch))
+	// Mock event worker on the reliable feed so EventRemoved is never dropped;
+	// each fixture handles at most one removal, so cap-1 is explicit rather
+	// than derived from the subscription channel.
+	ch, cleanup := eb.SubscribeLifecycle()
+	removed := make(chan string, 1)
+	workerDone := make(chan struct{})
 	go func() {
+		defer close(workerDone)
 		for e := range ch {
 			if e.Type == types.EventRemoved {
 				_ = store.DeleteState(e.DownloadID)
@@ -49,7 +53,14 @@ func setupTestService(t *testing.T) (*LocalDownloadService, *httptest.Server, st
 			}
 		}
 	}()
-	t.Cleanup(cleanup)
+	t.Cleanup(func() {
+		cleanup()
+		<-workerDone
+	})
+	// Runs before the worker detach above (LIFO): Shutdown drains the reliable
+	// feed and closes its stream so the worker exits cleanly even when a test
+	// fails before its own Shutdown call.
+	t.Cleanup(func() { _ = svc.Shutdown() })
 
 	return svc, ts, tmpDir, removed
 }

@@ -106,6 +106,25 @@ func (pa *ProgressAggregator) reportProgressLoop() {
 			}
 		}
 
+		// Active work but no observer: skip producing snapshots. Reliable
+		// lifecycle subscriptions are not observers, so persistence alone does
+		// not keep batch progress alive.
+		if pa.eventBus == nil || !pa.eventBus.HasObservers() {
+			for k := range lastSpeeds {
+				delete(lastSpeeds, k)
+			}
+			for k := range lastChunkSnapshot {
+				delete(lastChunkSnapshot, k)
+			}
+			for k := range lastDownloaded {
+				delete(lastDownloaded, k)
+			}
+			for k := range lastUpdateTime {
+				delete(lastUpdateTime, k)
+			}
+			continue
+		}
+
 		alpha := pa.getSpeedEmaAlpha()
 
 		var batch []types.DownloadEvent

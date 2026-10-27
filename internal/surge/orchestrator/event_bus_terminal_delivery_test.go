@@ -1,249 +1,254 @@
 package orchestrator
 
 import (
-	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"goaria-v3/internal/surge/types"
 )
 
-// Terminal delivery regressions adapted for EventBus Subscribe (buffered 100).
-// Upstream broadcastMsg waits/drops critical events after 1s; fork blocks until
-// deliver or ctx cancel, with concurrent per-listener sends.
+// Lifecycle delivery regressions for the subscription-model EventBus: ordinary
+// observers are bounded and replaceable, while the reliable lifecycle feed must
+// keep receiving every persistence event even when another observer saturates.
 
 func TestEventBus_TerminalEventDeliveredWhenBufferFull(t *testing.T) {
-	eb := NewEventBus()
-	defer eb.Shutdown()
+	bus := NewEventBus()
+	defer bus.Shutdown()
 
-	sub, cleanup := eb.Subscribe()
-	defer cleanup()
+	// Ordinary observer that never reads: it saturates its critical queue and
+	// gets disconnected, but that must not impede the reliable feed.
+	saturated, stopSaturated := bus.Subscribe()
+	defer stopSaturated()
 
-	fillSubscriber(t, eb, sub, 100)
+	lifecycle, stopLifecycle := bus.SubscribeLifecycle()
+	defer stopLifecycle()
 
-	completeFound := make(chan struct{})
+	collected := make(chan []types.DownloadEvent, 1)
 	go func() {
-		for msg := range sub {
-			if msg.Type == types.EventComplete && msg.DownloadID == "task-complete" {
-				close(completeFound)
-				return
-			}
+		var events []types.DownloadEvent
+		for ev := range lifecycle {
+			events = append(events, ev)
 		}
+		collected <- events
 	}()
 
-	if err := eb.Publish(types.DownloadEvent{
-		Type:       types.EventComplete,
-		DownloadID: "task-complete",
-	}); err != nil {
-		t.Fatalf("Publish complete failed: %v", err)
+	// More than cap+1 lifecycle events: the unread ordinary observer overflows
+	// (one in-flight on out plus a full critical queue) and is disconnected.
+	for i := range 2 * eventQueueCapacity {
+		if err := bus.Publish(types.DownloadEvent{Type: types.EventStarted, DownloadID: "t"}); err != nil {
+			t.Fatalf("publish started %d: %v", i, err)
+		}
+	}
+	select {
+	case _, ok := <-saturated:
+		if ok {
+			t.Fatal("saturated observer stream still open after overflow")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("saturated observer was not disconnected")
 	}
 
-	select {
-	case <-completeFound:
-	case <-time.After(3 * time.Second):
-		t.Fatal("expected EventComplete to be delivered after draining, timed out")
+	// The remaining persistence whitelist events still reach the reliable feed.
+	for _, et := range []types.EventType{
+		types.EventQueued, types.EventPaused, types.EventComplete,
+		types.EventError, types.EventRemoved,
+	} {
+		if err := bus.Publish(types.DownloadEvent{Type: et, DownloadID: "t"}); err != nil {
+			t.Fatalf("publish %v: %v", et, err)
+		}
+	}
+	// Transient events never enter the reliable feed.
+	transient := []types.EventType{
+		types.EventProgress, types.EventBatchProgress, types.EventSystem,
+		types.EventFirstByte, types.EventResumed,
+	}
+	for _, et := range transient {
+		if err := bus.Publish(types.DownloadEvent{Type: et, DownloadID: "t"}); err != nil {
+			t.Fatalf("publish transient %v: %v", et, err)
+		}
+	}
+
+	// Shutdown drains the reliable queue before closing the stream.
+	bus.Shutdown()
+	events := <-collected
+
+	seen := make(map[types.EventType]int)
+	for _, ev := range events {
+		seen[ev.Type]++
+	}
+	for _, et := range transient {
+		if seen[et] != 0 {
+			t.Fatalf("reliable feed received transient %v x%d", et, seen[et])
+		}
+	}
+	for _, et := range []types.EventType{
+		types.EventStarted, types.EventQueued, types.EventPaused,
+		types.EventComplete, types.EventError, types.EventRemoved,
+	} {
+		if seen[et] == 0 {
+			t.Fatalf("reliable feed missing persistence event %v", et)
+		}
+	}
+	if seen[types.EventStarted] != 2*eventQueueCapacity {
+		t.Fatalf("reliable feed saw %d started events, want %d", seen[types.EventStarted], 2*eventQueueCapacity)
+	}
+	if seen[types.EventComplete] != 1 || seen[types.EventRemoved] != 1 {
+		t.Fatalf("terminal events lost: complete=%d removed=%d", seen[types.EventComplete], seen[types.EventRemoved])
 	}
 }
 
 func TestEventBus_DropsProgressWhenBufferFull(t *testing.T) {
-	eb := NewEventBus()
-	defer eb.Shutdown()
+	synctest.Test(t, func(t *testing.T) {
+		sub := newEventSubscription(false)
+		eb := &EventBus{listeners: map[*eventSubscription]struct{}{sub: {}}}
 
-	sub, cleanup := eb.Subscribe()
-	defer cleanup()
-
-	fillSubscriber(t, eb, sub, 100)
-
-	for i := range 50 {
-		if err := eb.Publish(types.DownloadEvent{
-			Type:       types.EventProgress,
-			DownloadID: "extra-prog",
-			Downloaded: int64(i + 1000),
-		}); err != nil {
-			t.Fatalf("Publish progress %d failed: %v", i, err)
+		// The cap-1 progress slot keeps only the latest frame.
+		for i := int64(1); i <= 5; i++ {
+			eb.broadcastMsg(types.DownloadEvent{Type: types.EventProgress, Downloaded: i})
 		}
-	}
-	time.Sleep(200 * time.Millisecond)
+		if got := (<-sub.progress).Downloaded; got != 5 {
+			t.Fatalf("progress slot kept %d, want latest 5", got)
+		}
 
-	extraFound := 0
-	for {
+		// A lifecycle transition evicts a still-pending progress frame.
+		eb.broadcastMsg(types.DownloadEvent{Type: types.EventProgress, Downloaded: 6})
+		eb.broadcastMsg(types.DownloadEvent{Type: types.EventPaused})
 		select {
-		case msg := <-sub:
-			if msg.Type == types.EventProgress && msg.Downloaded >= 1000 {
-				extraFound++
-			}
+		case ev := <-sub.progress:
+			t.Fatalf("stale progress survived lifecycle transition: %+v", ev)
 		default:
-			goto done
 		}
-	}
-done:
-	if extraFound > 0 {
-		t.Errorf("expected 0 extra progress events (non-blocking drop), got %d", extraFound)
-	}
+		if got := (<-sub.critical).Type; got != types.EventPaused {
+			t.Fatalf("critical event = %v, want paused", got)
+		}
+	})
 }
 
 func TestEventBus_TerminalEventDeliveredToFastListenerConcurrent(t *testing.T) {
-	eb := NewEventBus()
-	sub1, cleanup1 := eb.Subscribe()
-	sub2, cleanup2 := eb.Subscribe()
-	// Shutdown before cleanup so blocked sends exit via ctx.Done before
-	// unsubscribe closes listener channels (avoids send-on-closed race).
-	defer func() {
-		eb.Shutdown()
-		cleanup1()
-		cleanup2()
-	}()
+	synctest.Test(t, func(t *testing.T) {
+		bus := NewEventBus()
+		defer bus.Shutdown()
 
-	fillSubscriber(t, eb, sub1, 100)
+		slow, stopSlow := bus.Subscribe()
+		defer stopSlow()
+		fast, stopFast := bus.Subscribe()
+		defer stopFast()
 
-	// Drain fill events from sub2 so it stays ready for the complete event.
-	drainCtxDone := make(chan struct{})
-	defer close(drainCtxDone)
-	completeCh := make(chan types.DownloadEvent, 1)
-	var nonCompleteCount atomic.Int64
-	go func() {
-		for {
-			select {
-			case <-drainCtxDone:
-				return
-			case msg, ok := <-sub2:
-				if !ok {
-					return
-				}
-				if msg.Type == types.EventComplete && msg.DownloadID == "task-seq" {
-					completeCh <- msg
-					return
-				}
-				nonCompleteCount.Add(1)
+		// Overflow the slow observer while draining the fast one per event:
+		// the slow critical queue fills and the bus disconnects it.
+		for range 2 * eventQueueCapacity {
+			if err := bus.Publish(types.DownloadEvent{Type: types.EventQueued, DownloadID: "fill"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := <-fast; !ok {
+				t.Fatal("fast observer stream closed during fill")
 			}
 		}
-	}()
-	time.Sleep(200 * time.Millisecond)
-
-	start := time.Now()
-	if err := eb.Publish(types.DownloadEvent{
-		Type:       types.EventComplete,
-		DownloadID: "task-seq",
-	}); err != nil {
-		t.Fatalf("Publish complete failed: %v", err)
-	}
-
-	select {
-	case <-completeCh:
-		elapsed := time.Since(start)
-		if elapsed >= 200*time.Millisecond {
-			t.Errorf("expected <200ms delivery to fast listener (no HOL), got %v", elapsed)
+		select {
+		case _, ok := <-slow:
+			if ok {
+				t.Fatal("slow observer was not disconnected")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("slow observer stream did not close")
 		}
-	case <-time.After(3 * time.Second):
-		t.Errorf("fast listener did not receive complete within 3s (non-complete drained: %d)", nonCompleteCount.Load())
-	}
+
+		// A terminal event reaches the healthy observer with no added wait:
+		// inside synctest any blocking would show up as elapsed time.
+		start := time.Now()
+		if err := bus.Publish(types.DownloadEvent{Type: types.EventComplete, DownloadID: "task-seq"}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case ev := <-fast:
+			if ev.Type != types.EventComplete || ev.DownloadID != "task-seq" {
+				t.Fatalf("fast observer got %+v, want complete task-seq", ev)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("fast observer did not receive complete")
+		}
+		if elapsed := time.Since(start); elapsed != 0 {
+			t.Fatalf("slow observer added latency to fast delivery: %v", elapsed)
+		}
+	})
 }
 
 func TestEventBus_ShutdownDoesNotDeadlockWithBlockedListener(t *testing.T) {
-	eb := NewEventBus()
-	sub, cleanup := eb.Subscribe()
-	// Shutdown before cleanup so blocked sends exit via ctx.Done first.
-	defer func() {
-		eb.Shutdown()
-		cleanup()
-	}()
+	bus := NewEventBus()
+	defer bus.Shutdown()
 
-	fillSubscriber(t, eb, sub, 100)
+	// Ordinary observer left unread; shutdown force-stops it.
+	_, stopUnread := bus.Subscribe()
+	defer stopUnread()
 
-	pubDone := make(chan error, 1)
+	// Reliable consumer that keeps draining until the stream closes.
+	lifecycle, stopLifecycle := bus.SubscribeLifecycle()
+	defer stopLifecycle()
+	drainDone := make(chan struct{})
 	go func() {
-		pubDone <- eb.Publish(types.DownloadEvent{
-			Type:       types.EventComplete,
-			DownloadID: "task-shutdown",
-		})
-	}()
-	select {
-	case err := <-pubDone:
-		if err != nil {
-			t.Fatalf("Publish complete failed: %v", err)
+		defer close(drainDone)
+		for range lifecycle {
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Publish to InputCh timed out")
-	}
-	time.Sleep(100 * time.Millisecond)
-
-	shutdownDone := make(chan struct{})
-	go func() {
-		eb.Shutdown()
-		close(shutdownDone)
-	}()
-	select {
-	case <-shutdownDone:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Shutdown deadlocked — ctx.Done did not unblock terminal send")
-	}
-}
-
-func TestEventBus_CtxCancelledMidSend(t *testing.T) {
-	eb := NewEventBus()
-	sub, cleanup := eb.Subscribe()
-	// Shutdown is the sole InputCh close path (Once); never close InputCh by hand.
-	defer func() {
-		eb.Shutdown()
-		cleanup()
 	}()
 
-	fillSubscriber(t, eb, sub, 100)
-
-	pubDone := make(chan error, 1)
-	go func() {
-		pubDone <- eb.Publish(types.DownloadEvent{
-			Type:       types.EventComplete,
-			DownloadID: "task-cancel",
-		})
-	}()
-	select {
-	case err := <-pubDone:
-		if err != nil {
-			t.Fatalf("Publish complete failed: %v", err)
+	for i := range eventQueueCapacity {
+		if err := bus.Publish(types.DownloadEvent{Type: types.EventStarted, DownloadID: "x"}); err != nil {
+			t.Fatalf("publish %d: %v", i, err)
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("Publish to InputCh timed out")
 	}
-	time.Sleep(100 * time.Millisecond)
 
-	// Unblock mid-send via cancel, then drain/exit through Shutdown only.
-	eb.cancel()
-	shutdownDone := make(chan struct{})
+	done := make(chan struct{})
 	go func() {
-		eb.Shutdown()
-		close(shutdownDone)
+		bus.Shutdown()
+		close(done)
 	}()
 	select {
-	case <-shutdownDone:
+	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("broadcastLoop did not finish after cancel+Shutdown")
+		t.Fatal("Shutdown deadlocked with a blocked listener")
+	}
+	select {
+	case <-drainDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("reliable consumer did not observe stream close")
 	}
 }
 
 func TestEventBus_InputChBufferAbsorbsBurst(t *testing.T) {
-	eb := NewEventBus()
-	defer eb.Shutdown()
+	bus := NewEventBus()
+	defer bus.Shutdown()
 
-	sub, cleanup := eb.Subscribe()
+	sub, cleanup := bus.Subscribe()
 	defer cleanup()
-
+	drainDone := make(chan struct{})
 	go func() {
+		defer close(drainDone)
 		for range sub {
 		}
 	}()
 
+	// Progress publishes never wait on the consumer: a burst below the ingress
+	// capacity must return promptly even though most frames are coalesced.
 	start := time.Now()
 	for i := range 80 {
-		if err := eb.Publish(types.DownloadEvent{
-			Type:       types.EventProgress,
-			DownloadID: "burst",
-		}); err != nil {
-			t.Fatalf("Publish burst %d failed: %v", i, err)
+		if err := bus.Publish(types.DownloadEvent{Type: types.EventProgress, DownloadID: "burst"}); err != nil {
+			t.Fatalf("publish burst %d: %v", i, err)
 		}
 	}
-	elapsed := time.Since(start)
-	if elapsed > 100*time.Millisecond {
-		t.Logf("burst send took %v — InputCh may have briefly blocked", elapsed)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("progress burst stalled publish for %v", elapsed)
+	}
+
+	// A lifecycle publish must not error while the loop keeps draining.
+	if err := bus.Publish(types.DownloadEvent{Type: types.EventComplete, DownloadID: "burst"}); err != nil {
+		t.Fatalf("lifecycle publish after burst: %v", err)
+	}
+
+	bus.Shutdown()
+	select {
+	case <-drainDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("observer drain did not observe stream close")
 	}
 }

@@ -404,8 +404,10 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		// completes, so EventStarted cannot race ahead of the queued record.
 		accepted, err := mgr.pool.AddWithPreparation(*cfg, func() error {
 			// Persist synchronously before publishing so the download survives
-			// a restart even if the event bus is full and Publish returns
-			// DeadlineExceeded.
+			// a restart. Publication itself happens after AddWithPreparation
+			// returns (see below): non-progress Publish can now wait on ingress
+			// or bus cancellation with no bounded drop, so it must not run
+			// under the scheduler lock.
 			// FORK-PATCH: CreatedAt is stamped here once; lifecycle rewrites carry it.
 			if err := store.AddToMasterList(types.DownloadRecord{
 				ID:                   queuedEvent.DownloadID,
@@ -474,9 +476,6 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 					utils.Debug("Lifecycle: failed to persist queued detail state: %v", err)
 				}
 			}
-			if mgr.eventBus != nil {
-				_ = mgr.eventBus.Publish(queuedEvent)
-			}
 			return nil
 		})
 		// The fork's seeding is deliberately best-effort: the closure never
@@ -488,6 +487,18 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		if !accepted {
 			_ = os.Remove(surgePath)
 			return "", "", types.ErrIDExists
+		}
+		// FORK-PATCH: publish outside the scheduler lock. prepare runs under
+		// p.mu; reliable lifecycle subscriptions make Publish wait on consumer
+		// backpressure, so an in-lock send could freeze every scheduler op.
+		// Durability still precedes the event: the master/detail seed above ran
+		// before this Publish. A worker may legitimately publish Started first —
+		// Queued arriving late is accepted rather than re-serialized under p.mu.
+		// Retire once upstream moves this publication out of prepare.
+		if mgr.eventBus != nil {
+			if err := mgr.eventBus.Publish(queuedEvent); err != nil {
+				utils.Debug("Lifecycle: queued event publish failed for %s: %v", cfg.ID, err)
+			}
 		}
 
 		return cfg.ID, finalFilename, nil

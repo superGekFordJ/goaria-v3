@@ -346,6 +346,11 @@ func (s *RemoteDownloadService) streamWithReconnect(ctx context.Context, ch chan
 		if err == nil {
 			return // Clean shutdown (e.g. server closed stream cleanly or context canceled during request)
 		}
+		if ctx.Err() != nil {
+			// Shutdown is not a reconnect gap — deliver no resync notice.
+			return
+		}
+		sendStreamStatus(ctx, ch, fmt.Sprintf("Remote event stream disconnected: %v; reconnecting", err))
 		// Check context again before sleeping
 		select {
 		case <-ctx.Done():
@@ -445,6 +450,15 @@ func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.Do
 		default:
 			// Drop message if channel is full to prevent blocking the reader
 		}
+	}
+}
+
+// sendStreamStatus notifies the consumer that a resync is required. The send
+// blocks until the consumer reads or ctx is done — it must not default-drop.
+func sendStreamStatus(ctx context.Context, ch chan types.DownloadEvent, message string) {
+	select {
+	case ch <- types.DownloadEvent{Type: types.EventSystem, Message: message, ResyncRequired: true}:
+	case <-ctx.Done():
 	}
 }
 

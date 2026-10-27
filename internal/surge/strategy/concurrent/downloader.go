@@ -726,19 +726,18 @@ func (d *ConcurrentDownloader) Download(ctx context.Context, rawurl string, cand
 					workers = d.Runtime.Workers
 					minChunkSize = d.Runtime.MinChunkSize
 				}
-				func() {
-					defer func() { _ = recover() }()
-					d.ProgressChan <- types.DownloadEvent{
-						Type:         types.EventPaused,
-						DownloadID:   d.ID,
-						Filename:     filepath.Base(destPath),
-						Downloaded:   d.State.Bytes.VerifiedProgress.Load(),
-						RateLimit:    rateLimit,
-						RateLimitSet: rateLimitSet,
-						Workers:      workers,
-						MinChunkSize: minChunkSize,
-					}
-				}()
+				// The pause already cancelled the download ctx — delivery must
+				// wait on a fresh bounded context or the snapshot is lost.
+				d.sendProgressEvent(context.Background(), types.DownloadEvent{
+					Type:         types.EventPaused,
+					DownloadID:   d.ID,
+					Filename:     filepath.Base(destPath),
+					Downloaded:   d.State.Bytes.VerifiedProgress.Load(),
+					RateLimit:    rateLimit,
+					RateLimitSet: rateLimitSet,
+					Workers:      workers,
+					MinChunkSize: minChunkSize,
+				})
 			}
 			return types.ErrPaused
 		}
@@ -1481,6 +1480,46 @@ func (d *ConcurrentDownloader) fanoutAfterRangeVerified() {
 	})
 }
 
+// progressSendTimeout bounds the extra wait once the event channel is not
+// immediately ready. It is a stop-loss bound against a wedged consumer, not a
+// guarantee of eventual delivery; a timeout is logged with event type and ID.
+const progressSendTimeout = 3 * time.Second
+
+// FORK-PATCH: sendProgressEvent delivers an event with a bounded wait — an
+// immediate attempt first, then a wait on the delivery ctx capped by
+// progressSendTimeout. Pause sends carry the only copy of the resume snapshot
+// and their download ctx is already cancelled by Pause, so callers pass a
+// delivery context decoupled from it (context.Background()); first-byte sends
+// pass the live worker ctx so shutdown can still interrupt the wait. A closed
+// channel is recovered and logged rather than silently dropped. Retire once
+// upstream gives these sends a bounded, cancellation-aware delivery path.
+func (d *ConcurrentDownloader) sendProgressEvent(ctx context.Context, ev types.DownloadEvent) {
+	ch := d.ProgressChan
+	if ch == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			utils.Debug("Concurrent: sendProgressEvent recovered for %s event %v: %v", d.ID, ev.Type, r)
+		}
+	}()
+	select {
+	case ch <- ev:
+		return
+	default:
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sendCtx, cancel := context.WithTimeout(ctx, progressSendTimeout)
+	defer cancel()
+	select {
+	case ch <- ev:
+	case <-sendCtx.Done():
+		utils.Debug("Concurrent: sendProgressEvent gave up for %s event %v: %v", d.ID, ev.Type, sendCtx.Err())
+	}
+}
+
 func (d *ConcurrentDownloader) sendFirstByteOnce(ttfbStart time.Time, activeTask *ActiveTask) {
 	if d.isResume.Load() || activeTask == nil || activeTask.Hedged.Load() != 0 {
 		return
@@ -1489,17 +1528,17 @@ func (d *ConcurrentDownloader) sendFirstByteOnce(ttfbStart time.Time, activeTask
 		return
 	}
 	ttfbMs := time.Since(ttfbStart).Milliseconds()
-	if d.ProgressChan == nil {
-		return
+	// Wait on the live worker ctx so a running cancel still interrupts the
+	// bounded delivery wait; a nil deps pointer falls back to Background.
+	var runCtx context.Context
+	if deps := d.workerDepsPtr.Load(); deps != nil {
+		runCtx = deps.ctx
 	}
-	func() {
-		defer func() { _ = recover() }()
-		d.ProgressChan <- types.DownloadEvent{
-			Type:       types.EventFirstByte,
-			DownloadID: d.ID,
-			TTFBMs:     ttfbMs,
-		}
-	}()
+	d.sendProgressEvent(runCtx, types.DownloadEvent{
+		Type:       types.EventFirstByte,
+		DownloadID: d.ID,
+		TTFBMs:     ttfbMs,
+	})
 }
 
 // unverifiedTasksFromBitmap rebuilds resumable work from the persisted bitmap.
@@ -1672,20 +1711,19 @@ func (d *ConcurrentDownloader) saveStateSnapshot(destPath string, fileSize int64
 
 	if emitPauseEvent {
 		if d.ProgressChan != nil {
-			func() {
-				defer func() { _ = recover() }()
-				d.ProgressChan <- types.DownloadEvent{
-					Type:         types.EventPaused,
-					DownloadID:   d.ID,
-					Filename:     filepath.Base(destPath),
-					Downloaded:   computedDownloaded,
-					State:        s,
-					RateLimit:    rateLimit,
-					RateLimitSet: rateLimitSet,
-					Workers:      workers,
-					MinChunkSize: minChunkSize,
-				}
-			}()
+			// Same cancelled-ctx constraint as the sparse pause above: deliver
+			// on a fresh bounded context so the snapshot survives the pause.
+			d.sendProgressEvent(context.Background(), types.DownloadEvent{
+				Type:         types.EventPaused,
+				DownloadID:   d.ID,
+				Filename:     filepath.Base(destPath),
+				Downloaded:   computedDownloaded,
+				State:        s,
+				RateLimit:    rateLimit,
+				RateLimitSet: rateLimitSet,
+				Workers:      workers,
+				MinChunkSize: minChunkSize,
+			})
 		}
 
 		utils.Debug("Download paused, state saved (Downloaded=%d, RemainingTasks=%d, RemainingBytes=%d)",
