@@ -174,7 +174,9 @@ func NewSurgeEngine() *SurgeEngine {
 
 	engineCtx, engineCancel := context.WithCancel(context.Background())
 
-	stream, eventCleanup, err := svc.StreamEvents(engineCtx)
+	// Reliable feed: the persistence worker must not lose lifecycle events when
+	// ordinary observers fall behind. StreamEvents stays the best-effort UI path.
+	stream, eventCleanup, err := svc.StreamLifecycleEvents(engineCtx)
 	if err != nil {
 		log.Printf("[Surge] Failed to stream events: %v", err)
 	}
@@ -186,6 +188,11 @@ func NewSurgeEngine() *SurgeEngine {
 		spawned = true
 		go func() {
 			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[Surge] lifecycle event worker panicked: %v", r)
+				}
+			}()
 			mgr.StartEventWorker(stream)
 		}()
 	}
