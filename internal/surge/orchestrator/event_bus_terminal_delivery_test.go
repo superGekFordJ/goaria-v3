@@ -13,89 +13,96 @@ import (
 // keep receiving every persistence event even when another observer saturates.
 
 func TestEventBus_TerminalEventDeliveredWhenBufferFull(t *testing.T) {
-	bus := NewEventBus()
-	defer bus.Shutdown()
+	synctest.Test(t, func(t *testing.T) {
+		bus := NewEventBus()
+		defer bus.Shutdown()
 
-	// Ordinary observer that never reads: it saturates its critical queue and
-	// gets disconnected, but that must not impede the reliable feed.
-	saturated, stopSaturated := bus.Subscribe()
-	defer stopSaturated()
+		// Ordinary observer that never reads: it saturates its critical queue
+		// and gets disconnected, but that must not impede the reliable feed.
+		saturated, stopSaturated := bus.Subscribe()
+		defer stopSaturated()
 
-	lifecycle, stopLifecycle := bus.SubscribeLifecycle()
-	defer stopLifecycle()
+		lifecycle, stopLifecycle := bus.SubscribeLifecycle()
+		defer stopLifecycle()
 
-	collected := make(chan []types.DownloadEvent, 1)
-	go func() {
-		var events []types.DownloadEvent
-		for ev := range lifecycle {
-			events = append(events, ev)
-		}
-		collected <- events
-	}()
+		collected := make(chan []types.DownloadEvent, 1)
+		go func() {
+			var events []types.DownloadEvent
+			for ev := range lifecycle {
+				events = append(events, ev)
+			}
+			collected <- events
+		}()
 
-	// More than cap+1 lifecycle events: the unread ordinary observer overflows
-	// (one in-flight on out plus a full critical queue) and is disconnected.
-	for i := range 2 * eventQueueCapacity {
-		if err := bus.Publish(types.DownloadEvent{Type: types.EventStarted, DownloadID: "t"}); err != nil {
-			t.Fatalf("publish started %d: %v", i, err)
+		// More than cap+1 lifecycle events: the unread ordinary observer
+		// overflows (one in-flight on out plus a full critical queue).
+		for i := range 2 * eventQueueCapacity {
+			if err := bus.Publish(types.DownloadEvent{Type: types.EventStarted, DownloadID: "t"}); err != nil {
+				t.Fatalf("publish started %d: %v", i, err)
+			}
 		}
-	}
-	select {
-	case _, ok := <-saturated:
-		if ok {
-			t.Fatal("saturated observer stream still open after overflow")
+		// Publish returns at ingress; the disconnect lands only after the
+		// dispatcher drains InputCh and one enqueue fails. Wait settles every
+		// goroutine so the assertion below is deterministic — an eager read
+		// would instead drain out and postpone the overflow indefinitely.
+		synctest.Wait()
+		select {
+		case _, ok := <-saturated:
+			if ok {
+				t.Fatal("saturated observer stream still open after overflow")
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("saturated observer was not disconnected")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("saturated observer was not disconnected")
-	}
 
-	// The remaining persistence whitelist events still reach the reliable feed.
-	for _, et := range []types.EventType{
-		types.EventQueued, types.EventPaused, types.EventComplete,
-		types.EventError, types.EventRemoved,
-	} {
-		if err := bus.Publish(types.DownloadEvent{Type: et, DownloadID: "t"}); err != nil {
-			t.Fatalf("publish %v: %v", et, err)
+		// The remaining persistence whitelist events still reach the reliable feed.
+		for _, et := range []types.EventType{
+			types.EventQueued, types.EventPaused, types.EventComplete,
+			types.EventError, types.EventRemoved,
+		} {
+			if err := bus.Publish(types.DownloadEvent{Type: et, DownloadID: "t"}); err != nil {
+				t.Fatalf("publish %v: %v", et, err)
+			}
 		}
-	}
-	// Transient events never enter the reliable feed.
-	transient := []types.EventType{
-		types.EventProgress, types.EventBatchProgress, types.EventSystem,
-		types.EventFirstByte, types.EventResumed,
-	}
-	for _, et := range transient {
-		if err := bus.Publish(types.DownloadEvent{Type: et, DownloadID: "t"}); err != nil {
-			t.Fatalf("publish transient %v: %v", et, err)
+		// Transient events never enter the reliable feed.
+		transient := []types.EventType{
+			types.EventProgress, types.EventBatchProgress, types.EventSystem,
+			types.EventFirstByte, types.EventResumed,
 		}
-	}
+		for _, et := range transient {
+			if err := bus.Publish(types.DownloadEvent{Type: et, DownloadID: "t"}); err != nil {
+				t.Fatalf("publish transient %v: %v", et, err)
+			}
+		}
 
-	// Shutdown drains the reliable queue before closing the stream.
-	bus.Shutdown()
-	events := <-collected
+		// Shutdown drains the reliable queue before closing the stream.
+		bus.Shutdown()
+		events := <-collected
 
-	seen := make(map[types.EventType]int)
-	for _, ev := range events {
-		seen[ev.Type]++
-	}
-	for _, et := range transient {
-		if seen[et] != 0 {
-			t.Fatalf("reliable feed received transient %v x%d", et, seen[et])
+		seen := make(map[types.EventType]int)
+		for _, ev := range events {
+			seen[ev.Type]++
 		}
-	}
-	for _, et := range []types.EventType{
-		types.EventStarted, types.EventQueued, types.EventPaused,
-		types.EventComplete, types.EventError, types.EventRemoved,
-	} {
-		if seen[et] == 0 {
-			t.Fatalf("reliable feed missing persistence event %v", et)
+		for _, et := range transient {
+			if seen[et] != 0 {
+				t.Fatalf("reliable feed received transient %v x%d", et, seen[et])
+			}
 		}
-	}
-	if seen[types.EventStarted] != 2*eventQueueCapacity {
-		t.Fatalf("reliable feed saw %d started events, want %d", seen[types.EventStarted], 2*eventQueueCapacity)
-	}
-	if seen[types.EventComplete] != 1 || seen[types.EventRemoved] != 1 {
-		t.Fatalf("terminal events lost: complete=%d removed=%d", seen[types.EventComplete], seen[types.EventRemoved])
-	}
+		for _, et := range []types.EventType{
+			types.EventStarted, types.EventQueued, types.EventPaused,
+			types.EventComplete, types.EventError, types.EventRemoved,
+		} {
+			if seen[et] == 0 {
+				t.Fatalf("reliable feed missing persistence event %v", et)
+			}
+		}
+		if seen[types.EventStarted] != 2*eventQueueCapacity {
+			t.Fatalf("reliable feed saw %d started events, want %d", seen[types.EventStarted], 2*eventQueueCapacity)
+		}
+		if seen[types.EventComplete] != 1 || seen[types.EventRemoved] != 1 {
+			t.Fatalf("terminal events lost: complete=%d removed=%d", seen[types.EventComplete], seen[types.EventRemoved])
+		}
+	})
 }
 
 func TestEventBus_DropsProgressWhenBufferFull(t *testing.T) {
