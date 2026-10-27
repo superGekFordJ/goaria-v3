@@ -203,6 +203,18 @@ func (m *Monitor) handleSurgeEvent(ev types.DownloadEvent) {
 			errorMessage = ev.Err.Error()
 			errorCode = rpc.ClassifySurgeErrorCode(errorMessage, true)
 		}
+	case types.EventSystem:
+		if !ev.ResyncRequired {
+			log.Printf("[DEBUG] Surge system event: %s", ev.Message)
+			return
+		}
+		// The ordinary stream hit a gap; ask the poll loop for an immediate
+		// reconcile. Send is non-blocking and collapses to one pending flag.
+		select {
+		case m.surgeResyncChan <- struct{}{}:
+		default:
+		}
+		return
 	case types.EventRemoved:
 		deltaType = "remove"
 		gid = "sg_" + ev.DownloadID
@@ -619,6 +631,10 @@ func (m *Monitor) surgePollLoop() {
 		case <-m.surgePollStopChan:
 			return
 		case <-ticker.C:
+			m.reconcileSurgeCache()
+		case <-m.surgeResyncChan:
+			// Coalesced resync request from the event path; nil channel
+			// never fires. Reconcile runs only in this goroutine.
 			m.reconcileSurgeCache()
 		}
 	}

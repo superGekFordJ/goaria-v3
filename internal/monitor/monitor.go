@@ -93,6 +93,10 @@ type Monitor struct {
 	surgePollStopChan    chan struct{}
 	surgePollWg          sync.WaitGroup
 	surgePollReader      surgeListReader
+	// Single-slot resync request: event handlers flag dropped-stream gaps so
+	// the unique poll goroutine can reconcile immediately instead of waiting
+	// for the next tick.
+	surgeResyncChan chan struct{}
 
 	runLoopWg     sync.WaitGroup
 	surgeBridgeWg sync.WaitGroup
@@ -129,6 +133,7 @@ func New(app *application.App, hub *events.Hub, systray *application.SystemTray,
 		telemetry:            NewTelemetryCache(),
 		chunkSnapshots:       NewChunkSnapshotCache(),
 		surgePollInterval:    10 * time.Second,
+		surgeResyncChan:      make(chan struct{}, 1),
 	}
 
 	Cache.engine = engine
