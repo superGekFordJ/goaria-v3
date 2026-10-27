@@ -335,6 +335,7 @@ func (s *RemoteDownloadService) Publish(msg types.DownloadEvent) error {
 func (s *RemoteDownloadService) streamWithReconnect(ctx context.Context, ch chan types.DownloadEvent) {
 	defer close(ch)
 	backoff := 1 * time.Second
+	needResync := false
 	for {
 		select {
 		case <-ctx.Done():
@@ -342,7 +343,7 @@ func (s *RemoteDownloadService) streamWithReconnect(ctx context.Context, ch chan
 		default:
 		}
 
-		err := s.connectSSE(ctx, ch)
+		err := s.connectSSE(ctx, ch, &needResync)
 		if err == nil {
 			return // Clean shutdown (e.g. server closed stream cleanly or context canceled during request)
 		}
@@ -350,7 +351,8 @@ func (s *RemoteDownloadService) streamWithReconnect(ctx context.Context, ch chan
 			// Shutdown is not a reconnect gap — deliver no resync notice.
 			return
 		}
-		sendStreamStatus(ctx, ch, fmt.Sprintf("Remote event stream disconnected: %v; reconnecting", err))
+		sendStreamStatus(ctx, ch, fmt.Sprintf("Remote event stream disconnected: %v; reconnecting", err), false)
+		needResync = true
 		// Check context again before sleeping
 		select {
 		case <-ctx.Done():
@@ -382,7 +384,7 @@ func mergeContexts(contexts ...context.Context) (context.Context, context.Cancel
 	}
 }
 
-func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.DownloadEvent) error {
+func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.DownloadEvent, needResync *bool) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.BaseURL+"/events", nil)
 	if err != nil {
 		return err
@@ -401,6 +403,13 @@ func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.Do
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("failed to connect to event stream: %s", resp.Status)
+	}
+
+	// The flat retry loop has no inner reconnect cycle, so a successful
+	// connect after a disconnect is itself the resync point.
+	if *needResync {
+		sendStreamStatus(ctx, ch, "Remote event stream reconnected", true)
+		*needResync = false
 	}
 
 	reader := bufio.NewReader(resp.Body)
@@ -453,11 +462,12 @@ func (s *RemoteDownloadService) connectSSE(ctx context.Context, ch chan types.Do
 	}
 }
 
-// sendStreamStatus notifies the consumer that a resync is required. The send
-// blocks until the consumer reads or ctx is done — it must not default-drop.
-func sendStreamStatus(ctx context.Context, ch chan types.DownloadEvent, message string) {
+// sendStreamStatus delivers a stream status notice; resync marks whether the
+// consumer must refresh state. The send blocks until the consumer reads or ctx
+// is done — it must not default-drop.
+func sendStreamStatus(ctx context.Context, ch chan types.DownloadEvent, message string, resync bool) {
 	select {
-	case ch <- types.DownloadEvent{Type: types.EventSystem, Message: message, ResyncRequired: true}:
+	case ch <- types.DownloadEvent{Type: types.EventSystem, Message: message, ResyncRequired: resync}:
 	case <-ctx.Done():
 	}
 }

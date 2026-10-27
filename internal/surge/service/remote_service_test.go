@@ -4,10 +4,12 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	_ "goaria-v3/internal/surge/types"
+	"goaria-v3/internal/surge/types"
 )
 
 func TestRemoteDownloadService_SetRateLimit_ProxiesRequest(t *testing.T) {
@@ -110,6 +112,82 @@ func TestRemoteDownloadService_NegativeRates_Rejected(t *testing.T) {
 	}
 	if err := svc.SetDefaultRateLimit(-1); err == nil {
 		t.Errorf("expected error setting negative default rate limit")
+	}
+}
+
+func TestRemoteDownloadService_StreamEventsReportsReconnect(t *testing.T) {
+	var requests atomic.Int32
+	secondConnected := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := requests.Add(1)
+		if request == 2 {
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte("event: started\ndata: {\"download_id\":\"stream-event\"}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		if request == 1 {
+			return
+		}
+		if request == 3 {
+			close(secondConnected)
+		}
+		<-r.Context().Done()
+	}))
+	defer ts.Close()
+
+	svc, err := NewRemoteDownloadService(ts.URL, "token", HTTPClientOptions{})
+	if err != nil {
+		t.Fatalf("NewRemoteDownloadService failed: %v", err)
+	}
+	t.Cleanup(func() { _ = svc.Shutdown() })
+
+	stream, cleanup, err := svc.StreamEvents(context.Background())
+	if err != nil {
+		t.Fatalf("StreamEvents failed: %v", err)
+	}
+	defer cleanup()
+
+	var disconnects int
+	var sawReconnect bool
+	firstNotice := true
+	deadline := time.After(6 * time.Second)
+	for disconnects < 2 || !sawReconnect {
+		select {
+		case msg, ok := <-stream:
+			if !ok {
+				t.Fatal("event stream closed before reconnect completed")
+			}
+			if msg.Type != types.EventSystem {
+				continue
+			}
+			wantResync := strings.Contains(msg.Message, "reconnected")
+			if msg.ResyncRequired != wantResync {
+				t.Fatalf("status %q: resync=%v, want %v", msg.Message, msg.ResyncRequired, wantResync)
+			}
+			if firstNotice && wantResync {
+				t.Fatal("initial connect reported a reconnect before any disconnect")
+			}
+			firstNotice = false
+			if strings.Contains(msg.Message, "disconnected") {
+				disconnects++
+			}
+			sawReconnect = sawReconnect || wantResync
+		case <-deadline:
+			t.Fatalf("timed out waiting for reconnect status; disconnects=%d reconnect=%v", disconnects, sawReconnect)
+		}
+	}
+	select {
+	case <-secondConnected:
+	case <-time.After(time.Second):
+		t.Fatal("second SSE connection was not established")
 	}
 }
 
