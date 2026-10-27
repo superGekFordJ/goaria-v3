@@ -156,6 +156,21 @@ func buildSurgeIsNameActive(pool *scheduler.Scheduler) orchestrator.IsNameActive
 	}
 }
 
+// runSurgeEventWorker runs the lifecycle persistence worker and always
+// releases the reliable feed on exit — including panic — so a dead consumer
+// cannot fill its critical queue and wedge broadcastLoop/Shutdown.
+func runSurgeEventWorker(worker func(), cleanup func()) {
+	if cleanup != nil {
+		defer cleanup()
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[Surge] lifecycle event worker panicked: %v", r)
+		}
+	}()
+	worker()
+}
+
 func NewSurgeEngine() *SurgeEngine {
 	settings := surgeconfig.DefaultSettings()
 	eventBus := orchestrator.NewEventBus()
@@ -188,12 +203,7 @@ func NewSurgeEngine() *SurgeEngine {
 		spawned = true
 		go func() {
 			defer wg.Done()
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("[Surge] lifecycle event worker panicked: %v", r)
-				}
-			}()
-			mgr.StartEventWorker(stream)
+			runSurgeEventWorker(func() { mgr.StartEventWorker(stream) }, eventCleanup)
 		}()
 	}
 

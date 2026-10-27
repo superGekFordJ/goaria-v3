@@ -2,9 +2,13 @@ package rpc
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	surgeconfig "goaria-v3/internal/surge/config"
+	"goaria-v3/internal/surge/orchestrator"
+	"goaria-v3/internal/surge/scheduler"
 	"goaria-v3/internal/surge/service"
 	"goaria-v3/internal/surge/store"
 	"goaria-v3/internal/surge/testutil"
@@ -103,5 +107,64 @@ func TestSurgeEngine_StreamLifecycleEvents_NoBus(t *testing.T) {
 	svc := service.NewLocalDownloadService(nil)
 	if stream, cleanup, err := svc.StreamLifecycleEvents(context.Background()); err == nil || stream != nil || cleanup != nil {
 		t.Fatalf("StreamLifecycleEvents without bus = (%v,%T,%v), want error only", stream, cleanup, err)
+	}
+}
+
+// runSurgeEventWorker must release the reliable feed on both normal return
+// and panic: an unreleased subscription leaves sub.run blocked on out, which
+// backs up the bus critical queue into a Shutdown deadlock.
+func TestSurgeEngine_RunEventWorkerPanicReleasesFeed(t *testing.T) {
+	testutil.SetupStateDB(t)
+	eventBus := orchestrator.NewEventBus()
+	pool := scheduler.NewSchedulerForTesting(nil)
+	mgr := orchestrator.NewLifecycleManager(pool, eventBus, surgeconfig.DefaultSettings(), buildSurgeIsNameActive(pool))
+	t.Cleanup(mgr.Shutdown)
+	svc := service.NewLocalDownloadService(mgr)
+
+	stream, eventCleanup, err := svc.StreamLifecycleEvents(context.Background())
+	if err != nil {
+		t.Fatalf("StreamLifecycleEvents: %v", err)
+	}
+
+	var ran atomic.Bool
+	runSurgeEventWorker(func() {
+		ran.Store(true)
+		panic("injected worker failure")
+	}, eventCleanup)
+	if !ran.Load() {
+		t.Fatal("worker body did not run")
+	}
+
+	// Reliable feed already released: the stream is closed and a published
+	// lifecycle event goes nowhere, so Shutdown cannot wedge on a dead
+	// consumer's critical queue.
+	select {
+	case _, ok := <-stream:
+		if ok {
+			t.Fatal("reliable stream still open after panicked worker exit")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reliable stream not closed after panicked worker exit")
+	}
+	if err := svc.Publish(types.DownloadEvent{Type: types.EventStarted, DownloadID: "post-panic"}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		eventBus.Shutdown()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("bus Shutdown wedged — panicked worker left the reliable feed subscribed")
+	}
+}
+
+func TestSurgeEngine_RunEventWorkerCleanupOnNormalExit(t *testing.T) {
+	var cleaned atomic.Bool
+	runSurgeEventWorker(func() {}, func() { cleaned.Store(true) })
+	if !cleaned.Load() {
+		t.Fatal("cleanup not run on normal worker exit")
 	}
 }
