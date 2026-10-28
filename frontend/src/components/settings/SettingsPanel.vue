@@ -61,13 +61,11 @@
     smart_thread_mode: Boolean(snapshot.smart_thread_mode),
   })
 
-  /* Prefill from the already-hydrated store so bound values land while the
-   * subtree is still detached — patching `value`/`checked` onto attached
-   * inputs later forces a synchronous layout per control (Blink eagerly
-   * updates the inner text control). */
-  const formData = ref(
-    configStore.isHydrated ? toFormData(configStore.settings) : toFormData(new AppConfig()),
-  )
+  /* Prefill from the store (hydrated or persisted preview) so bound values
+   * land while the subtree is still detached — patching `value`/`checked` onto
+   * attached inputs later forces a synchronous layout per control (Blink
+   * eagerly updates the inner text control). */
+  const formData = ref(toFormData(configStore.settings))
 
   type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
   const saveStatus = ref<SaveStatus>('idle')
@@ -129,12 +127,8 @@
 
   onMounted(() => {
     scheduleStartNavigation()
-    if (!isInitializedFromBackend) {
-      if (configStore.isHydrated) {
-        hydrateFromStore()
-      } else {
-        previewPersistedSettings()
-      }
+    if (!isInitializedFromBackend && configStore.isHydrated) {
+      hydrateFromStore()
     }
   })
 

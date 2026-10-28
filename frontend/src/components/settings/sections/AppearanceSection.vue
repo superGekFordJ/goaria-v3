@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import { Palette, Monitor, Sun, Moon, Languages, ChevronDown, Check } from '@lucide/vue'
   import { useI18n } from 'vue-i18n'
-  import { ref, computed, onMounted, onUnmounted } from 'vue'
+  import { ref, computed, watch, onUnmounted } from 'vue'
   import SectionCard from './SectionCard.vue'
   import LiquidGlassSlider from '../../common/LiquidGlassSlider.vue'
   import { useUIStore, type ThemeMode, type LocalePreference } from '../../../stores/ui'
@@ -13,6 +13,10 @@
 
   const showLanguageDropdown = ref(false)
   const languageDropdownRef = ref<HTMLElement | null>(null)
+  const lightMedia =
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia('(prefers-color-scheme: light)')
+      : null
 
   const handleClickOutsideLanguage = (event: MouseEvent) => {
     if (
@@ -24,8 +28,11 @@
     }
   }
 
-  onMounted(() => {
-    document.addEventListener('click', handleClickOutsideLanguage)
+  watch(showLanguageDropdown, open => {
+    document.removeEventListener('click', handleClickOutsideLanguage)
+    if (open) {
+      document.addEventListener('click', handleClickOutsideLanguage)
+    }
   })
 
   onUnmounted(() => {
@@ -40,7 +47,7 @@
   const resolvedTheme = computed(() => {
     if (uiStore.themeMode === 'light') return 'light'
     if (uiStore.themeMode === 'dark') return 'dark'
-    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+    return lightMedia?.matches ? 'light' : 'dark'
   })
 
   const tierLabel = computed(() => {
@@ -268,7 +275,7 @@
             :class="[
               'group flex flex-col items-center gap-1.5 py-2 px-1 rounded-xl transition-all duration-200 cursor-pointer text-center relative',
               uiStore.skinId === skin.id
-                ? 'swatch-active bg-white/60 dark:bg-white/[0.08] border border-black/[0.06] dark:border-white/12 shadow-[0_1px_3px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.8)] backdrop-blur-xs'
+                ? 'swatch-active bg-white/60 dark:bg-white/[0.08] border border-black/[0.06] dark:border-white/12 shadow-[0_1px_3px_rgba(0,0,0,0.04),inset_0_1px_0_rgba(255,255,255,0.8)]'
                 : 'border border-transparent hover:bg-black/[0.03] dark:hover:bg-white/[0.04] opacity-75 hover:opacity-100',
             ]"
             @click="uiStore.setSkin(skin.id as SkinId)"
@@ -325,7 +332,7 @@
 
       <!-- Lower: The Specimen Stage (Unified 2-Column Architecture, Zero Layout Shift) -->
       <div
-        class="relative p-4 rounded-xl border border-[var(--skin-surface-border)] bg-[var(--skin-surface-tint)] backdrop-blur-md transition-all duration-300 min-h-[122px] flex items-center justify-between gap-4 overflow-hidden shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05),0_1px_3px_rgba(0,0,0,0.03)] dark:shadow-[0_10px_25px_-10px_var(--neon-glow)]"
+        class="relative p-4 rounded-xl border border-[var(--skin-surface-border)] bg-[var(--skin-surface-tint)] transition-all duration-300 min-h-[122px] flex items-center justify-between gap-4 overflow-hidden shadow-[0_4px_20px_-4px_rgba(0,0,0,0.05),0_1px_3px_rgba(0,0,0,0.03)] dark:shadow-[0_10px_25px_-10px_var(--neon-glow)]"
       >
         <!-- Left: Literary Poetry & Controls -->
         <div class="min-w-0 flex-1 flex flex-col justify-center">
@@ -415,7 +422,7 @@
 
         <!-- Right: Living Specimen Instrument Card (Shared by All 7 Skins, Reacts LIVE in Prism) -->
         <div
-          class="specimen-card shrink-0 w-48 sm:w-52 p-3 rounded-xl bg-white/75 dark:bg-black/30 border border-black/5 dark:border-[var(--glass-border)] shadow-xs backdrop-blur-sm flex flex-col justify-between"
+          class="specimen-card shrink-0 w-48 sm:w-52 p-3 rounded-xl bg-white/75 dark:bg-black/30 border border-black/5 dark:border-[var(--glass-border)] shadow-xs flex flex-col justify-between"
         >
           <div
             class="flex items-center justify-between text-[9px] font-mono text-[var(--app-text-subtle)] font-medium"

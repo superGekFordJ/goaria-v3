@@ -64,45 +64,92 @@ function buildDisplacementMap(
   const canvas = document.createElement('canvas')
   canvas.width = W
   canvas.height = H
-  const ctx = canvas.getContext('2d')!
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return Promise.resolve('')
   const img = ctx.createImageData(W, H)
   const data = img.data
+  const u32 = new Uint32Array(data.buffer, data.byteOffset, data.byteLength >> 2)
+  // Neutral displacement: R=128, G=128, B=0, A=255 (0xff008080 on little-endian)
+  u32.fill(0xff008080)
+
   const hw = W / 2
   const hh = H / 2
+  const halfW = Math.ceil(hw)
+  const halfH = Math.ceil(hh)
+  const innerHalfW = hw - R
+  const innerHalfH = hh - R
 
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
+  for (let y = 0; y < halfH; y++) {
+    const py = y + 0.5 - hh
+    const qy = -py - innerHalfH
+    const ay = Math.max(qy, 0)
+    const yBot = H - 1 - y
+    const rowTop = y * W
+    const rowBot = yBot * W
+
+    for (let x = 0; x < halfW; x++) {
       const px = x + 0.5 - hw
-      const py = y + 0.5 - hh
-      const qx = Math.abs(px) - (hw - R)
-      const qy = Math.abs(py) - (hh - R)
-      const ax = Math.max(qx, 0)
-      const ay = Math.max(qy, 0)
-      const sd = Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - R
-      const d = -sd
-
-      let nx = 0
-      let ny = 0
-      let mag = 0
-      if (d >= 0 && d < B) {
-        if (qx > 0 && qy > 0) {
-          const len = Math.hypot(ax, ay) || 1
-          nx = (ax / len) * Math.sign(px)
-          ny = (ay / len) * Math.sign(py)
-        } else if (qx > qy) {
-          nx = Math.sign(px)
-        } else {
-          ny = Math.sign(py)
+      const qx = -px - innerHalfW
+      if (qx <= 0 && qy <= 0) {
+        const d = R - Math.max(qx, qy)
+        if (d >= B) {
+          if (R - qy >= B) break
+          continue
         }
+        if (d < 0) continue
         const t = 1 - d / B
-        mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
+        const mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
+        const delta = 127.5 * mag
+        const negC = Math.round(127.5 + delta)
+        const posC = Math.round(127.5 - delta)
+        const xRight = W - 1 - x
+        if (qx > qy) {
+          const tl = (0xff008000 | negC) >>> 0
+          const tr = (0xff008000 | posC) >>> 0
+          u32[rowTop + x] = tl
+          u32[rowTop + xRight] = tr
+          u32[rowBot + x] = tl
+          u32[rowBot + xRight] = tr
+        } else {
+          const tl = (0xff000080 | (negC << 8)) >>> 0
+          const bl = (0xff000080 | (posC << 8)) >>> 0
+          u32[rowTop + x] = tl
+          u32[rowTop + xRight] = tl
+          u32[rowBot + x] = bl
+          u32[rowBot + xRight] = bl
+        }
+        continue
       }
 
-      const i = (y * W + x) * 4
-      data[i] = Math.round(127.5 - 127.5 * nx * mag)
-      data[i + 1] = Math.round(127.5 - 127.5 * ny * mag)
-      data[i + 2] = 0
-      data[i + 3] = 255
+      const ax = Math.max(qx, 0)
+      const sd = Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - R
+      const d = -sd
+      if (d < 0 || d >= B) continue
+
+      const t = 1 - d / B
+      const mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
+      let dx = 0
+      let dy = 0
+      if (qx > 0 && qy > 0) {
+        const len = Math.hypot(ax, ay) || 1
+        dx = (127.5 * ax * mag) / len
+        dy = (127.5 * ay * mag) / len
+      } else if (qx > qy) {
+        dx = 127.5 * mag
+      } else {
+        dy = 127.5 * mag
+      }
+
+      const rLeft = Math.round(127.5 + dx)
+      const rRight = Math.round(127.5 - dx)
+      const gTop = Math.round(127.5 + dy)
+      const gBot = Math.round(127.5 - dy)
+      const xRight = W - 1 - x
+
+      u32[rowTop + x] = (0xff000000 | (gTop << 8) | rLeft) >>> 0
+      u32[rowTop + xRight] = (0xff000000 | (gTop << 8) | rRight) >>> 0
+      u32[rowBot + x] = (0xff000000 | (gBot << 8) | rLeft) >>> 0
+      u32[rowBot + xRight] = (0xff000000 | (gBot << 8) | rRight) >>> 0
     }
   }
   ctx.putImageData(img, 0, 0)
@@ -112,15 +159,18 @@ function buildDisplacementMap(
 /* feImage fetches blob: URLs asynchronously, and a url() backdrop-filter whose
  * first raster sees a still-loading feImage is never reliably re-invalidated by
  * Blink — the refraction stays dead until the backdrop-filter property itself
- * changes. Pre-decoding through Image.decode() places the pixels in Blink's
- * memory cache so the feImage fetch resolves synchronously at raster time. */
-async function preloadMapImage(url: string): Promise<void> {
+ * changes. Pre-decoding through Image.decode() and retaining the HTMLImageElement
+ * places and pins the pixels in Blink's memory cache so the feImage fetch resolves
+ * synchronously at raster time without re-decoding on every cache hit. */
+async function preloadMapImage(url: string): Promise<HTMLImageElement | null> {
   try {
     const img = new Image()
     img.src = url
     await img.decode()
+    return img
   } catch {
     /* best effort — a failed decode still leaves the href bound */
+    return null
   }
 }
 
@@ -142,15 +192,53 @@ const FILTER_TEMPLATE = `
 
 interface CachedMapEntry {
   url: string
+  img: HTMLImageElement | null
+  decoded: boolean
   refCount: number
   lastUsed: number
 }
 
 const globalMapCache = new Map<string, CachedMapEntry>()
-const MAX_GLOBAL_CACHE_SIZE = 16
+const inFlightMapBuilds = new Map<string, Promise<{ url: string; img: HTMLImageElement | null }>>()
+const MAX_GLOBAL_CACHE_SIZE = 24
 
 function getMapCacheKey(w: number, h: number, radius: number, bezel: number, dpr: number): string {
   return `${w}:${h}:${radius}:${bezel}:${dpr}`
+}
+
+function evictOldestMapIfNeeded() {
+  if (globalMapCache.size <= MAX_GLOBAL_CACHE_SIZE) return
+  let oldestKey: string | null = null
+  let oldestTime = Infinity
+  for (const [k, v] of globalMapCache.entries()) {
+    if (v.refCount <= 0 && v.lastUsed < oldestTime) {
+      oldestTime = v.lastUsed
+      oldestKey = k
+    }
+  }
+  if (oldestKey) {
+    const evicted = globalMapCache.get(oldestKey)
+    if (evicted) {
+      evicted.img = null
+      URL.revokeObjectURL(evicted.url)
+      globalMapCache.delete(oldestKey)
+    }
+  }
+}
+
+function tryAcquireDecodedMap(
+  w: number,
+  h: number,
+  radius: number,
+  bezel: number,
+  dpr: number,
+): string | null {
+  const key = getMapCacheKey(w, h, radius, bezel, dpr)
+  const cached = globalMapCache.get(key)
+  if (!cached || !cached.decoded || !cached.url) return null
+  cached.refCount++
+  cached.lastUsed = Date.now()
+  return cached.url
 }
 
 function acquireDisplacementMap(
@@ -162,32 +250,40 @@ function acquireDisplacementMap(
 ): Promise<string> {
   const key = getMapCacheKey(w, h, radius, bezel, dpr)
   const cached = globalMapCache.get(key)
-  if (cached) {
+  if (cached && cached.decoded) {
     cached.refCount++
     cached.lastUsed = Date.now()
-    return preloadMapImage(cached.url).then(() => cached.url)
+    return Promise.resolve(cached.url)
   }
 
-  return buildDisplacementMap(w, h, radius, bezel, dpr).then(async url => {
-    await preloadMapImage(url)
-    globalMapCache.set(key, { url, refCount: 1, lastUsed: Date.now() })
-    if (globalMapCache.size > MAX_GLOBAL_CACHE_SIZE) {
-      let oldestKey: string | null = null
-      let oldestTime = Infinity
-      for (const [k, v] of globalMapCache.entries()) {
-        if (v.refCount <= 0 && v.lastUsed < oldestTime) {
-          oldestTime = v.lastUsed
-          oldestKey = k
-        }
-      }
-      if (oldestKey) {
-        const evicted = globalMapCache.get(oldestKey)
-        if (evicted) {
-          URL.revokeObjectURL(evicted.url)
-          globalMapCache.delete(oldestKey)
-        }
-      }
+  let build = inFlightMapBuilds.get(key)
+  if (!build) {
+    build = buildDisplacementMap(w, h, radius, bezel, dpr)
+      .then(async url => {
+        const img = await preloadMapImage(url)
+        return { url, img }
+      })
+      .finally(() => {
+        inFlightMapBuilds.delete(key)
+      })
+    inFlightMapBuilds.set(key, build)
+  }
+
+  return build.then(({ url, img }) => {
+    const existing = globalMapCache.get(key)
+    if (existing) {
+      existing.refCount++
+      existing.lastUsed = Date.now()
+      return existing.url
     }
+    globalMapCache.set(key, {
+      url,
+      img,
+      decoded: true,
+      refCount: 1,
+      lastUsed: Date.now(),
+    })
+    evictOldestMapIfNeeded()
     return url
   })
 }
@@ -249,10 +345,6 @@ function ensureDefs(): SVGDefsElement {
       stale.expose()
     }
   }
-  for (const item of globalMapCache.values()) {
-    URL.revokeObjectURL(item.url)
-  }
-  globalMapCache.clear()
 
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
   svg.setAttribute('width', '0')
@@ -323,6 +415,36 @@ function applyGlassAttrs(
   sat.setAttribute('values', params.sat.toFixed(2))
 }
 
+function bindFilterToEntry(
+  entry: GlassEntry,
+  url: string,
+  cacheKey: string,
+  target: { w: number; h: number; bezel: number; radius: number; dpr: number },
+  params: GlassParams,
+  dispMul: number,
+) {
+  const parts = createGlassFilter(ensureDefs(), `lgf-${++uidCounter}`)
+  parts.map.setAttribute('href', url)
+  const old = entry.filter
+  entry.filter = parts.filter
+  entry.map = parts.map
+  entry.dr = parts.dr
+  entry.dg = parts.dg
+  entry.db = parts.db
+  entry.blur = parts.blur
+  entry.sat = parts.sat
+  const prevKey = entry.mapCacheKey
+  entry.mapCacheKey = cacheKey
+  entry.geom = target
+  entry.pendingGeom = null
+  applyGlassAttrs(entry, params, dispMul, target.w, target.h)
+  entry.expose()
+  old?.remove()
+  if (prevKey && prevKey !== cacheKey) {
+    releaseDisplacementMap(prevKey)
+  }
+}
+
 function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, bezelMul: number) {
   const rect = entry.layer.getBoundingClientRect()
   const w = Math.round(rect.width)
@@ -350,6 +472,17 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
 
   const target = { w, h, bezel, radius, dpr }
   const cacheKey = getMapCacheKey(w, h, radius, bezel, dpr)
+
+  // Fast path: if the map is already decoded in globalMapCache (e.g. pre-baked
+  // during warmup), bind and expose synchronously inside the ResizeObserver pass
+  // so the first frame paints with the final filter without a 2nd-frame raster.
+  const syncUrl = tryAcquireDecodedMap(w, h, radius, bezel, dpr)
+  if (syncUrl) {
+    entry.mapGen++
+    bindFilterToEntry(entry, syncUrl, cacheKey, target, params, dispMul)
+    return
+  }
+
   entry.pendingGeom = target
   entry.mapGen++
   const gen = entry.mapGen
@@ -365,26 +498,7 @@ function updateGlass(entry: GlassEntry, params: GlassParams, dispMul: number, be
        * forcing Blink to re-resolve and raster with the real map on the first
        * pass — mutating href on an already-referenced filter races its async
        * blob fetch and can leave the refraction stuck empty. */
-      const parts = createGlassFilter(ensureDefs(), `lgf-${++uidCounter}`)
-      parts.map.setAttribute('href', url)
-      const old = entry.filter
-      entry.filter = parts.filter
-      entry.map = parts.map
-      entry.dr = parts.dr
-      entry.dg = parts.dg
-      entry.db = parts.db
-      entry.blur = parts.blur
-      entry.sat = parts.sat
-      const prevKey = entry.mapCacheKey
-      entry.mapCacheKey = cacheKey
-      entry.geom = target
-      entry.pendingGeom = null
-      applyGlassAttrs(entry, params, dispMul, w, h)
-      entry.expose()
-      old?.remove()
-      if (prevKey && prevKey !== cacheKey) {
-        releaseDisplacementMap(prevKey)
-      }
+      bindFilterToEntry(entry, url, cacheKey, target, params, dispMul)
       // Re-measure: if geometry drifted while this map was building, start one
       // catch-up build for the settled size; otherwise this returns via the
       // geom-equal attrs path at trivial cost.
@@ -481,6 +595,7 @@ export function useLiquidGlass(
  * Produces a subtle edge bend with slight blur and saturation boost. */
 let staticFilterId: string | null = null
 let staticBlobUrl: string | null = null
+let staticDecodedImg: HTMLImageElement | null = null
 let staticMapGen = 0
 let staticBuilding = false
 /* Readiness gate: consumers read this ref inside computed(), so flipping it
@@ -503,6 +618,7 @@ export function getStaticGlassFilterId(): string {
   const gen = staticMapGen
 
   if (staticBlobUrl) {
+    staticDecodedImg = null
     URL.revokeObjectURL(staticBlobUrl)
     staticBlobUrl = null
   }
@@ -546,13 +662,15 @@ export function getStaticGlassFilterId(): string {
         URL.revokeObjectURL(url)
         return
       }
-      await preloadMapImage(url)
+      const decodedImg = await preloadMapImage(url)
       if (gen !== staticMapGen || staticFilterId !== id) {
         URL.revokeObjectURL(url)
         return
       }
       const prev = staticBlobUrl
       staticBlobUrl = url
+      staticDecodedImg = decodedImg
+      void staticDecodedImg
       mapEl.setAttribute('href', url)
       dispEl.setAttribute('scale', '0.01')
       if (prev) URL.revokeObjectURL(prev)
@@ -590,18 +708,28 @@ export function warmupLiquidGlassPipeline(): void {
       createGlassFilter(defs, warmupId)
     }
 
-    // 3. Pre-bake the settings command-capsule geometries so first-open and
-    // first-expand hit the cache. Disposers are intentionally dropped — the
-    // entries stay pinned for the app's lifetime.
-    preloadDisplacementMap(164, 34, 17, 17) // docked: bezel clamps to minDim*0.5
-    preloadDisplacementMap(360, 228, 24, 24) // expanded, generic build (8 sections)
-    preloadDisplacementMap(360, 274, 24, 24) // expanded, extractor build (9 sections)
+    // 3. Pre-bake first-open geometries (docked capsule, sidebar nav button, and
+    // ThemeIcon sizes) immediately, then pre-bake expanded capsule sizes on idle.
+    preloadDisplacementMap(164, 34, 17, 17) // docked SettingsCommandCapsule
+    preloadDisplacementMap(200, 56, 24, 24) // Sidebar nav item
+    preloadDisplacementMap(32, 32, 16, 16) // UpdateSection ThemeIcon (32x32)
+    preloadDisplacementMap(42, 42, 16, 16) // Sidebar ThemeIcon (42x42)
 
-    // 4. Trigger GPU shader compilation with an offscreen probe element.
-    // The probe binds a real decoded map + nonzero displacement so the warmup
-    // exercises the true pipeline instead of rasterizing an empty feImage.
+    const scheduleIdle =
+      typeof window !== 'undefined' && 'requestIdleCallback' in window
+        ? window.requestIdleCallback
+        : (cb: () => void) => setTimeout(cb, 48)
+    scheduleIdle(() => {
+      preloadDisplacementMap(360, 228, 24, 24) // expanded capsule, generic build (8 sections)
+      preloadDisplacementMap(360, 274, 24, 24) // expanded capsule, extractor build (9 sections)
+    })
+
+    // 4. Trigger GPU shader compilation with a viewport-resident 2x2 probe.
+    // Offscreen probes (e.g. -9999px) are scissor-culled by Chromium's compositor
+    // before SkiaRenderer compiles the SVG backdrop-filter shaders. Keeping a 2x2
+    // probe inside the viewport across 2 rAF ticks guarantees shader compilation.
     const dpr = Math.min(window.devicePixelRatio || 1, 1)
-    acquireDisplacementMap(32, 32, 8, 8, dpr)
+    acquireDisplacementMap(32, 32, 16, 16, dpr)
       .then(url => {
         const filter = document.getElementById(warmupId)
         const mapEl = filter?.querySelector('.f-map')
@@ -611,11 +739,22 @@ export function warmupLiquidGlassPipeline(): void {
           filter.querySelector(cls)?.setAttribute('scale', '0.02')
         }
         const probe = document.createElement('div')
+        probe.setAttribute('aria-hidden', 'true')
         probe.style.cssText =
-          'position:fixed;top:-9999px;left:-9999px;width:16px;height:16px;opacity:0.001;pointer-events:none;backdrop-filter:blur(2px) url(#lg-warmup-probe);-webkit-backdrop-filter:blur(2px) url(#lg-warmup-probe);'
+          'position:fixed;right:0;bottom:0;width:2px;height:2px;opacity:0.01;pointer-events:none;z-index:-1;display:flex;'
+        const fullProbe = document.createElement('div')
+        fullProbe.style.cssText =
+          'width:1px;height:1px;backdrop-filter:blur(2px) url(#lg-warmup-probe);-webkit-backdrop-filter:blur(2px) url(#lg-warmup-probe);'
+        const staticProbe = document.createElement('div')
+        staticProbe.style.cssText =
+          'width:1px;height:1px;backdrop-filter:blur(12px) url(#static-glass-refraction);-webkit-backdrop-filter:blur(12px) url(#static-glass-refraction);'
+        probe.appendChild(fullProbe)
+        probe.appendChild(staticProbe)
         document.body.appendChild(probe)
         requestAnimationFrame(() => {
-          probe.remove()
+          requestAnimationFrame(() => {
+            probe.remove()
+          })
         })
       })
       .catch(() => {})

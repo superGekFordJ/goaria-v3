@@ -1,5 +1,10 @@
+<script lang="ts">
+  const sharedSliderMapCache = new Map<string, { blurX: number; blurY: number; url: string }>()
+</script>
+
 <script setup lang="ts">
-  import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+  import { ref, onMounted, onBeforeUnmount, useId, watch } from 'vue'
+  import { supportsUrlBackdropFilter } from '../../composables/useLiquidGlass'
 
   const props = withDefaults(
     defineProps<{
@@ -44,17 +49,9 @@
   const E_MAX = 0.32
   const E_GAIN = 1 / 2400
 
-  const SUPPORTS_URL_FILTER = (() => {
-    const brands = (navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } })
-      .userAgentData
-    if (brands?.brands?.some(b => /chromium/i.test(b.brand))) return true
-    return (
-      /Chrom(e|ium)/.test(navigator.userAgent) ||
-      !!(window as unknown as { chrome?: unknown }).chrome
-    )
-  })()
+  const SUPPORTS_URL_FILTER = supportsUrlBackdropFilter()
 
-  const filterId = ref('')
+  const filterId = `lgs-${useId()}`
   let filterEl: SVGFilterElement | null = null
   let fMap: SVGFEImageElement | null = null
   let fMapBlur: SVGFEGaussianBlurElement | null = null
@@ -62,6 +59,7 @@
   let fSat: SVGFEColorMatrixElement | null = null
   let defsEl: SVGDefsElement | null = null
   let svgRoot: SVGSVGElement | null = null
+  let backdropFilterBound = false
 
   let pressed = false
   let p = 0
@@ -75,16 +73,15 @@
   let mapBucket = -1
   let railWidth = 0
   let ro: ResizeObserver | null = null
-  let prebakeTimer: ReturnType<typeof setTimeout> | null = null
-  const mapCache = new Map<string, { blurX: number; blurY: number; url: string }>()
   /* DPR 1 is enough: the SDF field is smooth and gets blurred by f-map-blur
    * before sampling, so device-res maps buy nothing but 4x the bake cost. */
   const mapDpr = 1
 
   let currentW = THUMB_W
   let currentH = THUMB_H
+  let lastAppliedW = THUMB_W
+  let lastAppliedH = THUMB_H
   let currentCapturePad = 0
-  let isUnmounted = false
 
   function buildDisplacementMap(
     w: number,
@@ -108,44 +105,90 @@
     if (!ctx) return ''
     const img = ctx.createImageData(mapW, mapH)
     const data = img.data
+    const u32 = new Uint32Array(data.buffer, data.byteOffset, data.byteLength >> 2)
+    // Neutral pixel: R=128, G=128, B=128, A=255 (0xff808080 on little-endian)
+    u32.fill(0xff808080)
+
     const hw = lensW / 2
     const hh = lensH / 2
     const cx = mapW / 2
     const cy = mapH / 2
+    const halfW = Math.ceil(cx)
+    const halfH = Math.ceil(cy)
+    const innerHalfW = hw - r
+    const innerHalfH = hh - r
 
-    for (let y = 0; y < mapH; y++) {
-      for (let x = 0; x < mapW; x++) {
+    for (let y = 0; y < halfH; y++) {
+      const py = y + 0.5 - cy
+      const qy = -py - innerHalfH
+      const ay = Math.max(qy, 0)
+      const yBot = mapH - 1 - y
+      const rowTop = y * mapW
+      const rowBot = yBot * mapW
+
+      for (let x = 0; x < halfW; x++) {
         const px = x + 0.5 - cx
-        const py = y + 0.5 - cy
-        const qx = Math.abs(px) - (hw - r)
-        const qy = Math.abs(py) - (hh - r)
-        const ax = Math.max(qx, 0)
-        const ay = Math.max(qy, 0)
-        const sd = Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - r
-        const d = -sd
-        let nx = 0
-        let ny = 0
-        let mag = 0
-
-        if (d >= 0 && d < b) {
-          if (qx > 0 && qy > 0) {
-            const len = Math.hypot(ax, ay) || 1
-            nx = (ax / len) * Math.sign(px)
-            ny = (ay / len) * Math.sign(py)
-          } else if (qx > qy) {
-            nx = Math.sign(px)
-          } else {
-            ny = Math.sign(py)
+        const qx = -px - innerHalfW
+        if (qx <= 0 && qy <= 0) {
+          const d = r - Math.max(qx, qy)
+          if (d >= b) {
+            if (r - qy >= b) break
+            continue
           }
+          if (d < 0) continue
           const t = 1 - d / b
-          mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
+          const mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
+          const delta = 127.5 * mag
+          const negC = Math.round(127.5 + delta)
+          const posC = Math.round(127.5 - delta)
+          const xRight = mapW - 1 - x
+          if (qx > qy) {
+            const tl = (0xff808000 | negC) >>> 0
+            const tr = (0xff808000 | posC) >>> 0
+            u32[rowTop + x] = tl
+            u32[rowTop + xRight] = tr
+            u32[rowBot + x] = tl
+            u32[rowBot + xRight] = tr
+          } else {
+            const tl = (0xff800080 | (negC << 8)) >>> 0
+            const bl = (0xff800080 | (posC << 8)) >>> 0
+            u32[rowTop + x] = tl
+            u32[rowTop + xRight] = tl
+            u32[rowBot + x] = bl
+            u32[rowBot + xRight] = bl
+          }
+          continue
         }
 
-        const i = (y * mapW + x) * 4
-        data[i] = Math.round(127.5 - 127.5 * nx * mag)
-        data[i + 1] = Math.round(127.5 - 127.5 * ny * mag)
-        data[i + 2] = 128
-        data[i + 3] = 255
+        const ax = Math.max(qx, 0)
+        const sd = Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - r
+        const d = -sd
+        if (d < 0 || d >= b) continue
+
+        const t = 1 - d / b
+        const mag = 1 - Math.sqrt(Math.max(0, 1 - t * t))
+        let dx = 0
+        let dy = 0
+        if (qx > 0 && qy > 0) {
+          const len = Math.hypot(ax, ay) || 1
+          dx = (127.5 * ax * mag) / len
+          dy = (127.5 * ay * mag) / len
+        } else if (qx > qy) {
+          dx = 127.5 * mag
+        } else {
+          dy = 127.5 * mag
+        }
+
+        const rLeft = Math.round(127.5 + dx)
+        const rRight = Math.round(127.5 - dx)
+        const gTop = Math.round(127.5 + dy)
+        const gBot = Math.round(127.5 - dy)
+        const xRight = mapW - 1 - x
+
+        u32[rowTop + x] = (0xff800000 | (gTop << 8) | rLeft) >>> 0
+        u32[rowTop + xRight] = (0xff800000 | (gTop << 8) | rRight) >>> 0
+        u32[rowBot + x] = (0xff800000 | (gBot << 8) | rLeft) >>> 0
+        u32[rowBot + xRight] = (0xff800000 | (gBot << 8) | rRight) >>> 0
       }
     }
     ctx.putImageData(img, 0, 0)
@@ -157,12 +200,10 @@
   }
 
   function ensureFilter() {
-    const uid = `lgs-${Math.random().toString(36).slice(2, 9)}`
-    filterId.value = uid
     // Skip the SVG filter DOM entirely on non-Chromium engines — the url()
     // backdrop-filter is never applied there, and building canvas maps would
     // still trigger Firefox's canvas-extraction permission prompt.
-    if (!SUPPORTS_URL_FILTER) return
+    if (!SUPPORTS_URL_FILTER || filterEl) return
 
     svgRoot = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
     svgRoot.setAttribute('width', '0')
@@ -174,7 +215,7 @@
     document.body.appendChild(svgRoot)
 
     filterEl = document.createElementNS('http://www.w3.org/2000/svg', 'filter')
-    filterEl.id = uid
+    filterEl.id = filterId
     filterEl.setAttribute('x', '0%')
     filterEl.setAttribute('y', '0%')
     filterEl.setAttribute('width', '100%')
@@ -193,17 +234,20 @@
     fMapBlur = filterEl.querySelector('.f-map-blur') as SVGFEGaussianBlurElement
     fDisp = filterEl.querySelector('.f-disp') as SVGFEDisplacementMapElement
     fSat = filterEl.querySelector('.f-sat') as SVGFEColorMatrixElement
+  }
 
-    if (SUPPORTS_URL_FILTER && refractRef.value) {
-      const style = refractRef.value.style as CSSStyleDeclaration & { webkitBackdropFilter: string }
-      style.backdropFilter = `url(#${uid})`
-      style.webkitBackdropFilter = `url(#${uid})`
-    }
+  function setBackdropFilterActive(active: boolean) {
+    if (!SUPPORTS_URL_FILTER || !refractRef.value || backdropFilterBound === active) return
+    backdropFilterBound = active
+    const style = refractRef.value.style as CSSStyleDeclaration & { webkitBackdropFilter: string }
+    const val = active ? `url(#${filterId})` : 'none'
+    style.backdropFilter = val
+    style.webkitBackdropFilter = val
   }
 
   function getOrCreateEntry(bucket: number) {
     const key = bucket.toFixed(3)
-    let entry = mapCache.get(key)
+    let entry = sharedSliderMapCache.get(key)
     if (!entry) {
       const mapShapeW = THUMB_W * MAX_LIFT * (1 + bucket)
       const mapShapeH = THUMB_H * MAX_LIFT * (1 - bucket * 0.55)
@@ -220,38 +264,9 @@
         blurY: 0.32 / (mapShapeH + MAP_PAD * 2),
         url,
       }
-      mapCache.set(key, entry)
+      sharedSliderMapCache.set(key, entry)
     }
     return entry
-  }
-
-  function prebakeBuckets() {
-    if (!SUPPORTS_URL_FILTER) return
-    const buckets: number[] = []
-    for (let b = 0; b <= 0.325; b += 0.025) {
-      buckets.push(Number(b.toFixed(3)))
-    }
-
-    let i = 0
-    function step() {
-      if (isUnmounted || i >= buckets.length) return
-      // Bake 2 buckets per idle tick
-      getOrCreateEntry(buckets[i++])
-      if (i < buckets.length) getOrCreateEntry(buckets[i++])
-      if (i < buckets.length) {
-        if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-          window.requestIdleCallback(step, { timeout: 200 })
-        } else {
-          setTimeout(step, 16)
-        }
-      }
-    }
-
-    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
-      window.requestIdleCallback(step, { timeout: 300 })
-    } else {
-      setTimeout(step, 16)
-    }
   }
 
   function syncMap(shapeDef: number) {
@@ -259,11 +274,10 @@
     const bucket = Math.round(Math.min(0.32, Math.abs(shapeDef)) / 0.025) * 0.025
     if (bucket === mapBucket) return
     const key = bucket.toFixed(3)
-    let entry = mapCache.get(key)
+    let entry = sharedSliderMapCache.get(key)
     if (!entry) {
       /* At rest the displacement scale is 0, so the map is never sampled —
-       * skip the synchronous canvas build during mount. prebakeBuckets() fills
-       * the cache during idle; first press builds on demand. */
+       * skip the synchronous canvas build unless pressed/lifted. */
       if (!pressed && p < 0.002) return
       entry = getOrCreateEntry(bucket)
     }
@@ -289,14 +303,17 @@
     const currentTr = currentH / 2
     syncMap(def)
 
-    thumb.style.width = `${currentW}px`
-    thumb.style.height = `${currentH}px`
-    thumb.style.borderRadius = `${currentTr}px`
-
     const pct = (localValue.value - props.min) / (props.max - props.min)
     const x = pct * railWidth
     thumb.style.transform = `translate3d(calc(${x}px - 50%), -50%, 0)`
 
+    if (currentW === lastAppliedW && currentH === lastAppliedH) return
+    lastAppliedW = currentW
+    lastAppliedH = currentH
+
+    thumb.style.width = `${currentW}px`
+    thumb.style.height = `${currentH}px`
+    thumb.style.borderRadius = `${currentTr}px`
     refract.style.inset = `${-currentCapturePad}px`
 
     if (rimRef.value && rimRectRef.value) {
@@ -348,6 +365,7 @@
       raf = 0
       applyStyles()
       applyLens()
+      setBackdropFilterActive(false)
       return
     }
     applyStyles()
@@ -373,7 +391,7 @@
     return Math.max(props.min, Math.min(props.max, stepped))
   }
 
-  function render() {
+  function render(syncThumb = true) {
     const fill = fillRef.value
     const root = rootRef.value
     if (!fill || !root) return
@@ -381,14 +399,22 @@
     fill.style.width = `${pct * 100}%`
     root.setAttribute('aria-valuenow', String(Math.round(localValue.value)))
 
-    if (!raf) {
+    if (syncThumb && !raf) {
       applyStyles()
     }
+  }
+
+  function onPointerEnter() {
+    if (!SUPPORTS_URL_FILTER) return
+    ensureFilter()
+    getOrCreateEntry(0)
   }
 
   function onPointerDown(e: PointerEvent) {
     const root = rootRef.value
     if (!root) return
+    ensureFilter()
+    setBackdropFilterActive(true)
     root.setPointerCapture(e.pointerId)
     pressed = true
     thumbRef.value?.classList.add('pressed')
@@ -448,7 +474,9 @@
 
   onMounted(() => {
     /* railWidth comes from the RO initial notification (post-layout) — a
-     * getBoundingClientRect here would force a synchronous layout mid-mount. */
+     * getBoundingClientRect here would force a synchronous layout mid-mount.
+     * At rest the thumb is 100% opaque, so SVG filter creation and
+     * backdrop-filter binding stay deferred until pointer interaction. */
     ro = new ResizeObserver(entries => {
       if (entries[0]) {
         railWidth = entries[0].contentRect.width
@@ -456,24 +484,14 @@
       }
     })
     if (railRef.value) ro.observe(railRef.value)
-
-    ensureFilter()
-    render()
-    applyLens()
-    /* Defer bucket baking past the panel's first-paint window so the canvas
-     * work can't extend the opening interaction's latency. */
-    prebakeTimer = setTimeout(prebakeBuckets, 700)
+    render(false)
   })
 
   onBeforeUnmount(() => {
-    isUnmounted = true
-    if (prebakeTimer) {
-      clearTimeout(prebakeTimer)
-      prebakeTimer = null
-    }
     if (ro) ro.disconnect()
     if (raf) cancelAnimationFrame(raf)
     mapBucket = -1
+    backdropFilterBound = false
     fMap = null
     fMapBlur = null
     fDisp = null
@@ -482,10 +500,6 @@
     if (svgRoot) svgRoot.remove()
     svgRoot = null
     defsEl = null
-    for (const entry of mapCache.values()) {
-      if (entry.url && entry.url.startsWith('blob:')) URL.revokeObjectURL(entry.url)
-    }
-    mapCache.clear()
   })
 </script>
 
@@ -500,6 +514,7 @@
     :aria-valuemax="max"
     :aria-valuenow="modelValue"
     :aria-valuetext="ariaValuetext"
+    @pointerenter="onPointerEnter"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="release"
@@ -643,7 +658,6 @@
     z-index: 1;
     border-radius: inherit;
     pointer-events: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
     background-size: 120px 120px;
     opacity: 0;
     transition: opacity 0.2s ease;
@@ -671,6 +685,7 @@
   }
 
   .lgs-thumb.pressed .lgs-noise {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
     opacity: 0.05;
   }
 

@@ -1,3 +1,7 @@
+<script lang="ts">
+  let cachedAppVersion: string | null = null
+</script>
+
 <script setup lang="ts">
   import { ref, computed, onMounted, onUnmounted } from 'vue'
   import { useI18n } from 'vue-i18n'
@@ -33,7 +37,7 @@
 
   const { t } = useI18n()
 
-  const currentVersion = ref('...')
+  const currentVersion = ref(cachedAppVersion ?? '...')
   const status = ref<'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'>('idle')
   const latestVersion = ref('')
   const assetURL = ref('')
@@ -60,11 +64,14 @@
   const unsubs: Array<() => void> = []
 
   onMounted(async () => {
-    try {
-      const ver = await GetAppVersion()
-      currentVersion.value = ver
-    } catch {
-      currentVersion.value = 'unknown'
+    if (!cachedAppVersion) {
+      try {
+        const ver = await GetAppVersion()
+        cachedAppVersion = ver
+        currentVersion.value = ver
+      } catch {
+        currentVersion.value = 'unknown'
+      }
     }
 
     // Listen for update status events

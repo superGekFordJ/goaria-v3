@@ -106,4 +106,30 @@ describe('LiquidGlassSlider', () => {
     await slider.trigger('keydown', { key: 'PageDown' })
     expect(wrapper.emitted('update:modelValue')![1]).toEqual([0])
   })
+
+  it('defers SVG filter DOM and canvas baking on mount until pointer interaction', async () => {
+    ;(window as unknown as { chrome?: unknown }).chrome = {}
+    toDataURLSpy?.mockClear()
+    const wrapper = mount(LiquidGlassSlider, {
+      attachTo: document.body,
+      props: {
+        modelValue: 50,
+        min: 0,
+        max: 100,
+        step: 1,
+      },
+    })
+
+    const refract = wrapper.find('.lgs-refract').element as HTMLElement
+    expect(refract.style.backdropFilter).toBe('')
+    expect(toDataURLSpy).not.toHaveBeenCalled()
+
+    await wrapper.find('.lgs').trigger('pointerenter')
+    expect(toDataURLSpy).toHaveBeenCalledTimes(1)
+    // Still at rest on hover: backdrop-filter stays unbound while thumb is opaque
+    expect(refract.style.backdropFilter).toBe('')
+
+    wrapper.unmount()
+    delete (window as unknown as { chrome?: unknown }).chrome
+  })
 })

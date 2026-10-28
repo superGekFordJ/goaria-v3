@@ -1,5 +1,46 @@
+<script lang="ts">
+  import { ref as sharedRef } from 'vue'
+
+  const sharedResolvedTheme = sharedRef<'light' | 'dark'>('dark')
+  let sharedThemeObserver: MutationObserver | null = null
+  let sharedObserverSubscribers = 0
+
+  function syncSharedTheme() {
+    if (typeof document === 'undefined') return
+    const theme = document.documentElement.getAttribute('data-theme')
+    sharedResolvedTheme.value = theme === 'light' ? 'light' : 'dark'
+  }
+
+  function retainThemeObserver() {
+    if (typeof document === 'undefined') return
+    if (sharedObserverSubscribers === 0) {
+      syncSharedTheme()
+      sharedThemeObserver = new MutationObserver(mutations => {
+        for (const mutation of mutations) {
+          if (mutation.attributeName === 'data-theme') {
+            syncSharedTheme()
+          }
+        }
+      })
+      sharedThemeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme'],
+      })
+    }
+    sharedObserverSubscribers++
+  }
+
+  function releaseThemeObserver() {
+    sharedObserverSubscribers = Math.max(0, sharedObserverSubscribers - 1)
+    if (sharedObserverSubscribers === 0 && sharedThemeObserver) {
+      sharedThemeObserver.disconnect()
+      sharedThemeObserver = null
+    }
+  }
+</script>
+
 <script setup lang="ts">
-  import { computed, onMounted, onUnmounted, ref } from 'vue'
+  import { computed, onMounted, onUnmounted } from 'vue'
   import LiquidGlassPanel from './LiquidGlassPanel.vue'
   import darkIcon from '../../assets/icons/dark.svg'
   import lightIcon from '../../assets/icons/light.svg'
@@ -18,32 +59,14 @@
 
   // Computed for template usage
   const iconSize = computed(() => props.size)
-
-  // Track current resolved theme
-  const resolvedTheme = ref<'light' | 'dark'>('dark')
-
-  const updateTheme = () => {
-    const theme = document.documentElement.getAttribute('data-theme')
-    resolvedTheme.value = theme === 'light' ? 'light' : 'dark'
-  }
-
-  // Observe data-theme attribute changes
-  let observer: MutationObserver | null = null
+  const resolvedTheme = sharedResolvedTheme
 
   onMounted(() => {
-    updateTheme()
-    observer = new MutationObserver(mutations => {
-      for (const mutation of mutations) {
-        if (mutation.attributeName === 'data-theme') {
-          updateTheme()
-        }
-      }
-    })
-    observer.observe(document.documentElement, { attributes: true })
+    retainThemeObserver()
   })
 
   onUnmounted(() => {
-    observer?.disconnect()
+    releaseThemeObserver()
   })
 </script>
 
