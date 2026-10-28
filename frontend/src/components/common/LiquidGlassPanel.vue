@@ -1,7 +1,7 @@
 <script setup lang="ts">
   import { computed, ref } from 'vue'
   import { useUIStore } from '../../stores/ui'
-  import { useLiquidGlass, getStaticGlassFilterId } from '../../composables/useLiquidGlass'
+  import { useLiquidGlass } from '../../composables/useLiquidGlass'
 
   const props = withDefaults(
     defineProps<{
@@ -36,9 +36,6 @@
   // automatically when this ref changes (e.g. effects toggle, active state change).
   const refractionLayer = ref<HTMLElement | null>(null)
   const { filterId } = useLiquidGlass(refractionLayer)
-
-  // Shared static refraction filter id for the balanced tier (no dynamic SDF).
-  const staticFilterId = computed(() => getStaticGlassFilterId())
 </script>
 
 <template>
@@ -100,22 +97,15 @@
       ></div>
     </template>
     <template v-else-if="uiStore.effectsTier === 'balanced'">
-      <!-- Balanced: static glass + bevel + shared static refraction (no dynamic SDF, no specular ring) -->
+      <!-- Balanced: static glass + bevel (native CSS blur, no SVG refraction filter, no specular ring) -->
       <div
         v-if="active"
         class="absolute top-0 left-0 -z-10 h-full w-full overflow-hidden transition-all duration-300 pointer-events-none"
         :class="[radius, baseColorClass]"
-        :style="
-          staticFilterId
-            ? {
-                backdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
-                WebkitBackdropFilter: `blur(var(--glass-blur)) url(#${staticFilterId})`,
-              }
-            : {
-                backdropFilter: `blur(var(--glass-blur))`,
-                WebkitBackdropFilter: `blur(var(--glass-blur))`,
-              }
-        "
+        :style="{
+          backdropFilter: `blur(var(--glass-blur))`,
+          WebkitBackdropFilter: `blur(var(--glass-blur))`,
+        }"
       ></div>
       <div v-else-if="isInteractive" class="glass-hover-surface -z-10" :class="[radius]"></div>
       <div

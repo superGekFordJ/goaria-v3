@@ -40,7 +40,7 @@ const taskStoreMock = reactive({
 })
 
 const uiStoreMock = reactive({
-  activeTab: 'downloads' as 'downloads' | 'stopped',
+  activeTab: 'downloads' as 'downloads' | 'stopped' | 'settings',
   effectsTier: 'full' as 'full' | 'balanced' | 'reduced',
 })
 
@@ -552,5 +552,25 @@ describe('TaskList FLIP guards', () => {
 
     expect(flipMocks.capture).toHaveBeenCalled()
     expect(flipMocks.play).toHaveBeenCalled()
+  })
+
+  it('does not recompute stopped entries or capture FLIP rects when switching activeTab to settings', async () => {
+    taskStoreMock.activeTasks = createTasks(2, 'active')
+    taskStoreMock.stoppedTasks = createTasks(5, 'complete', 10)
+    uiStoreMock.activeTab = 'downloads'
+
+    const wrapper = mountTaskList()
+    await settle()
+    expect(wrapper.findAll('.task-card-stub')).toHaveLength(2)
+    flipMocks.capture.mockClear()
+    flipMocks.play.mockClear()
+
+    uiStoreMock.activeTab = 'settings'
+    await settle()
+
+    // Retains downloads entries without switching to stoppedTasks or running FLIP capture/play
+    expect(wrapper.findAll('.task-card-stub')).toHaveLength(2)
+    expect(flipMocks.capture).not.toHaveBeenCalled()
+    expect(flipMocks.play).not.toHaveBeenCalled()
   })
 })

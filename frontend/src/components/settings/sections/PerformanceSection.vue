@@ -50,6 +50,10 @@
 
   const showConnectionsDropdown = ref(false)
   const connectionsDropdownRef = ref<HTMLElement | null>(null)
+  const tooltipsReady = ref(false)
+  const enableTooltips = () => {
+    tooltipsReady.value = true
+  }
 
   const handleClickOutsideConnections = (event: MouseEvent) => {
     if (
@@ -134,10 +138,15 @@
           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
         >
           {{ t('performance.maxConnections') }}
-          <div class="group relative flex items-center">
+          <div
+            class="group relative flex items-center"
+            @pointerenter="enableTooltips"
+            @focusin="enableTooltips"
+          >
             <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
             <!-- Tooltip Popup -->
             <div
+              v-if="tooltipsReady"
               class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[min(20rem,70vw)] p-2.5 rounded-lg glass-panel-solid [backdrop-filter:none] group-hover:[backdrop-filter:blur(24px)] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-30 text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
             >
               {{ t('performance.surgeExclusiveTooltip') }}
@@ -195,10 +204,15 @@
           class="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[var(--app-text-subtle)]"
         >
           {{ t('performance.maxConcurrent') }}
-          <div class="group relative flex items-center">
+          <div
+            class="group relative flex items-center"
+            @pointerenter="enableTooltips"
+            @focusin="enableTooltips"
+          >
             <Info :size="12" class="cursor-help hover:text-[var(--app-text)] transition-colors" />
             <!-- Tooltip Popup -->
             <div
+              v-if="tooltipsReady"
               class="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-80 max-w-[min(20rem,70vw)] p-2.5 rounded-lg glass-panel-solid [backdrop-filter:none] group-hover:[backdrop-filter:blur(24px)] opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-30 text-center text-[10px] font-medium normal-case tracking-normal pointer-events-none"
             >
               {{ t('performance.concurrentTooltip') }}

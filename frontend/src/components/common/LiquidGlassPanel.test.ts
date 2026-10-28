@@ -77,7 +77,7 @@ describe('LiquidGlassPanel', () => {
     expect(innerGlow.exists()).toBe(true)
   })
 
-  it('balanced tier drops dynamic SDF and specular ring but keeps bevel + static refraction', () => {
+  it('balanced tier drops dynamic SDF, static SVG refraction, and specular ring but keeps bevel + native blur', () => {
     uiStoreMock.effectsTier = 'balanced'
     const wrapper = mount(LiquidGlassPanel)
 
@@ -91,7 +91,8 @@ describe('LiquidGlassPanel', () => {
     // Bevel is retained in balanced
     expect(wrapper.find('.lg-bevel').exists()).toBe(true)
 
-    // Shared static refraction filter id is applied via backdrop-filter
-    expect(html).toContain('static-glass-filter')
+    // Native blur is applied without SVG filter fallback
+    expect(html).toContain('blur(var(--glass-blur))')
+    expect(html).not.toContain('static-glass-filter')
   })
 })

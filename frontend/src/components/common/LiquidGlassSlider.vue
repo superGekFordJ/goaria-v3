@@ -101,7 +101,7 @@
     const canvas = document.createElement('canvas')
     canvas.width = mapW
     canvas.height = mapH
-    const ctx = canvas.getContext('2d')
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return ''
     const img = ctx.createImageData(mapW, mapH)
     const data = img.data

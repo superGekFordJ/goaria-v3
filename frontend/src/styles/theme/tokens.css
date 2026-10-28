@@ -30,7 +30,8 @@
 
   /* Typography */
   --font-family-ui: 'Sarasa UI SC', 'Inter', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-family-mono: 'JetBrains Mono', 'Consolas', 'Monaco', monospace;
+  --font-family-mono: 'JetBrains Mono', 'Sarasa UI SC', 'Consolas', 'Monaco', monospace;
+  --font-mono: 'JetBrains Mono', 'Sarasa UI SC', 'Consolas', 'Monaco', monospace;
 
   /* Squircle Radii */
   --radius-squircle-sm: 1rem;

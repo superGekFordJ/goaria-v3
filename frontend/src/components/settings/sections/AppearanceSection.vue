@@ -305,13 +305,18 @@
                       : `linear-gradient(135deg, ${resolvedTheme === 'light' ? skin.preview.light.from : skin.preview.dark.from}, ${resolvedTheme === 'light' ? skin.preview.light.to : skin.preview.dark.to})`,
                 }"
               >
-                <!-- Prism: Celestial star flare with subtle hover micro-interaction -->
-                <span
+                <!-- Prism: Celestial star flare with subtle hover micro-interaction (inline SVG avoids CJK/Symbol font fallback IPC) -->
+                <svg
                   v-if="skin.id === 'prism'"
-                  class="text-[11px] text-white font-bold drop-shadow-[0_1px_2px_rgba(0,0,0,0.6)] select-none transition-transform duration-200 group-hover:scale-110 group-hover:rotate-12"
+                  viewBox="0 0 12 12"
+                  aria-hidden="true"
+                  class="w-3 h-3 text-white select-none transition-transform duration-200 group-hover:scale-110 group-hover:rotate-12"
                 >
-                  ✦
-                </span>
+                  <path
+                    fill="currentColor"
+                    d="M6 0.5 C6.35 3.65 8.35 5.65 11.5 6 C8.35 6.35 6.35 8.35 6 11.5 C5.65 8.35 3.65 6.35 0.5 6 C3.65 5.65 5.65 3.65 6 0.5 Z"
+                  />
+                </svg>
               </div>
             </div>
 
@@ -348,7 +353,7 @@
             <!-- If Prism: Dynamic Hue Badge -->
             <span
               v-if="uiStore.skinId === 'prism'"
-              class="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-[var(--neon-primary)]/20 text-[var(--neon-primary)] border border-[var(--neon-primary)]/30"
+              class="text-[9px] font-mono-data font-bold px-2 py-0.5 rounded-full bg-[var(--neon-primary)]/20 text-[var(--neon-primary)] border border-[var(--neon-primary)]/30"
             >
               {{ uiStore.prismHue }}°
             </span>
@@ -425,10 +430,10 @@
           class="specimen-card shrink-0 w-48 sm:w-52 p-3 rounded-xl bg-white/75 dark:bg-black/30 border border-black/5 dark:border-[var(--glass-border)] shadow-xs flex flex-col justify-between"
         >
           <div
-            class="flex items-center justify-between text-[9px] font-mono text-[var(--app-text-subtle)] font-medium"
+            class="flex items-center justify-between text-[9px] font-mono-data text-[var(--app-text-subtle)] font-medium"
           >
             <span class="tracking-wider uppercase">LIVE SPECIMEN</span>
-            <span class="font-mono font-bold text-[var(--neon-primary)]">28.4 MB/s</span>
+            <span class="font-mono-data font-bold text-[var(--neon-primary)]">28.4 MB/s</span>
           </div>
           <div class="my-1.5">
             <div

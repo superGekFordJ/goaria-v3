@@ -608,19 +608,6 @@
   [data-settings-section] {
     scroll-margin-top: 62px;
     border-radius: var(--radius-squircle-lg);
-    /* Off-screen sections skip layout/paint on first mount; the intrinsic
-     * estimate keeps the scrollbar stable until each real size is rendered. */
-    content-visibility: auto;
-    contain-intrinsic-size: auto 300px;
-  }
-
-  /* content-visibility: auto implies paint containment, which clips the
-   * dropdown menu at the section edge and traps the card's z-20 dynamic
-   * elevation inside a forced stacking context. An interacted section is
-   * on-screen anyway, so lifting containment here costs nothing. */
-  [data-settings-section]:hover,
-  [data-settings-section]:focus-within {
-    content-visibility: visible;
   }
 
   [data-settings-section]:focus-visible {

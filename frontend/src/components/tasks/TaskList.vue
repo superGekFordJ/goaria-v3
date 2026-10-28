@@ -81,10 +81,30 @@
   // Error Filter State
   const errorFilterActive = ref(false)
 
+  // Retain the last task tab ('downloads' | 'stopped') when navigating away to 'settings'
+  // so <KeepAlive> deactivation does not recompute displayEntries as 'stopped' or trigger FLIP capture.
+  const lastTaskTab = ref<'downloads' | 'stopped'>(
+    uiStore.activeTab === 'stopped' ? 'stopped' : 'downloads',
+  )
+  watch(
+    () => uiStore.activeTab,
+    tab => {
+      if (tab === 'downloads' || tab === 'stopped') {
+        lastTaskTab.value = tab
+      }
+    },
+    { flush: 'sync' },
+  )
+  const currentTaskTab = computed<'downloads' | 'stopped'>(() =>
+    uiStore.activeTab === 'downloads' || uiStore.activeTab === 'stopped'
+      ? uiStore.activeTab
+      : lastTaskTab.value,
+  )
+
   const errorCount = computed(() => taskStore.stoppedTasks.filter(t => t.status === 'error').length)
 
   const isErrorFilterActive = computed(
-    () => !isGroupDetailMode.value && uiStore.activeTab === 'stopped' && errorFilterActive.value,
+    () => !isGroupDetailMode.value && currentTaskTab.value === 'stopped' && errorFilterActive.value,
   )
 
   // Error filter toggle — additive (AND) with search query, no dismissal
@@ -183,7 +203,7 @@
         key: `task:${task.gid}`,
         task,
       }))
-    } else if (uiStore.activeTab === 'downloads') {
+    } else if (currentTaskTab.value === 'downloads') {
       rawEntries = buildInlineTaskListEntries({
         tab: 'downloads',
         tasks: combinedDownloads.value,
@@ -229,7 +249,7 @@
   const isSearchEmpty = computed(() => {
     return (
       !isGroupDetailMode.value &&
-      uiStore.activeTab === 'stopped' &&
+      currentTaskTab.value === 'stopped' &&
       searchQuery.value.trim() !== '' &&
       displayEntries.value.length === 0
     )
@@ -261,7 +281,7 @@
       }
     }
 
-    if (uiStore.activeTab === 'downloads') {
+    if (currentTaskTab.value === 'downloads') {
       return {
         icon: Download,
         title: t('taskList.noDownloads'),
@@ -361,14 +381,21 @@
     if (isGroupDetailMode.value) {
       return sameDisplayIdentity(next, prev)
     }
-    return uiStore.activeTab === 'downloads' && sameDisplayIdentity(next, prev)
+    return currentTaskTab.value === 'downloads' && sameDisplayIdentity(next, prev)
   }
 
   // Pre-watcher captures First rects before Vue patches DOM
   watch(
     displayEntries,
     (newList, oldList) => {
-      if (!isPanelActive.value) return
+      if (
+        !isPanelActive.value ||
+        (!isGroupDetailMode.value &&
+          uiStore.activeTab !== 'downloads' &&
+          uiStore.activeTab !== 'stopped')
+      ) {
+        return
+      }
       if (isIdentitySkip(newList, oldList)) return
       capture(oldList?.map(entry => entry.key))
     },
@@ -428,7 +455,15 @@
       // cycle that had nothing to animate would leak it into the next one.
       const skip = skipNextFlip.value
       skipNextFlip.value = false
-      if (skip || !isPanelActive.value) return
+      if (
+        skip ||
+        !isPanelActive.value ||
+        (!isGroupDetailMode.value &&
+          uiStore.activeTab !== 'downloads' &&
+          uiStore.activeTab !== 'stopped')
+      ) {
+        return
+      }
       if (!oldList || oldList.length === 0) return
       // Reduced effects: snap to new positions instantly, no FLIP transition.
       if (uiStore.effectsTier === 'reduced') return
@@ -661,13 +696,10 @@
 <template>
   <div class="flex-1 flex flex-col min-h-0">
     <!-- Task Addition Header (only in downloads tab) -->
-    <TaskHeader v-if="!isGroupDetailMode && uiStore.activeTab === 'downloads'" />
+    <TaskHeader v-if="!isGroupDetailMode && currentTaskTab === 'downloads'" />
 
     <!-- Search Box (only in stopped tab) — outside scroll container -->
-    <TaskSearch
-      v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'"
-      v-model="searchQuery"
-    />
+    <TaskSearch v-if="!isGroupDetailMode && currentTaskTab === 'stopped'" v-model="searchQuery" />
 
     <!-- Task List Container -->
     <div ref="taskContainer" class="flex-1 min-h-0 relative">
@@ -685,7 +717,7 @@
         <div class="relative">
           <Transition name="filter-chips-fade">
             <div
-              v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
+              v-if="!isGroupDetailMode && currentTaskTab === 'stopped' && errorCount > 0"
               class="filter-chips-row"
             >
               <ErrorFilterTag
@@ -701,17 +733,17 @@
       <!-- Non-virtual path -->
       <div
         v-if="displayEntries.length > 0 && !useVirtualList"
-        :key="isGroupDetailMode ? `group-detail:${props.detailKey}` : uiStore.activeTab"
+        :key="isGroupDetailMode ? `group-detail:${props.detailKey}` : currentTaskTab"
         data-task-scroll-root
         class="h-full overflow-y-auto px-5 pb-4"
-        :class="{ 'pt-4': isGroupDetailMode || uiStore.activeTab !== 'stopped' }"
+        :class="{ 'pt-4': isGroupDetailMode || currentTaskTab !== 'stopped' }"
       >
         <!-- Sticky header area -->
         <div class="sticky top-0 z-40 pointer-events-none">
           <!-- Sticky filter chips row (stopped tab only) -->
           <Transition name="filter-chips-fade">
             <div
-              v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
+              v-if="!isGroupDetailMode && currentTaskTab === 'stopped' && errorCount > 0"
               class="filter-chips-row"
             >
               <ErrorFilterTag
@@ -722,7 +754,7 @@
             </div>
           </Transition>
           <!-- Permanent gap above first card (transparent, cards scroll behind it visibly) -->
-          <div v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'" class="h-4"></div>
+          <div v-if="!isGroupDetailMode && currentTaskTab === 'stopped'" class="h-4"></div>
         </div>
 
         <div class="flex flex-col gap-4">
@@ -759,7 +791,7 @@
         v-else-if="displayEntries.length > 0"
         data-task-scroll-root
         class="h-full px-5 pb-4"
-        :class="{ 'pt-4': isGroupDetailMode || uiStore.activeTab !== 'stopped' }"
+        :class="{ 'pt-4': isGroupDetailMode || currentTaskTab !== 'stopped' }"
         :items="displayEntries"
         :item-size="null"
         size-field="size"
@@ -770,7 +802,7 @@
           <!-- Sticky filter chips row (stopped tab only) -->
           <Transition name="filter-chips-fade">
             <div
-              v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped' && errorCount > 0"
+              v-if="!isGroupDetailMode && currentTaskTab === 'stopped' && errorCount > 0"
               class="filter-chips-row"
             >
               <ErrorFilterTag
@@ -781,7 +813,7 @@
             </div>
           </Transition>
           <!-- Permanent gap for the first card that cards can visibly scroll behind -->
-          <div v-if="!isGroupDetailMode && uiStore.activeTab === 'stopped'" class="h-4"></div>
+          <div v-if="!isGroupDetailMode && currentTaskTab === 'stopped'" class="h-4"></div>
         </template>
 
         <template #default="{ item }">

@@ -64,7 +64,7 @@ function buildDisplacementMap(
   const canvas = document.createElement('canvas')
   canvas.width = W
   canvas.height = H
-  const ctx = canvas.getContext('2d')
+  const ctx = canvas.getContext('2d', { willReadFrequently: true })
   if (!ctx) return Promise.resolve('')
   const img = ctx.createImageData(W, H)
   const data = img.data
@@ -698,17 +698,14 @@ export function warmupLiquidGlassPipeline(): void {
   if (hasWarmedUp || typeof document === 'undefined' || !supportsUrlBackdropFilter()) return
   hasWarmedUp = true
   try {
-    // 1. Pre-warm static glass filter and its 256x256 SDF map
-    getStaticGlassFilterId()
-
-    // 2. Pre-warm full liquid glass filter template in DOM
+    // 1. Pre-warm full liquid glass filter template in DOM
     const defs = ensureDefs()
     const warmupId = 'lg-warmup-probe'
     if (!document.getElementById(warmupId)) {
       createGlassFilter(defs, warmupId)
     }
 
-    // 3. Pre-bake first-open geometries (docked capsule, sidebar nav button, and
+    // 2. Pre-bake first-open geometries (docked capsule, sidebar nav button, and
     // ThemeIcon sizes) immediately, then pre-bake expanded capsule sizes on idle.
     preloadDisplacementMap(164, 34, 17, 17) // docked SettingsCommandCapsule
     preloadDisplacementMap(200, 56, 24, 24) // Sidebar nav item
@@ -724,7 +721,7 @@ export function warmupLiquidGlassPipeline(): void {
       preloadDisplacementMap(360, 274, 24, 24) // expanded capsule, extractor build (9 sections)
     })
 
-    // 4. Trigger GPU shader compilation with a viewport-resident 2x2 probe.
+    // 3. Trigger GPU shader compilation with a viewport-resident 2x2 probe.
     // Offscreen probes (e.g. -9999px) are scissor-culled by Chromium's compositor
     // before SkiaRenderer compiles the SVG backdrop-filter shaders. Keeping a 2x2
     // probe inside the viewport across 2 rAF ticks guarantees shader compilation.
@@ -745,11 +742,7 @@ export function warmupLiquidGlassPipeline(): void {
         const fullProbe = document.createElement('div')
         fullProbe.style.cssText =
           'width:1px;height:1px;backdrop-filter:blur(2px) url(#lg-warmup-probe);-webkit-backdrop-filter:blur(2px) url(#lg-warmup-probe);'
-        const staticProbe = document.createElement('div')
-        staticProbe.style.cssText =
-          'width:1px;height:1px;backdrop-filter:blur(12px) url(#static-glass-refraction);-webkit-backdrop-filter:blur(12px) url(#static-glass-refraction);'
         probe.appendChild(fullProbe)
-        probe.appendChild(staticProbe)
         document.body.appendChild(probe)
         requestAnimationFrame(() => {
           requestAnimationFrame(() => {

@@ -120,8 +120,12 @@ describe('PerformanceSection', () => {
     wrapper.unmount()
   })
 
-  it('renders the tooltips through i18n keys without duplicate native title', () => {
+  it('lazily mounts the tooltips on pointerenter through i18n keys without duplicate native title', async () => {
     const wrapper = mountSection()
+    // Tooltips stay unmounted on initial render to avoid hidden multiline text layout cost
+    expect(wrapper.findAll('[class*="group-hover:visible"]')).toHaveLength(0)
+
+    await wrapper.find('.group').trigger('pointerenter')
     expect(wrapper.text()).toContain('performance.surgeExclusiveTooltip')
     expect(wrapper.text()).toContain('performance.concurrentTooltip')
     expect(wrapper.text()).not.toContain('Aria2 is still limited')
@@ -159,7 +163,8 @@ describe('PerformanceSection', () => {
     expect(wrapper.emitted('update:concurrentDownloads')).toBeUndefined()
     expect(wrapper.emitted('change')).toBeUndefined()
 
-    // The managed/restart copy moved into the always-rendered label tooltip
+    // The managed/restart copy moved into the label tooltip (mounted on pointerenter)
+    await wrapper.find('.group').trigger('pointerenter')
     expect(wrapper.text()).toContain('performance.concurrentTooltip')
     expect(wrapper.findAll('p.leading-relaxed')).toHaveLength(0)
     wrapper.unmount()
@@ -177,6 +182,7 @@ describe('PerformanceSection', () => {
     expect(wrapper.emitted('update:concurrentDownloads')).toEqual([['8']])
     expect(wrapper.emitted('change')).toHaveLength(1)
 
+    await wrapper.find('.group').trigger('pointerenter')
     expect(wrapper.text()).toContain('performance.concurrentTooltip')
     expect(wrapper.findAll('p.leading-relaxed')).toHaveLength(0)
     wrapper.unmount()

@@ -57,6 +57,7 @@
   }
 
   let stopWindowTransparencyWatch: (() => void) | null = null
+  let stopEffectsTierWarmupWatch: (() => void) | null = null
 
   onMounted(() => {
     // Initialize theme and skin from persisted state
@@ -121,16 +122,30 @@
 
     void downloadGroupStore.fetchGroups()
 
-    // Warm up liquid glass SVG filters and shaders right after first paint —
-    // an idle deadline can slip past TaskList init churn, and a click that
-    // lands before the maps bake pays the SDF+encode cost inside the INP window
-    if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
-      window.requestAnimationFrame(() =>
-        window.requestAnimationFrame(() => warmupLiquidGlassPipeline()),
-      )
-    } else {
-      setTimeout(() => warmupLiquidGlassPipeline(), 100)
+    // Warm up dynamic liquid glass SVG filters and shaders only when in full tier.
+    // Default balanced tier does not mount dynamic SDF filters; if the user later
+    // drags the effects slider into full tier, the watcher below triggers warmup.
+    const scheduleFullTierWarmup = () => {
+      if (uiStore.effectsTier !== 'full') return
+      if (typeof window !== 'undefined' && 'requestAnimationFrame' in window) {
+        window.requestAnimationFrame(() =>
+          window.requestAnimationFrame(() => {
+            if (uiStore.effectsTier === 'full') warmupLiquidGlassPipeline()
+          }),
+        )
+      } else {
+        setTimeout(() => {
+          if (uiStore.effectsTier === 'full') warmupLiquidGlassPipeline()
+        }, 100)
+      }
     }
+    scheduleFullTierWarmup()
+    stopEffectsTierWarmupWatch = watch(
+      () => uiStore.effectsTier,
+      tier => {
+        if (tier === 'full') warmupLiquidGlassPipeline()
+      },
+    )
   })
 
   onUnmounted(() => {
@@ -144,6 +159,10 @@
     if (stopWindowTransparencyWatch) {
       stopWindowTransparencyWatch()
       stopWindowTransparencyWatch = null
+    }
+    if (stopEffectsTierWarmupWatch) {
+      stopEffectsTierWarmupWatch()
+      stopEffectsTierWarmupWatch = null
     }
 
     downloadGroupStore.stopAutoSync()

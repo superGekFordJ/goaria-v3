@@ -64,7 +64,7 @@ describe('StaticGlassPanel', () => {
     expect(wrapper.classes()).toContain('hover:scale-[1.01]')
   })
 
-  it('balanced tier renders glass layer with static refraction when refraction is enabled', () => {
+  it('balanced tier renders glass layer with native blur and no SVG refraction filter even when refraction prop is passed', () => {
     uiStoreMock.effectsTier = 'balanced'
     const wrapper = mount(StaticGlassPanel, {
       props: { refraction: true },
@@ -74,8 +74,8 @@ describe('StaticGlassPanel', () => {
     const html = wrapper.html()
     expect(html).toContain('blur(max(var(--glass-blur), 12px))')
 
-    // Static refraction filter id is applied
-    expect(html).toContain('static-glass-refraction')
+    // Static SVG refraction filter is omitted to preserve fast native Gaussian blur path
+    expect(html).not.toContain('static-glass-refraction')
   })
 
   it('balanced tier renders glass layer without refraction filter when refraction is disabled', () => {

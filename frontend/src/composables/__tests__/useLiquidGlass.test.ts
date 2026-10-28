@@ -78,6 +78,7 @@ describe('useLiquidGlass', () => {
     const dispose = preloadDisplacementMap(64, 40, 12, 10)
     await flushPromises()
     expect(lastImageData).not.toBeNull()
+    expect(getContextSpy).toHaveBeenCalledWith('2d', { willReadFrequently: true })
     const img = lastImageData!
     expect(img.width).toBe(64)
     expect(img.height).toBe(40)

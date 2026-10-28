@@ -14,6 +14,7 @@
   import { Loader2, CheckCircle, AlertCircle, ChevronDown, Compass } from '@lucide/vue'
   import LiquidGlassPanel from '../../common/LiquidGlassPanel.vue'
   import { preloadDisplacementMap } from '../../../composables/useLiquidGlass'
+  import { useUIStore } from '../../../stores/ui'
 
   export type SaveStatus = 'idle' | 'loading' | 'saving' | 'saved' | 'error'
   export interface SettingsNavigationSection {
@@ -31,6 +32,7 @@
   }>()
   const emit = defineEmits<{ navigate: [id: string] }>()
   const { t } = useI18n()
+  const uiStore = useUIStore()
   const navigationId = useId()
   const statusId = useId()
   const expanded = ref(false)
@@ -176,15 +178,32 @@
     },
     { flush: 'sync' },
   )
-  onMounted(() => {
-    if (typeof window !== 'undefined' && !isTesting) {
-      const schedule = window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 120))
-      schedule(() => {
-        if (unmounted) return
-        releasePreloadedMap = preloadDisplacementMap(360, panelHeight.value, 24, 24)
-      })
+  function scheduleExpandedMapPreload() {
+    if (
+      releasePreloadedMap ||
+      unmounted ||
+      typeof window === 'undefined' ||
+      isTesting ||
+      uiStore.effectsTier !== 'full'
+    ) {
+      return
     }
+    const schedule = window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 120))
+    schedule(() => {
+      if (unmounted || releasePreloadedMap || uiStore.effectsTier !== 'full') return
+      releasePreloadedMap = preloadDisplacementMap(360, panelHeight.value, 24, 24)
+    })
+  }
+
+  onMounted(() => {
+    scheduleExpandedMapPreload()
   })
+  watch(
+    () => uiStore.effectsTier,
+    tier => {
+      if (tier === 'full') scheduleExpandedMapPreload()
+    },
+  )
   onDeactivated(() => {
     clearCollapseTimers()
     close()
