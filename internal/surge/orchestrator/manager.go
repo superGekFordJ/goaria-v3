@@ -42,8 +42,13 @@ type LifecycleManager struct {
 
 	// FORK-PATCH: probeSem caps ProbeServerWithProxy GET Range: bytes=0-0 only.
 	// Trusted size+filename+explicit Range skip this slot entirely.
-	probeSem     chan struct{}
-	shutdownOnce sync.Once
+	probeSem        chan struct{}
+	shutdownOnce    sync.Once
+	downloadLocksMu sync.Mutex
+	downloadLocks   map[string]*downloadLock
+	// Test hooks make concurrent enqueue tests deterministic without affecting
+	// production behavior.
+	beforeQueuedPublish func()
 }
 
 const (
@@ -399,9 +404,17 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			Workers:      req.Workers,
 			MinChunkSize: req.MinChunkSize,
 		}
+		// A removal of this download must follow its queued publication. This
+		// lock is per ID: event backpressure never holds the scheduler lock or
+		// prevents operations on other downloads. All paths below return.
+		unlock := mgr.lockDownload(cfg.ID)
+		defer unlock()
+
 		// Reject duplicates and shutdown before touching persistence or
-		// publishing. The scheduler keeps workers blocked until preparation
-		// completes, so EventStarted cannot race ahead of the queued record.
+		// publishing. Persistence runs under the scheduler lock; the queued
+		// event is published only after AddWithPreparation returns so Publish
+		// backpressure cannot stall the lock, and EventStarted may arrive
+		// first.
 		accepted, err := mgr.pool.AddWithPreparation(*cfg, func() error {
 			// Persist synchronously before publishing so the download survives
 			// a restart. Publication itself happens after AddWithPreparation
@@ -496,6 +509,9 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		// Queued arriving late is accepted rather than re-serialized under p.mu.
 		// Retire once upstream moves this publication out of prepare.
 		if mgr.eventBus != nil {
+			if mgr.beforeQueuedPublish != nil {
+				mgr.beforeQueuedPublish()
+			}
 			if err := mgr.eventBus.Publish(queuedEvent); err != nil {
 				utils.Debug("Lifecycle: queued event publish failed for %s: %v", cfg.ID, err)
 			}
