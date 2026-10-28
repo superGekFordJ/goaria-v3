@@ -1553,6 +1553,14 @@ func (p *Scheduler) worker() {
 			_, slotTaken := p.queued[localCfg.ID]
 			foreignActive := p.downloads[localCfg.ID] != nil
 
+			// FORK-PATCH: all three empty means this claim was already
+			// detached (Cancel reap or Extract handoff — not a Cancel-specific
+			// proof). Its stale failure must neither requeue nor publish or
+			// record an error; the shared tail still settles the physical
+			// claim once. This guards only the snapshot ordering — it is not
+			// a lifetime removal barrier.
+			claimDetached := !ownedSlot && !slotTaken && !foreignActive
+
 			// FORK-PATCH: a cancel that already claimed this HLS ad (removal
 			// marker or fired parent ctx) owns the lifecycle — no retry, no
 			// error publish, no SetError may follow.
@@ -1562,7 +1570,7 @@ func (p *Scheduler) worker() {
 			// not carry over, and stale keys for the finished claim must never
 			// alias the new queueing round. On token exhaustion the task takes
 			// the terminal path below — no opportunity, no leak.
-			retryable := !hlsClaimed && shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) && !slotTaken && !foreignActive
+			retryable := !hlsClaimed && !claimDetached && shouldRetryFailedDownload(err, p.isShuttingDown, qt.retries) && !slotTaken && !foreignActive
 			var newToken uint64
 			tokenOK := true
 			if retryable {
@@ -1695,7 +1703,8 @@ func (p *Scheduler) worker() {
 			// FORK-PATCH: User cancel / deadline must clean up without EventError —
 			// LifecycleManager.Cancel already publishes EventRemoved; treating
 			// context.Canceled as a failure would race notify + error DB writes.
-			isCancel := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+			// A detached claim rides the same silence — its error is stale.
+			isCancel := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || claimDetached
 			var errEvent *types.DownloadEvent
 			if hlsTask {
 				// FORK-PATCH: enter the claim fence before the terminal
