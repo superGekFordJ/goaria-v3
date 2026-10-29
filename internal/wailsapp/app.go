@@ -50,6 +50,7 @@ type App struct {
 
 	downloadEngine  rpc.DownloadEngine
 	extensionServer *extension.Server
+	deduper         *tasks.AddDeduper
 
 	pendingMu               sync.Mutex         //nolint:unused,nolintlint
 	pendingExtensionLinkage *extension.Linkage //nolint:unused,nolintlint
@@ -117,6 +118,7 @@ func NewApp(options Options) *App {
 		trayState:      tray.StateIdle,
 		version:        version,
 		downloadEngine: options.DownloadEngine,
+		deduper:        &tasks.AddDeduper{},
 	}
 	app.configDeps = defaultConfigSaveDeps(app)
 	return app

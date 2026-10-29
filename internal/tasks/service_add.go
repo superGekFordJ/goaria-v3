@@ -80,47 +80,55 @@ func (s *Service) AddUriFromExtension(req extension.DownloadRequest) (string, er
 		return "", err
 	}
 
-	active, _ := s.Engine.TellActive()
-	waiting, _ := s.Engine.TellWaiting(0, 1000)
-	stopped, _ := s.Engine.TellStopped(0, 1000)
-	existingURLs := collectExistingTaskSourceURLs(active, waiting, stopped)
-
 	dedupTarget := normalizedUrl
 	if req.DedupKey != "" {
 		dedupTarget = req.DedupKey
 	}
+
+	if s.Deduper == nil {
+		active, _ := s.Engine.TellActive()
+		waiting, _ := s.Engine.TellWaiting(0, 1000)
+		stopped, _ := s.Engine.TellStopped(0, 1000)
+		existingURLs := collectExistingTaskSourceURLs(active, waiting, stopped)
+		if existingURLs[dedupTarget] || history.ContainsSource(dedupTarget) {
+			return "", errors.New("duplicate")
+		}
+		return s.submitExtensionCandidate(req, normalizedUrl, headers)
+	}
+
+	claim, res, owner := s.Deduper.acquire(context.Background(), dedupTarget)
+	if !owner {
+		// Loser consumes the token's outcome: an available result means the
+		// target exists and carries the known gid when we have one; a failure
+		// is the owner's already-canonicalized error.
+		if res.available {
+			return res.gid, errors.New("duplicate")
+		}
+		return "", res.err
+	}
+
+	settled := false
+	defer func() {
+		if !settled {
+			s.Deduper.finish(claim, addClaimResult{err: errAddClaimAborted})
+		}
+	}()
+
+	active, _ := s.Engine.TellActive()
+	waiting, _ := s.Engine.TellWaiting(0, 1000)
+	stopped, _ := s.Engine.TellStopped(0, 1000)
+	existingURLs := collectExistingTaskSourceURLs(active, waiting, stopped)
 	if existingURLs[dedupTarget] || history.ContainsSource(dedupTarget) {
-		return "", errors.New("duplicate")
+		gid := firstGIDForTaskSource(active, waiting, stopped, dedupTarget)
+		s.Deduper.finish(claim, addClaimResult{gid: gid, available: true})
+		settled = true
+		return gid, errors.New("duplicate")
 	}
 
-	candidate := directAddTaskCandidate(normalizedUrl)
-	candidate.externalHeaders = headers
-	candidate.externalSizeBytes = req.FileSize
-	candidate.skipHeadProbe = req.SkipHeadProbe
-	candidate.externalDedupKey = req.DedupKey
-	candidate.finalURL = req.FinalURL
-	candidate.pageTitle = req.PageTitle
-	// An explicit hls handoff pins the strategy even when neither url nor
-	// finalURL carries a manifest suffix; URL-based detection stays the
-	// fallback for plain download requests.
-	if req.Type == extension.MsgTypeHLS {
-		candidate.strategy = surgetypes.StrategyHLS
-	}
-	if req.Filename != "" {
-		candidate.out = req.Filename
-	}
-	if req.FileSize > 0 {
-		candidate.sizeBytes = req.FileSize
-	}
-
-	authState := s.newAddTaskAuthBatchState()
-	ledger := smartthread.NewBandwidthLedger(collectActiveTaskInfos())
-
-	gid, err := s.addTaskCandidate(context.Background(), candidate, authState, ledger)
-	if err != nil {
-		return "", s.canonicalizeExtensionAddError(err)
-	}
-	return gid, nil
+	gid, err := s.submitExtensionCandidate(req, normalizedUrl, headers)
+	s.Deduper.finish(claim, addClaimResult{gid: gid, err: err, available: err == nil})
+	settled = true
+	return gid, err
 }
 
 // ensureRefererHeader adds a Referer header from the download page URL if no Referer line is present.
@@ -315,30 +323,6 @@ func submitCandidatesConcurrently(s *Service, ctx context.Context, candidates []
 		}(candidate)
 	}
 	wg.Wait()
-}
-
-func (s *Service) submitAddCandidate(ctx context.Context, candidate addTaskCandidate, batchState *addCandidateBatchState, historyDuplicates map[string]bool, authState *addTaskAuthBatchState, ledger *smartthread.BandwidthLedger) {
-	if s.Adapter != nil && candidate.item.Ref != "" {
-		// Release the neutral ref claim once submission settles — covers
-		// success, failure, and the duplicate-skip below.
-		defer s.Adapter.Release(candidate.item.Ref)
-	}
-	displayKey := candidateDisplayKey(candidate)
-	unlock := batchState.lockForUrl(candidate.url)
-	defer unlock()
-
-	if batchState.checkAndMarkDuplicate(candidate, historyDuplicates) {
-		batchState.recordDuplicate(displayKey)
-		return
-	}
-
-	if _, err := s.addTaskCandidate(ctx, candidate, authState, ledger); err != nil {
-		batchState.unmarkSeen(candidate.url)
-		batchState.recordError(displayKey, s.redactAddTaskError(err))
-		return
-	}
-
-	batchState.recordSuccess(displayKey, candidate.downloadGroup)
 }
 
 // addGroupLocked appends a deduplicated group. Caller must hold the

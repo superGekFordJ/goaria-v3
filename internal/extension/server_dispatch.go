@@ -678,7 +678,11 @@ func (s *Server) handleDownload(req DownloadRequest) DownloadResponse {
 	}
 	gid, err := s.taskAdder.AddUriFromExtension(req)
 	if err != nil {
-		return DownloadResponse{Type: MsgTypeDownloadAck, Success: false, Error: err.Error()}
+		resp := DownloadResponse{Type: MsgTypeDownloadAck, Success: false, Error: err.Error()}
+		if resp.Error == "duplicate" {
+			resp.GID = gid
+		}
+		return resp
 	}
 	return DownloadResponse{Type: MsgTypeDownloadAck, Success: true, GID: gid}
 }

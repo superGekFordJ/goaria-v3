@@ -41,7 +41,7 @@ func (a *ingressDigestAdapter) Snapshot() (extension.MatchDigestSnapshot, bool) 
 	}, true
 }
 
-func buildExtensionLinkageFromSnapshot(snap *extractor.RuntimeSnapshot, engine rpc.DownloadEngine) extension.Linkage {
+func buildExtensionLinkageFromSnapshot(snap *extractor.RuntimeSnapshot, engine rpc.DownloadEngine, deduper *tasks.AddDeduper) extension.Linkage {
 	if snap == nil || snap.Dispatcher() == nil || snap.TasksAdapter() == nil || snap.IngressDigests() == nil {
 		return extension.Linkage{}
 	}
@@ -51,6 +51,7 @@ func buildExtensionLinkageFromSnapshot(snap *extractor.RuntimeSnapshot, engine r
 	service := &tasks.Service{
 		Adapter: minter,
 		Engine:  engine,
+		Deduper: deduper,
 	}
 	committer := &extensionBatchAdapter{
 		lease:   resolver,
@@ -107,6 +108,6 @@ func ConfigureExtensionLinkage(app *App, srv *extension.Server) {
 			snap = rt.manager.CurrentSnapshot()
 		}
 	}
-	linkage := buildExtensionLinkageFromSnapshot(snap, app.downloadEngine)
+	linkage := buildExtensionLinkageFromSnapshot(snap, app.downloadEngine, app.deduper)
 	srv.SetLinkage(attachDirectBatchCommitter(linkage, app))
 }

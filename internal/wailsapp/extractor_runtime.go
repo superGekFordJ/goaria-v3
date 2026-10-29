@@ -190,7 +190,7 @@ func (a *App) refreshExtensionLinkage() {
 		return
 	}
 	snap := rt.manager.CurrentSnapshot()
-	newLinkage := buildExtensionLinkageFromSnapshot(snap, a.downloadEngine)
+	newLinkage := buildExtensionLinkageFromSnapshot(snap, a.downloadEngine, a.deduper)
 	a.extensionServer.ReplaceExtractorLinkage(newLinkage)
 }
 

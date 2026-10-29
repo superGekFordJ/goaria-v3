@@ -130,6 +130,16 @@ func (b *addCandidateBatchState) unmarkSeen(url string) {
 	delete(b.candidateSeen, url)
 }
 
+// markConfirmedSeen records a URL as confirmed-existing for the rest of this
+// batch: a shared dedup outcome proved the target is present, so remaining
+// same-batch candidates must dedupe instead of re-admitting.
+func (b *addCandidateBatchState) markConfirmedSeen(url string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.existingUrls[url] = true
+	b.candidateSeen[url] = true
+}
+
 func (b *addCandidateBatchState) recordSuccess(displayKey string, group *downloadgroups.DownloadGroupPlan) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

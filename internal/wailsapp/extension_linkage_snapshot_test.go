@@ -27,7 +27,7 @@ func TestLinkageConstructionFromSnapshot_ZeroPack(t *testing.T) {
 
 	zeroSnap := mgr.CurrentSnapshot()
 	engine := &recordingCommitEngine{failURLs: map[string]struct{}{}}
-	linkage := buildExtensionLinkageFromSnapshot(zeroSnap, engine)
+	linkage := buildExtensionLinkageFromSnapshot(zeroSnap, engine, nil)
 
 	if linkage.Resolver != nil {
 		t.Errorf("expected nil Resolver for zero-pack, got %#v", linkage.Resolver)
@@ -93,7 +93,7 @@ func TestLinkageConstructionFromSnapshot_WithPacks(t *testing.T) {
 
 	snap := mgr.CurrentSnapshot()
 	engine := &recordingCommitEngine{failURLs: map[string]struct{}{}}
-	linkage := buildExtensionLinkageFromSnapshot(snap, engine)
+	linkage := buildExtensionLinkageFromSnapshot(snap, engine, nil)
 
 	if linkage.Resolver == nil || !linkage.Resolver.Ready() {
 		t.Fatal("expected ready Resolver")
@@ -163,7 +163,7 @@ func TestExtensionCommitInvokesFixedOldTaskServiceAcrossSnapshotSwitch(t *testin
 	runtime := &taggedExtractorRuntime{manager: mgr}
 	app.setExtractorRuntime(runtime)
 
-	linkage1 := buildExtensionLinkageFromSnapshot(snap1, engine)
+	linkage1 := buildExtensionLinkageFromSnapshot(snap1, engine, app.deduper)
 	batchAdapter, ok := linkage1.Committer.(*extensionBatchAdapter)
 	if !ok {
 		t.Fatalf("expected *extensionBatchAdapter, got %T", linkage1.Committer)

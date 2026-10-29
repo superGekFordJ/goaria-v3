@@ -17,6 +17,7 @@ func (a *App) taskService() *tasks.Service {
 	return &tasks.Service{
 		Adapter: adapter,
 		Engine:  a.downloadEngine,
+		Deduper: a.deduper,
 	}
 }
 
