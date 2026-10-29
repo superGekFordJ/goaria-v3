@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -135,6 +136,9 @@ type ExtractorRuntimeManagerConfig struct {
 	AuthResolver       AuthProfileResolver
 	HeaderResolver     HeaderProfileResolver
 	HostAuthRuntime    *HostAuthRuntime
+	// HTTPTransport overrides the extract host-call transport; nil keeps the
+	// default secure transport.
+	HTTPTransport http.RoundTripper
 }
 
 type internalSourceRecord struct {
@@ -409,6 +413,7 @@ func buildSnapshot(revision uint64, packs []VerifiedPack, config ExtractorRuntim
 	downloadAuth := NewDownloadAuthRegistry()
 	runner := NewRunnerWithConfig(RunnerConfig{
 		HTTPBroker: NewHTTPBroker(HTTPBrokerConfig{
+			Transport:          config.HTTPTransport,
 			AuthResolver:       authResolver,
 			HostPolicyResolver: config.HostPolicyResolver,
 		}),

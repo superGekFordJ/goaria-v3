@@ -39,6 +39,7 @@ func TestConcurrentWailsMutationsSerializedAndNormalAddUnblocked(t *testing.T) {
 	mgr, err := extractor.NewExtractorRuntimeManager(context.Background(), extractor.ExtractorRuntimeManagerConfig{
 		DataRoot:           dataRoot,
 		HostPolicyResolver: policyResolver,
+		HTTPTransport:      &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`},
 	})
 	if err != nil {
 		t.Fatalf("NewExtractorRuntimeManager: %v", err)

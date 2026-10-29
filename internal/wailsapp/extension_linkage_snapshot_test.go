@@ -20,6 +20,7 @@ func TestLinkageConstructionFromSnapshot_ZeroPack(t *testing.T) {
 	mgr, err := extractor.NewExtractorRuntimeManager(context.Background(), extractor.ExtractorRuntimeManagerConfig{
 		DataRoot:           dataRoot,
 		HostPolicyResolver: fakeSetupHostPolicyResolver{},
+		HTTPTransport:      &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`},
 	})
 	if err != nil {
 		t.Fatalf("NewExtractorRuntimeManager: %v", err)
@@ -78,6 +79,7 @@ func TestLinkageConstructionFromSnapshot_WithPacks(t *testing.T) {
 	mgr, err := extractor.NewExtractorRuntimeManager(context.Background(), extractor.ExtractorRuntimeManagerConfig{
 		DataRoot:           dataRoot,
 		HostPolicyResolver: fakeSetupHostPolicyResolver{},
+		HTTPTransport:      &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`},
 	})
 	if err != nil {
 		t.Fatalf("NewExtractorRuntimeManager: %v", err)
@@ -144,6 +146,7 @@ func TestExtensionCommitInvokesFixedOldTaskServiceAcrossSnapshotSwitch(t *testin
 	mgr, err := extractor.NewExtractorRuntimeManager(context.Background(), extractor.ExtractorRuntimeManagerConfig{
 		DataRoot:           dataRoot,
 		HostPolicyResolver: fakeSetupHostPolicyResolver{},
+		HTTPTransport:      &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`},
 	})
 	if err != nil {
 		t.Fatalf("NewExtractorRuntimeManager: %v", err)

@@ -65,6 +65,7 @@ func newDedupLinkageFixture(t *testing.T) *dedupLinkageFixture {
 	mgr, err := extractor.NewExtractorRuntimeManager(context.Background(), extractor.ExtractorRuntimeManagerConfig{
 		DataRoot:           dataRoot,
 		HostPolicyResolver: fakeSetupHostPolicyResolver{},
+		HTTPTransport:      &recordingCookieTransport{body: `{"ok":true,"item":"fixture-item"}`},
 	})
 	if err != nil {
 		t.Fatalf("NewExtractorRuntimeManager: %v", err)
