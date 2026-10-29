@@ -19,6 +19,10 @@ import (
 
 var scopeClassifier = speedstats.NewScopeClassifier()
 
+// scopeClassifyByURL is the classify call used by the terminal fallback;
+// tests stub it once at package init so hostnames never reach OS DNS.
+var scopeClassifyByURL = scopeClassifier.ClassifyByURL
+
 // finishTerminalCopy performs the post-gate finish for a copy accepted under
 // the GID gate: blocking recovery runs ungated, then speed stats and the
 // history write re-enter the gate and validate the copy so a post-accept
@@ -114,7 +118,7 @@ func (m *Monitor) recordTerminalSpeedStats(task *TrackedTask) {
 		// Fallback: tasks that bypassed service_add.go (external RPC, resume after restart)
 		// have empty Domain/Scope. Classify from SourceURL to prevent polluting the wan pool.
 		if task.Domain == "" && task.SourceURL != "" {
-			scope, domain := scopeClassifier.ClassifyByURL(task.SourceURL)
+			scope, domain := scopeClassifyByURL(task.SourceURL)
 			task.Scope = scope
 			task.Domain = domain
 			// PeakEnvKey stays empty — no netenv participation in fallback path.
