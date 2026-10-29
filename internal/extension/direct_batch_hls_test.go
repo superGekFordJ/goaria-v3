@@ -80,7 +80,7 @@ func TestDirectBatchHLS_PageTitleStrictValidation(t *testing.T) {
 			{"oversize", `"page_title":"` + strings.Repeat("x", 1025) + `"`},
 			{"newline", `"page_title":"a\nb"`},
 			{"carriage return", `"page_title":"a\rb"`},
-			{"nul escape", `"page_title":"a\"`},
+			{"nul escape", `"page_title":"a\` + string(rune(8)) + `"`},
 			{"strategy wire field", `"strategy":"hls"`},
 			{"camelCase pageTitle", `"pageTitle":"x"`},
 			{"mime_type wire field", `"mime_type":"application/x-mpegurl"`},
@@ -118,7 +118,7 @@ func TestDirectBatchHLS_PageTitleStrictValidation(t *testing.T) {
 func TestDirectBatchHLS_DispatchCarriesTitle(t *testing.T) {
 	store := NewSecretStore()
 	store.SetSecret("direct-secret")
-	direct := &capturingDirectCommitter{fakeDirectCommitter: fakeDirectCommitter{ready: true}}
+	direct := &capturingDirectCommitter{ready: true}
 	srv := newTestServer(t, nil, store)
 	srv.SetLinkage(Linkage{DirectCommitter: direct})
 	defer srv.Stop()
@@ -147,7 +147,7 @@ func TestDirectBatchHLS_DispatchCarriesTitle(t *testing.T) {
 func TestDirectBatchHLS_InvalidTitleLeavesNoReceipt(t *testing.T) {
 	store := NewSecretStore()
 	store.SetSecret("direct-secret")
-	direct := &capturingDirectCommitter{fakeDirectCommitter: fakeDirectCommitter{ready: true}}
+	direct := &capturingDirectCommitter{ready: true}
 	srv := newTestServer(t, nil, store)
 	srv.SetLinkage(Linkage{DirectCommitter: direct})
 	defer srv.Stop()
@@ -182,7 +182,7 @@ func TestDirectBatchHLS_InvalidTitleLeavesNoReceipt(t *testing.T) {
 func TestDirectBatchHLS_TitleJoinsIdempotencyDigest(t *testing.T) {
 	store := NewSecretStore()
 	store.SetSecret("direct-secret")
-	direct := &capturingDirectCommitter{fakeDirectCommitter: fakeDirectCommitter{ready: true}}
+	direct := &capturingDirectCommitter{ready: true}
 	srv := newTestServer(t, nil, store)
 	srv.SetLinkage(Linkage{DirectCommitter: direct})
 	defer srv.Stop()

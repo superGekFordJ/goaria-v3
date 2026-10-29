@@ -55,7 +55,7 @@ func TestSurgeResync_CoalescesToSinglePending(t *testing.T) {
 	m.surgeResyncChan = make(chan struct{}, 1)
 
 	ev := surgeEvents.DownloadEvent{Type: surgeEvents.EventSystem, ResyncRequired: true}
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		m.handleSurgeEvent(ev)
 	}
 	if got := len(m.surgeResyncChan); got != 1 {

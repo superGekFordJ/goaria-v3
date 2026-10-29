@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -148,9 +150,7 @@ func TestAddUriFromExtension_HLSContextPassthrough(t *testing.T) {
 	stubAddTaskHLSPreflight(t, func(ctx context.Context, client *http.Client, url string, headers map[string]string, runCfg *surgetypes.RuntimeConfig) (*hls.HLSPreflightResult, error) {
 		preflightURL = url
 		preflightHeaders = make(map[string]string, len(headers))
-		for k, v := range headers {
-			preflightHeaders[k] = v
-		}
+		maps.Copy(preflightHeaders, headers)
 		return successfulHLSPreflight(hls.ContainerTS, "https://seg.invalid/s0.ts", 0)(ctx, client, url, headers, runCfg)
 	})
 
@@ -180,13 +180,7 @@ func TestAddUriFromExtension_HLSContextPassthrough(t *testing.T) {
 	}
 	wantLines := []string{"Cookie: sid=1", "X-Custom: v", "Referer: https://page.example.invalid/watch"}
 	for _, line := range wantLines {
-		found := false
-		for _, h := range opts[0].Headers {
-			if h == line {
-				found = true
-				break
-			}
-		}
+		found := slices.Contains(opts[0].Headers, line)
 		if !found {
 			t.Fatalf("options headers missing %q: %v", line, opts[0].Headers)
 		}
