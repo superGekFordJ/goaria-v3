@@ -585,11 +585,14 @@ func TestServiceAddDedup_OwnerExistingDuplicateWakesWaiters(t *testing.T) {
 
 		// Batch seam: a resolved candidate URL already in the snapshot dedups
 		// at claim check and publishes available — later callers hit the
-		// record. Claims from this bubble must not be touched outside it.
+		// record. A fresh registry is required: reusing d would short-circuit
+		// on part 1's live done-record for the same key and skip the
+		// owner-side snapshot check entirely.
+		d2 := &AddDeduper{}
 		engC := &dedupGateEngine{active: existing}
 		svcSnap := &Service{
 			Engine:  engC,
-			Deduper: d,
+			Deduper: d2,
 			Adapter: &refRecordingAdapter{fakePortAdapter: fakePortAdapter{items: []ResolvedItem{{URL: url, Ref: "ry"}}}},
 		}
 		if got := svcSnap.AddUri("http://127.0.0.1/source/page"); got != "duplicate" {
@@ -598,7 +601,7 @@ func TestServiceAddDedup_OwnerExistingDuplicateWakesWaiters(t *testing.T) {
 		if got := engC.addCount(); got != 0 {
 			t.Fatalf("engine adds = %d, want 0 for snapshot dedup", got)
 		}
-		svcLate := &Service{Engine: engB, Deduper: d}
+		svcLate := &Service{Engine: engB, Deduper: d2}
 		if got := svcLate.AddUri(url); got != "duplicate" {
 			t.Fatalf("late AddUri = %q, want duplicate via done-record", got)
 		}

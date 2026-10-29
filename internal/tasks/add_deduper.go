@@ -67,6 +67,9 @@ func (d *AddDeduper) acquire(ctx context.Context, key string) (*addClaim, addCla
 	}
 	d.sweepExpired()
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, addClaimResult{err: err}, false
+		}
 		fresh := &addClaim{key: key, done: make(chan struct{})}
 		actual, loaded := d.claims.LoadOrStore(key, fresh)
 		if !loaded {
