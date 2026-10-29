@@ -30,16 +30,32 @@ func TestResolveHostIP_NoHost(t *testing.T) {
 }
 
 func TestResolveHostIP_DomainResolves(t *testing.T) {
-	got := resolveHostIP("https://example.com/file")
-	if got == "" {
-		t.Skip("DNS resolve returned empty — skipping (offline or DNS unavailable)")
+	lookup := func(ctx context.Context, host string) ([]string, error) {
+		return []string{"203.0.113.7", "203.0.113.8"}, nil
+	}
+	if got := resolveHostIPWithLookup("https://example.com/file", time.Second, lookup); got != "203.0.113.7" {
+		t.Errorf("resolveHostIPWithLookup(resolved domain) = %q, want first IP", got)
 	}
 }
 
 func TestResolveHostIP_DNSFailure_ReturnsEmpty(t *testing.T) {
-	got := resolveHostIP("https://nonexistent.invalid.domain.example/file")
-	if got != "" {
-		t.Errorf("resolveHostIP(nonexistent domain) = %q, want empty", got)
+	lookup := func(ctx context.Context, host string) ([]string, error) {
+		return nil, errors.New("nxdomain")
+	}
+	if got := resolveHostIPWithLookup("https://nonexistent.invalid.domain.example/file", time.Second, lookup); got != "" {
+		t.Errorf("resolveHostIPWithLookup(nxdomain) = %q, want empty", got)
+	}
+}
+
+func TestResolveHostIP_DelegatesToLookupVar(t *testing.T) {
+	// TestMain stubs lookupHost to answer empty; a hostname reaching it both
+	// yields "" and lands in the recorded call list — proving resolveHostIP
+	// routes through the injected var rather than a hard-coded resolver.
+	if got := resolveHostIP("https://delegation.test/file"); got != "" {
+		t.Fatalf("resolveHostIP(stubbed lookup) = %q, want empty", got)
+	}
+	if !lookupHostSaw("delegation.test") {
+		t.Fatal("resolveHostIP did not reach the stubbed lookupHost var")
 	}
 }
 

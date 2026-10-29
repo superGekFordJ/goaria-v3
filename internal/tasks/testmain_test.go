@@ -1,11 +1,29 @@
 package tasks
 
 import (
+	"context"
 	"os"
+	"sync"
 	"testing"
 
 	"goaria-v3/internal/config"
 )
+
+var (
+	lookupHostCallsMu sync.Mutex
+	lookupHostCalls   []string
+)
+
+func lookupHostSaw(host string) bool {
+	lookupHostCallsMu.Lock()
+	defer lookupHostCallsMu.Unlock()
+	for _, h := range lookupHostCalls {
+		if h == host {
+			return true
+		}
+	}
+	return false
+}
 
 func TestMain(m *testing.M) {
 	tmp, err := os.MkdirTemp("", "goaria-tasks-test-")
@@ -18,6 +36,16 @@ func TestMain(m *testing.M) {
 		DownloadDir:     os.TempDir(),
 		SmartThreadMode: false,
 	})
+	// No test may reach the OS resolver: an empty answer is exactly what
+	// unresolved (.invalid/NXDOMAIN) fixture hosts already produced — callers
+	// fall back to the proxy envKey and wan scope. Set once before m.Run so
+	// parallel tests only ever read the var.
+	lookupHost = func(_ context.Context, host string) ([]string, error) {
+		lookupHostCallsMu.Lock()
+		lookupHostCalls = append(lookupHostCalls, host)
+		lookupHostCallsMu.Unlock()
+		return nil, nil
+	}
 	code := m.Run()
 	_ = os.RemoveAll(tmp)
 	os.Exit(code)

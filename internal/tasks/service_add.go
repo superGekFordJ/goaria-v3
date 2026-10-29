@@ -695,10 +695,14 @@ func (s *Service) addTaskCandidate(ctx context.Context, candidate addTaskCandida
 // any resolver internals the OS may keep running.
 const resolveHostIPTimeout = 2 * time.Second
 
+// lookupHost is the DNS seam behind resolveHostIP; tests stub it once from
+// TestMain so add-path classification never reaches the OS resolver.
+var lookupHost = net.DefaultResolver.LookupHost
+
 // resolveHostIP extracts the host from url and does a DNS lookup.
 // Returns "" on failure (caller falls back to proxy envKey).
 func resolveHostIP(rawurl string) string {
-	return resolveHostIPWithLookup(rawurl, resolveHostIPTimeout, net.DefaultResolver.LookupHost)
+	return resolveHostIPWithLookup(rawurl, resolveHostIPTimeout, lookupHost)
 }
 
 // resolveHostIPWithLookup is the seam behind resolveHostIP: the same
