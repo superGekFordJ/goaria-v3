@@ -196,16 +196,14 @@ func TestEventBus_ConcurrentCleanupAndShutdown(t *testing.T) {
 	defer bus.Shutdown()
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 20 {
 				_, cleanup := bus.Subscribe()
 				_ = bus.Publish(types.DownloadEvent{Type: types.EventProgress})
 				cleanup()
 				cleanup()
 			}
-		}()
+		})
 	}
 	bus.Shutdown()
 	wg.Wait()

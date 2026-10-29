@@ -47,6 +47,8 @@ type MasterState struct {
 // OutputPath…) are structurally excluded and can never reach disk. This also
 // means an unregistered ProgressState can no longer fail the whole encode.
 type persistedDetailRecord struct {
+	Artifact             types.ArtifactPolicy
+	ErrorCode            string
 	ID                   string
 	URLHash              string
 	URL                  string
@@ -83,6 +85,8 @@ func toPersisted(s *types.DownloadRecord) *persistedDetailRecord {
 		return nil
 	}
 	return &persistedDetailRecord{
+		Artifact:             s.Artifact,
+		ErrorCode:            s.ErrorCode,
 		ID:                   s.ID,
 		URLHash:              s.URLHash,
 		URL:                  s.URL,
@@ -117,6 +121,8 @@ func toRecord(s *persistedDetailRecord) *types.DownloadRecord {
 		return nil
 	}
 	return &types.DownloadRecord{
+		Artifact:             s.Artifact,
+		ErrorCode:            s.ErrorCode,
 		ID:                   s.ID,
 		URLHash:              s.URLHash,
 		URL:                  s.URL,

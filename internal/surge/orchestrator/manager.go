@@ -192,6 +192,7 @@ func (m *LifecycleManager) ApplySettings(s *config.Settings) {
 
 // DownloadRequest carries the already-approved inputs needed to probe and reserve a file path.
 type DownloadRequest struct {
+	Artifact           types.ArtifactPolicy
 	URL                string
 	Filename           string
 	Path               string
@@ -286,6 +287,19 @@ func (mgr *LifecycleManager) EnqueueWithID(ctx context.Context, req *DownloadReq
 }
 
 func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadRequest, requestID string) (string, string, error) {
+	// Normalize on a shallow copy so validation failure never writes back to
+	// the caller's request.
+	copyRequest := *req
+	req = &copyRequest
+	if err := req.Artifact.Validate(); err != nil {
+		return "", "", err
+	}
+	req.Artifact = req.Artifact.Normalized()
+	// FORK-PATCH: an HLS digest request is refused at the boundary instead of
+	// silently delivering an unverified artifact.
+	if req.Strategy == types.StrategyHLS && req.Artifact.ExpectedSHA256 != "" {
+		return "", "", errors.New("surge: sha256 verification is not supported for hls downloads")
+	}
 	if req.URL == "" {
 		return "", "", types.ErrURLRequired
 	}
@@ -349,7 +363,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			return "", "", fmt.Errorf("enqueue aborted: %w", ctx.Err())
 		}
 
-		finalPath, finalFilename, err := ResolveDestination(
+		finalPath, finalFilename, err := resolveDestinationWithPolicy(
 			req.URL,
 			req.Filename,
 			req.Path,
@@ -357,6 +371,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			settings,
 			probeResult,
 			isNameActive,
+			req.Artifact.OnExists,
 		)
 		if err != nil {
 			return "", "", fmt.Errorf("failed to resolve destination: %w", err)
@@ -379,6 +394,9 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 		// pick a different name instead of truncating this in-flight download.
 		if err := reserveWorkingFile(finalPath, finalFilename); err != nil {
 			if errors.Is(err, os.ErrExist) {
+				if req.Artifact.OnExists == "fail" {
+					return "", "", types.ErrDestinationExists
+				}
 				continue
 			}
 			return "", "", err
@@ -394,6 +412,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 
 		queuedEvent := types.DownloadEvent{
 			Type:         types.EventQueued,
+			Artifact:     cfg.Artifact,
 			DownloadID:   cfg.ID,
 			Filename:     finalFilename,
 			URL:          req.URL,
@@ -423,6 +442,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 			// under the scheduler lock.
 			// FORK-PATCH: CreatedAt is stamped here once; lifecycle rewrites carry it.
 			if err := store.AddToMasterList(types.DownloadRecord{
+				Artifact:             cfg.Artifact,
 				ID:                   queuedEvent.DownloadID,
 				URL:                  queuedEvent.URL,
 				URLHash:              store.URLHash(queuedEvent.URL),
@@ -467,6 +487,7 @@ func (mgr *LifecycleManager) enqueueResolved(ctx context.Context, req *DownloadR
 					seedDownloaded = cfg.HLSResume.VerifiedBytes
 				}
 				if err := store.SaveStateWithOptions(queuedEvent.URL, queuedEvent.DestPath, &types.DownloadRecord{
+					Artifact:             cfg.Artifact,
 					ID:                   cfg.ID,
 					URL:                  queuedEvent.URL,
 					URLHash:              store.URLHash(queuedEvent.URL),
@@ -587,6 +608,7 @@ func (mgr *LifecycleManager) buildDownloadRecord(req *DownloadRequest, requestID
 	skipOrigin := req.SkipServerProbe || shouldSkipServerProbe(req)
 
 	cfg := types.DownloadRecord{
+		Artifact:             req.Artifact,
 		URL:                  req.URL,
 		Mirrors:              req.Mirrors,
 		OutputPath:           finalPath,

@@ -567,7 +567,17 @@ func buildResumeConfig(id, outputPath string, entry *types.DownloadRecord, saved
 		skipOrigin = true
 	}
 
+	// Artifact priority: detail state first, then a non-zero master entry.
+	var artifact types.ArtifactPolicy
+	if savedState != nil {
+		artifact = savedState.Artifact
+	}
+	if entry != nil && entry.Artifact != (types.ArtifactPolicy{}) {
+		artifact = entry.Artifact
+	}
+
 	return types.DownloadRecord{
+		Artifact:             artifact,
 		URL:                  url,
 		OutputPath:           outputPath,
 		DestPath:             destPath,

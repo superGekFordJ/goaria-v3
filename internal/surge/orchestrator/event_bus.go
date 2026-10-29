@@ -119,8 +119,7 @@ func (bus *EventBus) subscribe(reliable bool) (<-chan types.DownloadEvent, func(
 	bus.listenerMu.Lock()
 	bus.listeners[sub] = struct{}{}
 	bus.listenerMu.Unlock()
-	bus.wg.Add(1)
-	go func() { defer bus.wg.Done(); sub.run() }()
+	bus.wg.Go(func() { ; sub.run() })
 	cleanup := func() {
 		sub.stop()
 		bus.listenerMu.Lock()

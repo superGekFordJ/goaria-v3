@@ -118,6 +118,9 @@ func TestShouldRetryFailedDownload_HLSSentinels(t *testing.T) {
 		types.ErrHLSInvalidManifest,
 		types.ErrHLSInvalidSegmentResponse,
 		types.ErrHLSNotImplemented,
+		types.ErrCompleted,
+		types.ErrIntegrityMismatch,
+		types.ErrDestinationExists,
 	}
 	for _, sentinel := range sentinels {
 		if shouldRetryFailedDownload(sentinel, false, 0) {

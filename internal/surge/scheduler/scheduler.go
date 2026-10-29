@@ -145,6 +145,9 @@ func shouldRetryFailedDownload(err error, shuttingDown bool, retries int) bool {
 		// FORK-PATCH: every permanent HLS sentinel (including the
 		// not-implemented dispatch stub) is terminal — never retry.
 		!types.IsPermanentHLSError(err) &&
+		!errors.Is(err, types.ErrIntegrityMismatch) &&
+		!errors.Is(err, types.ErrDestinationExists) &&
+		!errors.Is(err, types.ErrCompleted) &&
 		retries < 10
 }
 
@@ -776,7 +779,7 @@ func (p *Scheduler) Pause(downloadID string) PauseResult {
 		if total <= 0 {
 			total = configTotal
 		}
-		if total > 0 && prog.Bytes.VerifiedProgress.Load() >= total {
+		if total > 0 && prog.Bytes.VerifiedProgress.Load() >= total && !prog.Verifying.Load() {
 			return PauseResult{Found: true}
 		}
 
@@ -1733,6 +1736,7 @@ func (p *Scheduler) worker() {
 				}
 				errEvent = &types.DownloadEvent{
 					Type:       types.EventError,
+					Artifact:   localCfg.Artifact,
 					DownloadID: localCfg.ID,
 					Filename:   finalFilename,
 					DestPath:   finalDestPath,
@@ -1761,6 +1765,9 @@ func (p *Scheduler) worker() {
 						errEvent.Downloaded = snap.HLSResume.VerifiedBytes
 					}
 				} else if localCfg.ProgressState != nil {
+					// Non-HLS branch only: the HLS branch above keeps
+					// checkpoint VerifiedBytes authoritative.
+					errEvent.Downloaded = progress.CfgProgress(&localCfg).Bytes.Downloaded.Load()
 					if pending := progress.CfgProgress(&localCfg).TakePendingResumeState(); pending != nil {
 						errEvent.State = pending
 						if pending.Downloaded > 0 {
@@ -1881,6 +1888,9 @@ func (p *Scheduler) GetStatus(id string) *types.DownloadStatus {
 		status.DestPath = adDestPath
 	}
 
+	// FORK-PATCH: upstream reports a "verifying" status here; we deliberately
+	// omit it — verification keeps the "downloading" status and is observable
+	// through the event Phase instead.
 	if state.IsPausing() {
 		status.Status = "pausing"
 	} else if state.IsPaused() {
@@ -1900,7 +1910,9 @@ func (p *Scheduler) GetStatus(id string) *types.DownloadStatus {
 	}
 
 	// Calculate speed (bytes/s) only for active downloads.
-	if status.Status == "downloading" {
+	// FORK-PATCH: the status stays "downloading" during verification, so the
+	// flag is excluded here to keep polled speed at zero like the events.
+	if status.Status == "downloading" && !state.Verifying.Load() {
 		sessionDownloaded := downloaded - sessionStart
 		if sessionElapsed.Seconds() > 0 && sessionDownloaded > 0 {
 			bytesPerSec := float64(sessionDownloaded) / sessionElapsed.Seconds()

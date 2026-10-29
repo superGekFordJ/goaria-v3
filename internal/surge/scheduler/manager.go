@@ -327,6 +327,15 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		finalFilename = filepath.Base(finalDestPath)
 		utils.Debug("Resuming download, using saved destPath: %s", finalDestPath)
 	}
+	// A cleanup failure or a crash can leave both published and working names
+	// pointing to one inode. Never open that working name for another transfer.
+	published, err := utils.SameFilePaths(finalDestPath, finalDestPath+types.IncompleteSuffix)
+	if err != nil {
+		return err
+	}
+	if published {
+		return types.ErrCompleted
+	}
 	utils.Debug("Destination path: %s", finalDestPath)
 
 	var progState *progress.DownloadProgress
@@ -341,6 +350,11 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 	// or estimated size can never reset the session timer, clamp progress to
 	// 100%, gate Pause, or pin resume to a single worker.
 	isHLS := cfg.Strategy == types.StrategyHLS
+	// FORK-PATCH: configs that bypass enqueue (resume / injected records) must
+	// still refuse an HLS digest request — verification is unsupported there.
+	if isHLS && cfg.Artifact.ExpectedSHA256 != "" {
+		return errors.New("surge: sha256 verification is not supported for hls downloads")
+	}
 	if isHLS {
 		cfg.TotalSize = 0
 		if progState != nil {
@@ -367,6 +381,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 		snap.HLSResume = cfg.HLSResume.Clone()
 		safeSendProgress(cfg.ProgressCh, types.DownloadEvent{
 			Type:         types.EventStarted,
+			Artifact:     cfg.Artifact,
 			DownloadID:   cfg.ID,
 			URL:          cfg.URL,
 			Filename:     finalFilename,
@@ -515,6 +530,34 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 
 	// Physical success takes precedence; EventComplete is terminal-reliable (nil doneCh).
 	if downloadErr == nil {
+		cfg.TotalSize = effectiveTotalSize
+		if cfg.Artifact.ExpectedSHA256 != "" {
+			if progState != nil {
+				progState.Verifying.Store(true)
+			}
+			cfg.Artifact.Verification = "verifying"
+			if cfg.ProgressCh != nil {
+				safeSendProgress(cfg.ProgressCh, types.DownloadEvent{
+					Type:       types.EventSystem,
+					DownloadID: cfg.ID,
+					Message:    "Verifying SHA-256",
+					Artifact:   cfg.Artifact,
+				}, ctx.Done())
+			}
+			digest, err := hashArtifact(ctx, finalDestPath+types.IncompleteSuffix)
+			if progState != nil {
+				progState.Verifying.Store(false)
+			}
+			if err != nil {
+				return err
+			}
+			cfg.Artifact.SHA256 = digest
+			if digest != cfg.Artifact.ExpectedSHA256 {
+				cfg.Artifact.Verification = "mismatch"
+				return types.ErrIntegrityMismatch
+			}
+			cfg.Artifact.Verification = "verified"
+		}
 		var elapsed time.Duration
 		if progState != nil {
 			_, elapsed = progState.FinalizeSession(effectiveTotalSize)
@@ -532,6 +575,7 @@ func RunDownload(ctx context.Context, cfg *types.DownloadRecord) error {
 			rateLimit, rateLimitSet := currentRateLimit()
 			safeSendProgress(cfg.ProgressCh, types.DownloadEvent{
 				Type:         types.EventComplete,
+				Artifact:     cfg.Artifact,
 				DownloadID:   cfg.ID,
 				Filename:     finalFilename,
 				Elapsed:      elapsed,

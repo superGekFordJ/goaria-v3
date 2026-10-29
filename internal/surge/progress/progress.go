@@ -35,6 +35,7 @@ type DownloadProgress struct {
 	Paused      atomic.Bool
 	Pausing     atomic.Bool // Intermediate state: Pause requested but workers not yet exited
 	RateLimited atomic.Bool // Set when the downloader is backing off due to HTTP 429/rate-limit
+	Verifying   atomic.Bool // Set while the post-transfer artifact hash is running
 	Error       atomic.Pointer[error]
 
 	mu         sync.Mutex // Protects metadata only (Mirrors, limits, strings)

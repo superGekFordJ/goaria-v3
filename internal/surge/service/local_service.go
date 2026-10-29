@@ -242,6 +242,8 @@ func (s *LocalDownloadService) GetStatus(id string) (*types.DownloadStatus, erro
 			progress = 100.0
 		}
 		status := types.DownloadStatus{
+			Artifact:     entry.Artifact,
+			ErrorCode:    entry.ErrorCode,
 			ID:           entry.ID,
 			URL:          entry.URL,
 			Filename:     entry.Filename,
@@ -468,6 +470,8 @@ func (s *LocalDownloadService) List() ([]types.DownloadStatus, error) {
 				progress = 100.0
 			}
 			statuses = append(statuses, types.DownloadStatus{
+				Artifact:     d.Artifact,
+				ErrorCode:    d.ErrorCode,
 				ID:           d.ID,
 				URL:          d.URL,
 				Filename:     d.Filename,

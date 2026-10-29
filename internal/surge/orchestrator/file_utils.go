@@ -177,6 +177,10 @@ func getBaseFilename(url, candidate string, pr *probing.ProbeResult) string {
 // ResolveDestination centralizes routing and naming so CLI, TUI, and API
 // requests all land on the same final path before the engine starts downloading.
 func ResolveDestination(url, candidateFilename, defaultDir string, routeToCategory bool, settings *config.Settings, pr *probing.ProbeResult, isNameActive func(string, string) bool) (string, string, error) {
+	return resolveDestinationWithPolicy(url, candidateFilename, defaultDir, routeToCategory, settings, pr, isNameActive, "")
+}
+
+func resolveDestinationWithPolicy(url, candidateFilename, defaultDir string, routeToCategory bool, settings *config.Settings, pr *probing.ProbeResult, isNameActive func(string, string) bool, onExists string) (string, string, error) {
 	filename := getBaseFilename(url, candidateFilename, pr)
 
 	destPath := defaultDir
@@ -190,6 +194,23 @@ func ResolveDestination(url, candidateFilename, defaultDir string, routeToCatego
 
 	// Safety: Truncate early so GetUniqueFilename has room to append a suffix
 	filename = utils.TruncateFilename(filename)
+
+	if onExists == "fail" {
+		if !filepath.IsLocal(filename) || strings.ContainsAny(filename, "/\\:\x00") || filename == "." {
+			return "", "", errors.New("invalid filename")
+		}
+		for _, path := range []string{filepath.Join(destPath, filename), filepath.Join(destPath, filename) + types.IncompleteSuffix} {
+			if _, err := os.Lstat(path); err == nil {
+				return "", "", types.ErrDestinationExists
+			} else if !os.IsNotExist(err) {
+				return "", "", err
+			}
+		}
+		if isNameActive != nil && isNameActive(destPath, filename) {
+			return "", "", types.ErrDestinationExists
+		}
+		return destPath, filename, nil
+	}
 
 	finalFilename := GetUniqueFilename(destPath, filename, isNameActive)
 	if finalFilename == "" {
