@@ -7,6 +7,7 @@ export default defineConfig({
   test: {
     environment: 'happy-dom',
     globals: true,
+    execArgv: ['--no-webstorage'],
     include: ['src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
@@ -15,7 +16,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@': path.resolve(__dirname, 'src'),
+      '@': path.resolve(import.meta.dirname, 'src'),
     },
   },
 })
