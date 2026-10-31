@@ -12,8 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"goaria-v3/internal/config"
 	"goaria-v3/internal/extension"
 	"goaria-v3/internal/extractor"
@@ -21,6 +19,8 @@ import (
 	"goaria-v3/internal/history"
 	"goaria-v3/internal/monitor"
 	"goaria-v3/internal/tasks"
+
+	"github.com/gorilla/websocket"
 )
 
 // The snapshot-fixed commit service must join the same dedup registry the App

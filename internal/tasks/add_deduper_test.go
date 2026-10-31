@@ -265,7 +265,7 @@ func TestAddDeduper_ExpiredRecordRacesToSingleOwner(t *testing.T) {
 		const racers = 4
 		ownerCh := make(chan *addClaim, racers)
 		results := make(chan addClaimResult, racers)
-		for i := 0; i < racers; i++ {
+		for range racers {
 			go func() {
 				c, r, o := d.acquire(context.Background(), "k")
 				if o {
@@ -278,7 +278,7 @@ func TestAddDeduper_ExpiredRecordRacesToSingleOwner(t *testing.T) {
 
 		ownerClaim := <-ownerCh
 		d.finish(ownerClaim, addClaimResult{gid: "g2", available: true})
-		for i := 0; i < racers-1; i++ {
+		for i := range racers - 1 {
 			r := <-results
 			if !r.available || r.gid != "g2" {
 				t.Fatalf("racer %d got %+v, want coalesced available g2", i, r)
@@ -333,7 +333,7 @@ func TestAddDeduper_SweepRemovesOnlyExpiredSettled(t *testing.T) {
 func TestAddDeduper_FreshRecordsHaveNoCapacityEviction(t *testing.T) {
 	d := &AddDeduper{}
 	const n = 3000
-	for i := 0; i < n; i++ {
+	for i := range n {
 		key := fmt.Sprintf("k-%d", i)
 		claim, _, owner := d.acquire(context.Background(), key)
 		if !owner {

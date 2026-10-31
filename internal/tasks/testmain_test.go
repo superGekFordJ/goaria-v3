@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"os"
+	"slices"
 	"sync"
 	"testing"
 
@@ -17,12 +18,7 @@ var (
 func lookupHostSaw(host string) bool {
 	lookupHostCallsMu.Lock()
 	defer lookupHostCallsMu.Unlock()
-	for _, h := range lookupHostCalls {
-		if h == host {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(lookupHostCalls, host)
 }
 
 func TestMain(m *testing.M) {

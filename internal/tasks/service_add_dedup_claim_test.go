@@ -322,12 +322,12 @@ func TestServiceAddDedup_ResolvedCandidateKeyCoalesces(t *testing.T) {
 	d := &AddDeduper{}
 	engine := &dedupGateEngine{}
 	shared := "http://127.0.0.1/files/resolved.bin"
-	adA := &refRecordingAdapter{fakePortAdapter: fakePortAdapter{items: []ResolvedItem{
+	adA := &refRecordingAdapter{items: []ResolvedItem{
 		{URL: shared, Ref: "ref-a", Filename: "a.bin"},
-	}}}
-	adB := &refRecordingAdapter{fakePortAdapter: fakePortAdapter{items: []ResolvedItem{
+	}}
+	adB := &refRecordingAdapter{items: []ResolvedItem{
 		{URL: shared, Ref: "ref-b", Filename: "b.bin"},
-	}}}
+	}}
 	svcA := &Service{Engine: engine, Adapter: adA, Deduper: d}
 	svcB := &Service{Engine: engine, Adapter: adB, Deduper: d}
 
@@ -363,10 +363,10 @@ func TestServiceAddDedup_ResolvedCandidateKeyCoalesces(t *testing.T) {
 
 		// Distinct resolved URLs never merge, even off one source URL.
 		engine.disarm()
-		adC := &refRecordingAdapter{fakePortAdapter: fakePortAdapter{items: []ResolvedItem{
+		adC := &refRecordingAdapter{items: []ResolvedItem{
 			{URL: "http://127.0.0.1/files/multi-1.bin", Ref: "r1"},
 			{URL: "http://127.0.0.1/files/multi-2.bin", Ref: "r2"},
-		}}}
+		}}
 		svcC := &Service{Engine: engine, Adapter: adC, Deduper: d}
 		if got := svcC.AddUri("http://127.0.0.1/source/page-c"); got != "success" {
 			t.Fatalf("multi-item AddUri = %q, want success", got)
@@ -593,7 +593,7 @@ func TestServiceAddDedup_OwnerExistingDuplicateWakesWaiters(t *testing.T) {
 		svcSnap := &Service{
 			Engine:  engC,
 			Deduper: d2,
-			Adapter: &refRecordingAdapter{fakePortAdapter: fakePortAdapter{items: []ResolvedItem{{URL: url, Ref: "ry"}}}},
+			Adapter: &refRecordingAdapter{items: []ResolvedItem{{URL: url, Ref: "ry"}}},
 		}
 		if got := svcSnap.AddUri("http://127.0.0.1/source/page"); got != "duplicate" {
 			t.Fatalf("snapshot-dedup AddUri = %q, want duplicate", got)
@@ -640,7 +640,7 @@ func TestServiceAddDedup_ThroughputDistinctKeys(t *testing.T) {
 
 	const n = 8
 	items := make([]PreparedDirectAddItem, 0, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		items = append(items, PreparedDirectAddItem{
 			ClientItemID: fmt.Sprintf("tp-%d", i),
 			URL:          fmt.Sprintf("http://127.0.0.1/files/tp-%d.bin", i),
@@ -656,7 +656,7 @@ func TestServiceAddDedup_ThroughputDistinctKeys(t *testing.T) {
 			out <- res
 		}()
 
-		for i := 0; i < n; i++ {
+		for range n {
 			<-engine.entered
 		}
 		synctest.Wait()
@@ -678,9 +678,9 @@ func TestServiceAddDedup_ErrorRedactionAcrossServices(t *testing.T) {
 	setupDedupEnv(t)
 	d := &AddDeduper{}
 	engine := &dedupGateEngine{}
-	adA := &refRecordingAdapter{fakePortAdapter: fakePortAdapter{items: []ResolvedItem{
+	adA := &refRecordingAdapter{items: []ResolvedItem{
 		{URL: "http://127.0.0.1/files/secret.bin", Ref: "sec-ref"},
-	}}}
+	}}
 	svcA := &Service{Engine: engine, Adapter: adA, Deduper: d}
 	svcB := &Service{Engine: engine, Deduper: d} // nil adapter: relies on owner's redaction
 	svcExt := &Service{Engine: engine, Deduper: d}
